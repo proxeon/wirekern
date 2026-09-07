@@ -11,7 +11,7 @@ Do not put App secrets or tokens in this folder. They live in repo-root `.env` (
 ## Checklist
 
 1. Meta app with use case **Access the Threads API**
-2. Permission `threads_content_publish`
+2. Permissions `threads_content_publish` and `threads_manage_replies` (reply chains)
 3. Settings URLs saved as **chips** (redirect + uninstall + delete)
 4. **Threads Tester** added (dropdown chip) and **invite accepted** on Threads
 5. Threads App ID / secret stored (`.env` then `apps set`)
@@ -58,6 +58,8 @@ Use Cases → Access the Threads API → Customize.
 
 - `threads_basic` is required and already on.
 - Add **`threads_content_publish`**. Without it you can auth and still fail to post.
+- Add **`threads_manage_replies`** for reply chains. Re-auth after adding it.
+- Add **`threads_manage_replies`** for reply chains (`reply_to_id`). Graph 500s on replies without it on this app.
 
 ---
 
@@ -201,7 +203,7 @@ pk post threads --text 'hello' --json
 
 Text limit: **500 UTF-8 bytes** per post. Empty text is rejected.
 
-Reply chain (not a carousel). Repeat `--text`; each line is one Graph post. Segment 2+ send `reply_to_id` of the previous id. Not atomic: if a later segment fails, earlier posts stay live (delete in the Threads app). `--to` + two `--text` is refused (`thread_unsupported`).
+Reply chain (not a carousel). Repeat `--text`; each line is one Graph post. Segment 2+ send `reply_to_id` of the previous id (create container, then `threads_publish` — not `auto_publish_text`). Not atomic: if a later segment fails, earlier posts stay live (delete in the Threads app). `--to` + two `--text` is refused (`thread_unsupported`). Use `--deadline 60` if a reply is slow to publish.
 
 ```bash
 pk post threads --json --text 'root' --text '1/' --text '2/'
@@ -241,4 +243,4 @@ Short → long: `GET https://graph.threads.net/access_token?grant_type=th_exchan
 Refresh: `GET https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token`  
 Publish: `POST https://graph.threads.net/v1.0/me/threads` form `media_type=TEXT&auto_publish_text=true` then `GET` permalink.
 
-Scopes: `threads_basic,threads_content_publish`. Host is **`graph.threads.net`**.
+Scopes: `threads_basic,threads_content_publish,threads_manage_replies`. Host is **`graph.threads.net`**.

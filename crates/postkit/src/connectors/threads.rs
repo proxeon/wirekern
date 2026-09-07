@@ -8,14 +8,14 @@ use crate::types::{
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const GRAPH_HOST: &str = "graph.threads.net";
 pub const GRAPH_VERSION: &str = "v1.0";
 pub const GRAPH_ORIGIN: &str = "https://graph.threads.net";
 pub const AUTHORIZE: &str = "https://threads.net/oauth/authorize";
 pub const SITE: &str = "threads";
-pub const SCOPES: &str = "threads_basic,threads_content_publish";
+pub const SCOPES: &str = "threads_basic,threads_content_publish,threads_manage_replies";
 pub const MAX_TEXT_BYTES: usize = 500;
 
 fn default_base() -> String {
@@ -205,11 +205,12 @@ pub fn text_form_pairs<'a>(
     reply_to: Option<&'a str>,
     access_token: &'a str,
 ) -> Vec<(&'a str, &'a str)> {
-    let mut pairs = vec![
-        ("media_type", "TEXT"),
-        ("text", text),
-        ("auto_publish_text", "true"),
-    ];
+    let mut pairs = vec![("media_type", "TEXT"), ("text", text)];
+    // Replies cannot use auto_publish_text; Meta's create-replies path is
+    // container then POST /threads_publish.
+    if reply_to.is_none() {
+        pairs.push(("auto_publish_text", "true"));
+    }
     if let Some(id) = reply_to {
         pairs.push(("reply_to_id", id));
     }
@@ -248,7 +249,7 @@ pub async fn post_text(
     ).body(form(&pairs));
     let resp = http.send(req, deadline, &site).await?;
     let created = read_json(resp, &site).await?;
-    let id = created
+    let created_id = created
         .get("id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| Error::Platform {
@@ -257,6 +258,11 @@ pub async fn post_text(
             message: "Graph create returned no id".into(),
         })?
         .to_string();
+    let id = if reply_to.is_some() {
+        publish_container(http, base, user_id, &created_id, access_token, deadline).await?
+    } else {
+        created_id
+    };
 
     let mut url_out = None;
     let get_url = format!(
@@ -280,6 +286,73 @@ pub async fn post_text(
         url: url_out,
         limits: None,
     })
+}
+
+fn json_id(body: &Value, site: &Site, what: &str) -> Result<String, Error> {
+    body.get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| Error::Platform {
+            site: site.clone(),
+            code: "missing_id".into(),
+            message: format!("{what} returned no id"),
+        })
+}
+
+fn retry_container_publish(e: &Error) -> bool {
+    match e {
+        Error::Network { .. } => true,
+        Error::Platform { message, .. } => {
+            let m = message.to_ascii_lowercase();
+            m.contains("not ready")
+                || m.contains("in progress")
+                || m.contains("try again")
+                || m.contains("please wait")
+        }
+        _ => false,
+    }
+}
+
+async fn publish_container(
+    http: &Http,
+    base: &str,
+    user_id: &str,
+    creation_id: &str,
+    access_token: &str,
+    deadline: Deadline,
+) -> Result<String, Error> {
+    let site = Site::new(SITE);
+    let url = format!(
+        "{}/{}/threads_publish",
+        base.trim_end_matches('/'),
+        user_id
+    );
+    let mut last: Option<Error> = None;
+    loop {
+        if let Err(e) = deadline.check(&site) {
+            return Err(last.unwrap_or(e));
+        }
+        let req = http
+            .post(&url)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form(&[
+                ("creation_id", creation_id),
+                ("access_token", access_token),
+            ]));
+        match http.send(req, deadline, &site).await {
+            Ok(resp) => match read_json(resp, &site).await {
+                Ok(body) => return json_id(&body, &site, "threads_publish"),
+                Err(e) if retry_container_publish(&e) => last = Some(e),
+                Err(e) => return Err(e),
+            },
+            Err(e) if retry_container_publish(&e) => last = Some(e),
+            Err(e) => return Err(e),
+        }
+        if let Err(e) = deadline.check(&site) {
+            return Err(last.unwrap_or(e));
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
 }
 
 async fn whoami(
@@ -507,9 +580,21 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
         };
     }
     if http_status >= 500 {
+        // Meta often returns HTTP 500 for param errors (code 100) with a JSON body.
+        if err.is_some() && code != 0 {
+            return Error::Platform {
+                site,
+                code: code.to_string(),
+                message: message.to_string(),
+            };
+        }
         return Error::Network {
             site,
-            message: message.to_string(),
+            message: if message.is_empty() {
+                format!("http_{http_status}")
+            } else {
+                message.to_string()
+            },
         };
     }
     Error::Platform {
@@ -596,15 +681,10 @@ mod tests {
         let pairs = text_form_pairs("reply", Some("17900"), "tok");
         assert!(pairs.contains(&("reply_to_id", "17900")));
         let keys: Vec<_> = pairs.iter().map(|(k, _)| *k).collect();
+        assert!(!pairs.iter().any(|(k, _)| *k == "auto_publish_text"));
         assert_eq!(
             keys,
-            vec![
-                "media_type",
-                "text",
-                "auto_publish_text",
-                "reply_to_id",
-                "access_token"
-            ]
+            vec!["media_type", "text", "reply_to_id", "access_token"]
         );
     }
 
@@ -626,6 +706,10 @@ mod tests {
         let server = MockServer::start();
         let create = server.mock(|when, then| {
             when.method(POST).path("/v1.0/me/threads");
+            then.status(200).json_body(json!({ "id": "C" }));
+        });
+        let publish = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads_publish");
             then.status(200).json_body(json!({ "id": "B" }));
         });
         let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
@@ -641,6 +725,7 @@ mod tests {
             .await
             .unwrap();
         create.assert();
+        publish.assert();
         assert_eq!(out.id.as_deref(), Some("B"));
     }
 
@@ -679,6 +764,10 @@ mod tests {
             then.status(200)
                 .json_body(json!({ "id": "17900", "permalink": "https://www.threads.net/@x/post/abc" }));
         });
+        let publish = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads_publish");
+            then.status(500);
+        });
         let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
         let out = t
             .publish(
@@ -691,11 +780,95 @@ mod tests {
             .unwrap();
         create.assert();
         get.assert();
+        publish.assert_hits(0);
         assert_eq!(out.id.as_deref(), Some("17900"));
         assert_eq!(
             out.url.as_deref(),
             Some("https://www.threads.net/@x/post/abc")
         );
+    }
+
+    #[tokio::test]
+    async fn reply_chain_root_then_reply() {
+        let server = MockServer::start();
+        let root_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1.0/me/threads")
+                .x_www_form_urlencoded_key_exists("auto_publish_text");
+            then.status(200).json_body(json!({ "id": "A" }));
+        });
+        let reply_create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1.0/me/threads")
+                .x_www_form_urlencoded_key_exists("reply_to_id");
+            then.status(200).json_body(json!({ "id": "C" }));
+        });
+        let reply_publish = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads_publish");
+            then.status(200).json_body(json!({ "id": "B" }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
+        let root = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                text_intent("root"),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(root.id.as_deref(), Some("A"));
+        root_create.assert();
+        reply_publish.assert_hits(0);
+        let mut reply = text_intent("reply");
+        reply.params = json!({ "reply_to_id": root.id.clone().unwrap() });
+        let out = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                reply,
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        reply_create.assert();
+        reply_publish.assert();
+        assert_eq!(out.id.as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn retry_container_publish_rules() {
+        let site = Site::new(SITE);
+        assert!(retry_container_publish(&Error::Network {
+            site: site.clone(),
+            message: "http_500".into(),
+        }));
+        assert!(retry_container_publish(&Error::Platform {
+            site: site.clone(),
+            code: "1".into(),
+            message: "media not ready".into(),
+        }));
+        assert!(!retry_container_publish(&Error::Auth {
+            site,
+            reason: "token_expired".into(),
+        }));
+    }
+
+    #[test]
+    fn graph_500_code_100_is_platform() {
+        let err = map_graph_error(
+            500,
+            r#"{"error":{"message":"Param reply_to_id is not a valid threads_media ID","type":"THApiException","code":100}}"#,
+        );
+        assert!(
+            matches!(err, Error::Platform { ref code, ref message, .. } if code == "100" && message.contains("reply_to_id"))
+        );
+    }
+
+    #[test]
+    fn graph_500_empty_is_network_http_500() {
+        let err = map_graph_error(500, "");
+        assert!(matches!(err, Error::Network { ref message, .. } if message == "http_500"));
     }
 
     #[tokio::test]
@@ -805,7 +978,9 @@ mod tests {
                 state,
             } => {
                 assert!(authorize_url.contains("https://threads.net/oauth/authorize"));
-                assert!(authorize_url.contains("threads_basic%2Cthreads_content_publish"));
+                assert!(authorize_url.contains(
+                    "threads_basic%2Cthreads_content_publish%2Cthreads_manage_replies"
+                ));
                 assert!(authorize_url.contains("response_type=code"));
                 assert!(!state.is_empty());
                 assert!(authorize_url.contains(&format!("state={state}")));

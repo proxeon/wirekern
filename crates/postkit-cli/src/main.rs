@@ -396,10 +396,10 @@ async fn dispatch(
             let params = parse_params(&param, json)?;
             let sites = collect_post_sites(site.as_deref(), to.as_deref())?;
             if texts.len() > 1 {
-                if let Some(bad) = sites.iter().find(|s| s.as_str() != "threads") {
+                if let Some(bad) = chain_blocked_site(&sites) {
                     return Err(fail(
                         &Error::InvalidPost {
-                            site: Site::new(bad.as_str()),
+                            site: Site::new(bad),
                             reason: "thread_unsupported".into(),
                             limit: None,
                         },
@@ -504,6 +504,10 @@ fn collect_post_sites(site: Option<&str>, to: Option<&str>) -> Result<Vec<String
         eprintln!("site or --to is required");
         Err(2)
     }
+}
+
+fn chain_blocked_site(sites: &[String]) -> Option<&str> {
+    sites.iter().map(String::as_str).find(|s| *s != "threads")
 }
 
 fn with_reply_to(params: &serde_json::Value, id: &str) -> serde_json::Value {
@@ -657,4 +661,56 @@ fn check_name(s: &str, json: bool) -> Result<(), i32> {
 fn fail(e: &Error, json: bool) -> i32 {
     emit_err(e, json);
     e.exit_code()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_texts_requires_one() {
+        assert_eq!(resolve_texts(vec![]).unwrap_err(), 2);
+        assert_eq!(
+            resolve_texts(vec!["a".into(), "-".into()]).unwrap_err(),
+            2
+        );
+        assert_eq!(
+            resolve_texts(vec!["root".into(), "reply".into()]).unwrap(),
+            vec!["root", "reply"]
+        );
+    }
+
+    #[test]
+    fn collect_post_sites_from_to_or_site() {
+        assert_eq!(
+            collect_post_sites(None, Some("threads, bluesky")).unwrap(),
+            vec!["threads", "bluesky"]
+        );
+        assert_eq!(
+            collect_post_sites(Some("threads"), None).unwrap(),
+            vec!["threads"]
+        );
+        assert_eq!(collect_post_sites(None, None).unwrap_err(), 2);
+    }
+
+    #[test]
+    fn chain_blocked_unless_all_threads() {
+        assert_eq!(chain_blocked_site(&["threads".into()]), None);
+        assert_eq!(
+            chain_blocked_site(&["threads".into(), "threads".into()]),
+            None
+        );
+        assert_eq!(
+            chain_blocked_site(&["threads".into(), "bluesky".into()]),
+            Some("bluesky")
+        );
+    }
+
+    #[test]
+    fn with_reply_to_overwrites_parent() {
+        let p = with_reply_to(&serde_json::json!({ "reply_to_id": "old" }), "A");
+        assert_eq!(p["reply_to_id"], "A");
+        let p = with_reply_to(&serde_json::json!({}), "B");
+        assert_eq!(p["reply_to_id"], "B");
+    }
 }

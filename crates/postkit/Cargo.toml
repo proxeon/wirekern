@@ -16,7 +16,7 @@ default = []
 vault-file = []
 client = ["dep:reqwest"]
 oauth = ["client"]
-threads = ["client", "oauth"]
+threads = ["client", "oauth", "dep:tokio"]
 bluesky = ["client", "dep:unicode-segmentation", "dep:time"]
 
 [dependencies]
@@ -27,6 +27,7 @@ async-trait = { workspace = true }
 reqwest = { workspace = true, optional = true }
 unicode-segmentation = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
