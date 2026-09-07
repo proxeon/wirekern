@@ -190,7 +190,7 @@ pub fn validate_text(text: &str) -> Result<(), Error> {
             limit: None,
         });
     }
-    if text.as_bytes().len() > MAX_TEXT_BYTES {
+    if text.len() > MAX_TEXT_BYTES {
         return Err(Error::InvalidPost {
             site,
             reason: "text_too_long".into(),

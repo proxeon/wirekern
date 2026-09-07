@@ -75,6 +75,8 @@ pub fn query_param(url: &str, key: &str) -> Option<String> {
     None
 }
 
+/// RFC 6749 token-endpoint signature; one arg per spec parameter.
+#[allow(clippy::too_many_arguments)]
 pub async fn exchange_code(
     http: &Http,
     token_endpoint: &str,
