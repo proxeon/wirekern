@@ -1,0 +1,26 @@
+[package]
+name = "postkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+
+[features]
+default = []
+vault-file = []
+client = ["dep:reqwest"]
+oauth = ["client"]
+threads = ["client", "oauth"]
+bluesky = ["client"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
