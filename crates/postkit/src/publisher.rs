@@ -14,7 +14,10 @@ pub enum AuthKind {
 
 #[derive(Clone, Debug)]
 pub enum AuthStart {
-    Browser { authorize_url: String },
+    Browser {
+        authorize_url: String,
+        state: String,
+    },
     PasteInstructions { hint: String },
     None,
 }

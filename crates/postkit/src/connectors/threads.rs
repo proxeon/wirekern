@@ -1,16 +1,21 @@
 use crate::error::Error;
 use crate::http::Http;
-use crate::publisher::{AuthKind, Publisher};
+use crate::oauth::{authorize_url, exchange_code, extract_code};
+use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::types::{
-    AccountCreds, AppConfig, Body, Capability, Deadline, Intent, Outcome, Site, WhoAmI,
+    AccountCreds, AppConfig, Body, Capability, Deadline, Intent, OAuthApp, Outcome, Site, WhoAmI,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const GRAPH_HOST: &str = "graph.threads.net";
 pub const GRAPH_VERSION: &str = "v1.0";
+pub const GRAPH_ORIGIN: &str = "https://graph.threads.net";
+pub const AUTHORIZE: &str = "https://threads.net/oauth/authorize";
 pub const SITE: &str = "threads";
+pub const SCOPES: &str = "threads_basic,threads_content_publish";
 pub const MAX_TEXT_BYTES: usize = 500;
 
 fn default_base() -> String {
@@ -26,23 +31,29 @@ pub struct Threads {
     http: Http,
     site: Site,
     base: String,
+    graph_origin: String,
 }
 
 impl Threads {
     pub fn new() -> Result<Self, Error> {
-        Ok(Self {
-            http: Http::new()?,
-            site: Site::new(SITE),
-            base: default_base(),
-        })
+        Self::with_origins(default_base(), GRAPH_ORIGIN)
     }
 
-    /// Test helper: httpmock base, e.g. `http://127.0.0.1:PORT/v1.0`.
+    /// Test helper: httpmock publish base, e.g. `http://127.0.0.1:PORT/v1.0`.
     pub fn with_base(base: impl Into<String>) -> Result<Self, Error> {
+        Self::with_origins(base, GRAPH_ORIGIN)
+    }
+
+    /// Test helper: separate publish `/v1.0` base and unversioned Graph origin.
+    pub fn with_origins(
+        publish_base: impl Into<String>,
+        graph_origin: impl Into<String>,
+    ) -> Result<Self, Error> {
         Ok(Self {
             http: Http::new()?,
             site: Site::new(SITE),
-            base: base.into().trim_end_matches('/').to_string(),
+            base: publish_base.into().trim_end_matches('/').to_string(),
+            graph_origin: graph_origin.into().trim_end_matches('/').to_string(),
         })
     }
 }
@@ -78,6 +89,79 @@ impl Publisher for Threads {
     async fn whoami(&self, _app: &AppConfig, creds: &AccountCreds) -> Result<WhoAmI, Error> {
         let token = access_token(creds)?;
         whoami(&self.http, &self.base, token, Deadline::from_secs(30)).await
+    }
+
+    async fn auth_start(&self, app: &AppConfig) -> Result<AuthStart, Error> {
+        let oauth = require_oauth(app)?;
+        let state = new_state();
+        let authorize_url = authorize_url(
+            AUTHORIZE,
+            &oauth.client_id,
+            &oauth.redirect_uri,
+            SCOPES,
+            &state,
+        );
+        Ok(AuthStart::Browser {
+            authorize_url,
+            state,
+        })
+    }
+
+    async fn auth_finish(
+        &self,
+        app: &AppConfig,
+        reply: AuthReply,
+    ) -> Result<AccountCreds, Error> {
+        let oauth = require_oauth(app)?;
+        let raw = match reply {
+            AuthReply::Pasted { code } => code,
+            AuthReply::Redirect { url } => url,
+        };
+        let code = extract_code(&raw)?;
+        let deadline = Deadline::from_secs(30);
+        let site = self.site.clone();
+        let token_ep = format!("{}/oauth/access_token", self.graph_origin);
+        let short = exchange_code(
+            &self.http,
+            &token_ep,
+            &oauth.client_id,
+            &oauth.client_secret,
+            &oauth.redirect_uri,
+            &code,
+            deadline,
+            &site,
+        )
+        .await?;
+        long_lived(
+            &self.http,
+            &self.graph_origin,
+            &oauth.client_secret,
+            &short.access_token,
+            short.user_id,
+            deadline,
+        )
+        .await
+    }
+
+    async fn refresh(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+    ) -> Result<AccountCreds, Error> {
+        let token = access_token(creds)?;
+        let user_id = extra_user_id(creds);
+        let deadline = Deadline::from_secs(30);
+        let q = crate::oauth::form(&[
+            ("grant_type", "th_refresh_token"),
+            ("access_token", token),
+        ]);
+        let url = format!("{}/refresh_access_token?{q}", self.graph_origin);
+        let resp = self
+            .http
+            .send(self.http.get(&url), deadline, &self.site)
+            .await?;
+        let body = read_json(resp, &self.site).await?;
+        creds_from_long(&body, user_id)
     }
 }
 
@@ -214,6 +298,84 @@ fn form_encode(s: &str) -> String {
     out
 }
 
+fn require_oauth(app: &AppConfig) -> Result<&OAuthApp, Error> {
+    app.oauth.as_ref().ok_or_else(|| Error::Auth {
+        site: Site::new(SITE),
+        reason: "missing_app_config".into(),
+    })
+}
+
+fn new_state() -> String {
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{n:x}")
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+async fn long_lived(
+    http: &Http,
+    graph_origin: &str,
+    client_secret: &str,
+    short: &str,
+    user_id: Option<String>,
+    deadline: Deadline,
+) -> Result<AccountCreds, Error> {
+    let site = Site::new(SITE);
+    let q = crate::oauth::form(&[
+        ("grant_type", "th_exchange_token"),
+        ("client_secret", client_secret),
+        ("access_token", short),
+    ]);
+    let url = format!("{graph_origin}/access_token?{q}");
+    let resp = http.send(http.get(&url), deadline, &site).await?;
+    let body = read_json(resp, &site).await?;
+    creds_from_long(&body, user_id)
+}
+
+fn creds_from_long(body: &Value, user_id: Option<String>) -> Result<AccountCreds, Error> {
+    let site = Site::new(SITE);
+    let access_token = body
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::Auth {
+            site: site.clone(),
+            reason: "missing_access_token".into(),
+        })?
+        .to_string();
+    let now = unix_now();
+    let mut extra = serde_json::Map::new();
+    if let Some(id) = user_id.or_else(|| {
+        body.get("user_id").and_then(|v| {
+            v.as_str()
+                .map(|s| s.to_string())
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+        })
+    }) {
+        extra.insert("user_id".into(), Value::String(id));
+    }
+    extra.insert("refreshed_at".into(), json_u64(now));
+    if let Some(exp) = body.get("expires_in").and_then(|v| v.as_u64()) {
+        extra.insert("expires_at".into(), json_u64(now.saturating_add(exp)));
+    }
+    Ok(AccountCreds::OAuth2 {
+        access_token,
+        refresh_token: None,
+        extra: Value::Object(extra),
+    })
+}
+
+fn json_u64(n: u64) -> Value {
+    Value::Number(n.into())
+}
+
 fn access_token(creds: &AccountCreds) -> Result<&str, Error> {
     match creds {
         AccountCreds::OAuth2 { access_token, .. } => Ok(access_token),
@@ -343,6 +505,18 @@ mod tests {
         AppConfig {
             site: Site::new(SITE),
             oauth: None,
+            extra: json!({}),
+        }
+    }
+
+    fn oauth_app() -> AppConfig {
+        AppConfig {
+            site: Site::new(SITE),
+            oauth: Some(OAuthApp {
+                client_id: "id".into(),
+                client_secret: "sec".into(),
+                redirect_uri: "https://localhost/callback".into(),
+            }),
             extra: json!({}),
         }
     }
@@ -485,6 +659,119 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::Platform { code, .. } if code == "100"));
+    }
+
+    #[tokio::test]
+    async fn auth_start_needs_app() {
+        let t = Threads::new().unwrap();
+        let err = t.auth_start(&empty_app()).await.unwrap_err();
+        assert!(matches!(err, Error::Auth { reason, .. } if reason == "missing_app_config"));
+    }
+
+    #[tokio::test]
+    async fn auth_start_url_shape() {
+        let t = Threads::new().unwrap();
+        match t.auth_start(&oauth_app()).await.unwrap() {
+            AuthStart::Browser {
+                authorize_url,
+                state,
+            } => {
+                assert!(authorize_url.contains("https://threads.net/oauth/authorize"));
+                assert!(authorize_url.contains("threads_basic%2Cthreads_content_publish"));
+                assert!(authorize_url.contains("response_type=code"));
+                assert!(!state.is_empty());
+                assert!(authorize_url.contains(&format!("state={state}")));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_finish_exchanges_to_long_lived() {
+        let server = MockServer::start();
+        let short = server.mock(|when, then| {
+            when.method(POST).path("/oauth/access_token");
+            then.status(200).json_body(json!({
+                "access_token": "SSS",
+                "user_id": 1784
+            }));
+        });
+        let long = server.mock(|when, then| {
+            when.method(GET)
+                .path("/access_token")
+                .query_param("grant_type", "th_exchange_token");
+            then.status(200).json_body(json!({
+                "access_token": "LLL",
+                "token_type": "bearer",
+                "expires_in": 5183944
+            }));
+        });
+        let t = Threads::with_origins(
+            format!("{}/v1.0", server.base_url()),
+            server.base_url(),
+        )
+        .unwrap();
+        let creds = t
+            .auth_finish(
+                &oauth_app(),
+                AuthReply::Pasted {
+                    code: "AQBx#_".into(),
+                },
+            )
+            .await
+            .unwrap();
+        short.assert();
+        long.assert();
+        match creds {
+            AccountCreds::OAuth2 {
+                access_token,
+                refresh_token,
+                extra,
+            } => {
+                assert_eq!(access_token, "LLL");
+                assert!(refresh_token.is_none());
+                assert_ne!(access_token, "SSS");
+                assert_eq!(extra.get("user_id").and_then(|v| v.as_str()), Some("1784"));
+                assert!(extra.get("expires_at").and_then(|v| v.as_u64()).is_some());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_hits_th_refresh_token() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/refresh_access_token")
+                .query_param("grant_type", "th_refresh_token");
+            then.status(200).json_body(json!({
+                "access_token": "NEW",
+                "expires_in": 5183944
+            }));
+        });
+        let t = Threads::with_origins(
+            format!("{}/v1.0", server.base_url()),
+            server.base_url(),
+        )
+        .unwrap();
+        let old = AccountCreds::OAuth2 {
+            access_token: "OLD".into(),
+            refresh_token: None,
+            extra: json!({ "user_id": "1784" }),
+        };
+        let new = t.refresh(&oauth_app(), &old).await.unwrap();
+        match new {
+            AccountCreds::OAuth2 {
+                access_token,
+                extra,
+                ..
+            } => {
+                assert_eq!(access_token, "NEW");
+                assert_eq!(extra.get("user_id").and_then(|v| v.as_str()), Some("1784"));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[tokio::test]

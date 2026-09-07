@@ -18,6 +18,11 @@ mod http;
 #[cfg(feature = "client")]
 pub use http::Http;
 
+#[cfg(feature = "oauth")]
+mod oauth;
+#[cfg(feature = "oauth")]
+pub use oauth::{authorize_url, exchange_code, extract_code, query_param, TokenResponse};
+
 #[cfg(feature = "threads")]
 pub mod connectors;
 

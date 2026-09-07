@@ -16,7 +16,7 @@ default = []
 vault-file = []
 client = ["dep:reqwest"]
 oauth = ["client"]
-threads = ["client"]
+threads = ["client", "oauth"]
 bluesky = ["client"]
 
 [dependencies]

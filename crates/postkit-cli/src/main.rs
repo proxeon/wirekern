@@ -3,10 +3,11 @@ mod output;
 use clap::{Parser, Subcommand};
 use output::{emit_err, emit_ok, emit_raw};
 use postkit::{
-    valid_name, AccountKey, AppConfig, AppStore, AuthReply, Body, Client, Deadline, Error,
-    FileAppStore, FileVault, Intent, OAuthApp, PostRequest, Registry, Site, Vault,
+    extract_code, query_param, valid_name, AccountKey, AppConfig, AppStore, AuthReply, Body,
+    Client, Deadline, Error, FileAppStore, FileVault, Intent, OAuthApp, PostRequest, Registry,
+    Site, Vault,
 };
-use std::io::{self, Read};
+use std::io::{self, BufRead, IsTerminal, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -261,26 +262,52 @@ async fn dispatch(
                 }
                 client.put_token(&key, &token).await
             } else if let Some(code) = code {
+                let code = extract_code(&code).map_err(|e| fail(&e, json))?;
                 client
                     .auth_finish(&key, AuthReply::Pasted { code })
                     .await
             } else {
                 match client.auth_start(&Site::new(&site)).await {
-                    Ok(start) => {
-                        match start {
-                            postkit::AuthStart::Browser { authorize_url } => {
-                                eprintln!("open: {authorize_url}");
+                    Ok(start) => match start {
+                        postkit::AuthStart::Browser {
+                            authorize_url,
+                            state,
+                        } => {
+                            eprintln!("open: {authorize_url}");
+                            if !io::stdin().is_terminal() {
                                 eprintln!("then: postkit auth {site} --code <code>");
+                                return Ok(());
                             }
-                            postkit::AuthStart::PasteInstructions { hint } => {
-                                eprintln!("{hint}");
+                            eprintln!("paste the redirected URL or code, then Enter");
+                            let mut line = String::new();
+                            io::stdin().lock().read_line(&mut line).map_err(|_| 5)?;
+                            if let Some(got) = query_param(line.trim(), "state") {
+                                if got != state {
+                                    return Err(fail(
+                                        &Error::Auth {
+                                            site: Site::new(&site),
+                                            reason: "state_mismatch".into(),
+                                        },
+                                        json,
+                                    ));
+                                }
                             }
-                            postkit::AuthStart::None => {
-                                eprintln!("this site does not use OAuth; pass --token or --password");
-                            }
+                            let code = extract_code(&line).map_err(|e| fail(&e, json))?;
+                            client
+                                .auth_finish(&key, AuthReply::Pasted { code })
+                                .await
                         }
-                        return Ok(());
-                    }
+                        postkit::AuthStart::PasteInstructions { hint } => {
+                            eprintln!("{hint}");
+                            return Ok(());
+                        }
+                        postkit::AuthStart::None => {
+                            eprintln!(
+                                "this site does not use OAuth; pass --token or --password"
+                            );
+                            return Ok(());
+                        }
+                    },
                     Err(e) => Err(e),
                 }
             };
