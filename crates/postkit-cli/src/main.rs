@@ -7,6 +7,7 @@ use postkit::{
     Client, Deadline, Error, FileAppStore, FileVault, Intent, OAuthApp, PostRequest, Registry,
     Site, Vault,
 };
+use postkit::connectors::threads::validate_text;
 use std::io::{self, BufRead, IsTerminal, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,8 +35,9 @@ struct Cli {
 enum Commands {
     Post {
         site: Option<String>,
-        #[arg(long)]
-        text: Option<String>,
+        /// Repeatable. Two or more on threads = reply chain.
+        #[arg(long, action = clap::ArgAction::Append)]
+        text: Vec<String>,
         /// Comma-separated sites. Same text and --param on each.
         #[arg(long)]
         to: Option<String>,
@@ -390,19 +392,35 @@ async fn dispatch(
                 intent.idempotency_key = idempotency;
                 return one_post(&client, &key, intent, deadline, json).await;
             }
-            let text = match text {
-                Some(t) if t == "-" => {
-                    let mut buf = String::new();
-                    io::stdin().read_to_string(&mut buf).map_err(|_| 5)?;
-                    buf
-                }
-                Some(t) => t,
-                None => {
-                    eprintln!("--text is required (or --stdin)");
-                    return Err(2);
-                }
-            };
+            let texts = resolve_texts(text)?;
             let params = parse_params(&param, json)?;
+            let sites = collect_post_sites(site.as_deref(), to.as_deref())?;
+            if texts.len() > 1 {
+                if let Some(bad) = sites.iter().find(|s| s.as_str() != "threads") {
+                    return Err(fail(
+                        &Error::InvalidPost {
+                            site: Site::new(bad.as_str()),
+                            reason: "thread_unsupported".into(),
+                            limit: None,
+                        },
+                        json,
+                    ));
+                }
+                for t in &texts {
+                    validate_text(t).map_err(|e| fail(&e, json))?;
+                }
+                return chain_threads(
+                    &client,
+                    &account,
+                    &texts,
+                    params,
+                    idempotency,
+                    deadline,
+                    json,
+                )
+                .await;
+            }
+            let text = texts.into_iter().next().expect("resolve_texts");
             if let Some(to) = to {
                 let mut results = Vec::new();
                 let mut code = 0i32;
@@ -435,10 +453,7 @@ async fn dispatch(
                     Err(code)
                 }
             } else {
-                let site = site.ok_or_else(|| {
-                    eprintln!("site or --to is required");
-                    2
-                })?;
+                let site = sites.into_iter().next().expect("collect_post_sites");
                 let key = AccountKey::new(&site, &account);
                 let intent = Intent {
                     site: Site::new(&site),
@@ -451,6 +466,117 @@ async fn dispatch(
         }
         _ => unreachable!(),
     }
+}
+
+fn resolve_texts(text: Vec<String>) -> Result<Vec<String>, i32> {
+    if text.is_empty() {
+        eprintln!("--text is required (or --stdin)");
+        return Err(2);
+    }
+    if text.iter().any(|t| t == "-") {
+        if text.len() != 1 {
+            eprintln!("--text - cannot be combined with other --text");
+            return Err(2);
+        }
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf).map_err(|_| 5)?;
+        return Ok(vec![buf]);
+    }
+    Ok(text)
+}
+
+fn collect_post_sites(site: Option<&str>, to: Option<&str>) -> Result<Vec<String>, i32> {
+    if let Some(to) = to {
+        let sites: Vec<String> = to
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        if sites.is_empty() {
+            eprintln!("site or --to is required");
+            return Err(2);
+        }
+        Ok(sites)
+    } else if let Some(site) = site {
+        Ok(vec![site.to_string()])
+    } else {
+        eprintln!("site or --to is required");
+        Err(2)
+    }
+}
+
+fn with_reply_to(params: &serde_json::Value, id: &str) -> serde_json::Value {
+    let mut p = params.clone();
+    match p {
+        serde_json::Value::Object(ref mut m) => {
+            m.insert(
+                "reply_to_id".into(),
+                serde_json::Value::String(id.to_string()),
+            );
+        }
+        _ => {
+            p = serde_json::json!({ "reply_to_id": id });
+        }
+    }
+    p
+}
+
+async fn chain_threads(
+    client: &Client,
+    account: &str,
+    texts: &[String],
+    params: serde_json::Value,
+    idempotency: Option<String>,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    let key = AccountKey::new("threads", account);
+    let mut results = Vec::new();
+    let mut prev: Option<String> = None;
+    let mut code = 0i32;
+    for (i, text) in texts.iter().enumerate() {
+        let p = if let Some(id) = prev.as_deref() {
+            with_reply_to(&params, id)
+        } else {
+            params.clone()
+        };
+        let intent = Intent {
+            site: Site::new("threads"),
+            params: p,
+            body: Body::Text { text: text.clone() },
+            idempotency_key: if i == 0 { idempotency.clone() } else { None },
+        };
+        match client.publish(&key, intent, deadline).await {
+            Ok(o) => {
+                prev = o.id.clone();
+                if prev.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+                    let e = Error::Platform {
+                        site: Site::new("threads"),
+                        code: "missing_id".into(),
+                        message: "Graph create returned no id".into(),
+                    };
+                    code = e.exit_code();
+                    results.push(serde_json::to_value(postkit::WireError::from(&e)).unwrap());
+                    break;
+                }
+                results.push(serde_json::to_value(&o).unwrap());
+            }
+            Err(e) => {
+                code = e.exit_code();
+                results.push(serde_json::to_value(postkit::WireError::from(&e)).unwrap());
+                break;
+            }
+        }
+    }
+    emit_raw(&serde_json::json!({ "results": results }));
+    if code != 0 {
+        if !json {
+            eprintln!("published {} then failed", results.len().saturating_sub(1));
+        }
+        return Err(code);
+    }
+    Ok(())
 }
 
 async fn one_post(

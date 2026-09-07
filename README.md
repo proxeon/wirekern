@@ -74,6 +74,7 @@ postkit apps         show|set
 
 ```text
 postkit post <site> --text <str> [--param k=v]... [--idempotency <key>]
+postkit post threads --text 'root' --text 'reply'
 postkit post --to threads,bluesky --text <str>
 postkit post --stdin
 ```
@@ -81,10 +82,10 @@ postkit post --stdin
 | Flag | |
 |------|--|
 | `<site>` or `--to a,b` | One site, or same text/`--param` on each. Mixed success → `{ "results": [ … ] }` |
-| `--text` | `Body::Text` |
-| `--param k=v` | `Intent.params` (repeatable). No per-site god flags |
-| `--idempotency` | Passed through; honored only if the platform does |
-| `--stdin` | Raw request JSON. Exclusive with `--text` |
+| `--text` | `Body::Text`. Repeatable on **threads** = reply chain (`reply_to_id`). One `--text` is a single `Outcome`; two or more is `{ "results": [ … ] }`. Other sites: two `--text` → `thread_unsupported` before HTTP. |
+| `--param k=v` | `Intent.params` (repeatable). `--param reply_to_id=` = one reply to an existing post |
+| `--idempotency` | Root segment only on a chain. Honored only if the platform does |
+| `--stdin` | Raw request JSON. One body. Exclusive with `--text` |
 
 No `--token` on `post`. Auth writes the vault; `post` reads it.
 

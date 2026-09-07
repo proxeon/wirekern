@@ -199,7 +199,20 @@ Later posts reuse the vault. No browser:
 pk post threads --text 'hello' --json
 ```
 
-Text limit: **500 UTF-8 bytes**. Empty text is rejected.
+Text limit: **500 UTF-8 bytes** per post. Empty text is rejected.
+
+Reply chain (not a carousel). Repeat `--text`; each line is one Graph post. Segment 2+ send `reply_to_id` of the previous id. Not atomic: if a later segment fails, earlier posts stay live (delete in the Threads app). `--to` + two `--text` is refused (`thread_unsupported`).
+
+```bash
+pk post threads --json --text 'root' --text '1/' --text '2/'
+# { "results": [ { "id": "A", … }, { "id": "B", … }, { "id": "C", … } ] }
+```
+
+One reply to an existing post:
+
+```bash
+pk post threads --text 'reply' --param reply_to_id=A --json
+```
 
 Client refreshes the long-lived token when `expires_at` is within 7 days **and** last refresh is ≥24h. If 60 days pass with no refresh, run `auth` again.
 

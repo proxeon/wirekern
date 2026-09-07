@@ -83,7 +83,17 @@ impl Publisher for Threads {
         validate_text(text)?;
         let token = access_token(creds)?;
         let user_id = path_user_id(&intent, creds);
-        post_text(&self.http, &self.base, token, &user_id, text, deadline).await
+        let reply_to = reply_to_id(&intent.params)?;
+        post_text(
+            &self.http,
+            &self.base,
+            token,
+            &user_id,
+            text,
+            reply_to.as_deref(),
+            deadline,
+        )
+        .await
     }
 
     async fn whoami(&self, _app: &AppConfig, creds: &AccountCreds) -> Result<WhoAmI, Error> {
@@ -190,25 +200,52 @@ pub fn validate_text(text: &str) -> Result<(), Error> {
     Ok(())
 }
 
+pub fn text_form_pairs<'a>(
+    text: &'a str,
+    reply_to: Option<&'a str>,
+    access_token: &'a str,
+) -> Vec<(&'a str, &'a str)> {
+    let mut pairs = vec![
+        ("media_type", "TEXT"),
+        ("text", text),
+        ("auto_publish_text", "true"),
+    ];
+    if let Some(id) = reply_to {
+        pairs.push(("reply_to_id", id));
+    }
+    pairs.push(("access_token", access_token));
+    pairs
+}
+
+pub fn reply_to_id(params: &Value) -> Result<Option<String>, Error> {
+    match params.get("reply_to_id") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.is_empty() => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(Error::InvalidPost {
+            site: Site::new(SITE),
+            reason: "reply_to_id".into(),
+            limit: None,
+        }),
+    }
+}
+
 pub async fn post_text(
     http: &Http,
     base: &str,
     access_token: &str,
     user_id: &str,
     text: &str,
+    reply_to: Option<&str>,
     deadline: Deadline,
 ) -> Result<Outcome, Error> {
     let site = Site::new(SITE);
     let url = format!("{}/{}/threads", base.trim_end_matches('/'), user_id);
+    let pairs = text_form_pairs(text, reply_to, access_token);
     let req = http.post(&url).header(
         "Content-Type",
         "application/x-www-form-urlencoded",
-    ).body(form(&[
-        ("media_type", "TEXT"),
-        ("text", text),
-        ("auto_publish_text", "true"),
-        ("access_token", access_token),
-    ]));
+    ).body(form(&pairs));
     let resp = http.send(req, deadline, &site).await?;
     let created = read_json(resp, &site).await?;
     let id = created
@@ -543,6 +580,91 @@ mod tests {
         let ok = "é".repeat(250);
         assert_eq!(ok.as_bytes().len(), 500);
         validate_text(&ok).unwrap();
+    }
+
+    #[test]
+    fn form_pairs_root_has_no_reply_to() {
+        let pairs = text_form_pairs("hello", None, "tok");
+        assert!(!pairs.iter().any(|(k, _)| *k == "reply_to_id"));
+        assert!(pairs.contains(&("media_type", "TEXT")));
+        assert!(pairs.contains(&("auto_publish_text", "true")));
+        assert!(pairs.contains(&("text", "hello")));
+    }
+
+    #[test]
+    fn form_pairs_includes_reply_to() {
+        let pairs = text_form_pairs("reply", Some("17900"), "tok");
+        assert!(pairs.contains(&("reply_to_id", "17900")));
+        let keys: Vec<_> = pairs.iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "media_type",
+                "text",
+                "auto_publish_text",
+                "reply_to_id",
+                "access_token"
+            ]
+        );
+    }
+
+    #[test]
+    fn reply_to_id_missing_empty_or_string() {
+        assert_eq!(reply_to_id(&json!({})).unwrap(), None);
+        assert_eq!(reply_to_id(&json!({ "reply_to_id": null })).unwrap(), None);
+        assert_eq!(reply_to_id(&json!({ "reply_to_id": "" })).unwrap(), None);
+        assert_eq!(
+            reply_to_id(&json!({ "reply_to_id": "17900" })).unwrap().as_deref(),
+            Some("17900")
+        );
+        let err = reply_to_id(&json!({ "reply_to_id": 17900 })).unwrap_err();
+        assert!(matches!(err, Error::InvalidPost { reason, .. } if reason == "reply_to_id"));
+    }
+
+    #[tokio::test]
+    async fn reply_to_id_publish_ok() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads");
+            then.status(200).json_body(json!({ "id": "B" }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
+        let mut intent = text_intent("reply");
+        intent.params = json!({ "reply_to_id": "A" });
+        let out = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                intent,
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        create.assert();
+        assert_eq!(out.id.as_deref(), Some("B"));
+    }
+
+    #[tokio::test]
+    async fn reply_to_id_non_string_no_http() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads");
+            then.status(200).json_body(json!({ "id": "x" }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
+        let mut intent = text_intent("reply");
+        intent.params = json!({ "reply_to_id": true });
+        let err = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                intent,
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidPost { reason, .. } if reason == "reply_to_id"));
+        create.assert_hits(0);
     }
 
     #[tokio::test]
