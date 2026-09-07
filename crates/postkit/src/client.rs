@@ -85,7 +85,7 @@ impl Client {
 
     pub async fn auth_start(&self, site: &Site) -> Result<AuthStart, Error> {
         let publisher = self.publisher(site)?;
-        let app = self.apps.get(site)?;
+        let app = self.apps.get(site).unwrap_or_else(|_| empty_app(site));
         publisher.auth_start(&app).await
     }
 
@@ -95,7 +95,10 @@ impl Client {
         reply: AuthReply,
     ) -> Result<WhoAmI, Error> {
         let publisher = self.publisher(&key.site)?;
-        let app = self.apps.get(&key.site)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
         let creds = publisher.auth_finish(&app, reply).await?;
         self.vault.put(key, &creds)?;
         publisher.whoami(&app, &creds).await

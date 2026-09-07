@@ -1,7 +1,7 @@
 use crate::apps::{AppStore, MemoryAppStore};
 use crate::client::Client;
 use crate::error::Error;
-use crate::publisher::{AuthKind, Publisher};
+use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
 use crate::types::{
     AccountCreds, AccountKey, AppConfig, Body, Capability, Deadline, Intent, Outcome, Site,
@@ -71,6 +71,34 @@ impl Publisher for MockPub {
             id: "user-1".into(),
             handle: Some("tester".into()),
         })
+    }
+
+    async fn auth_start(&self, _app: &AppConfig) -> Result<AuthStart, Error> {
+        Ok(AuthStart::PasteInstructions {
+            hint: "app password".into(),
+        })
+    }
+
+    async fn auth_finish(
+        &self,
+        _app: &AppConfig,
+        reply: AuthReply,
+    ) -> Result<AccountCreds, Error> {
+        match reply {
+            AuthReply::AppPassword {
+                identifier,
+                secret,
+                pds,
+            } => Ok(AccountCreds::AppPassword {
+                identifier,
+                secret,
+                pds,
+            }),
+            _ => Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "unsupported_auth".into(),
+            }),
+        }
     }
 
     async fn refresh(
@@ -202,6 +230,50 @@ async fn retries_once_on_token_expired() {
         .await
         .unwrap();
     assert_eq!(out.id.as_deref(), Some("id-hi"));
+}
+
+#[tokio::test]
+async fn auth_start_without_app_config() {
+    let mut reg = Registry::new();
+    reg.register(Arc::new(MockPub::text("bluesky")));
+    let c = Client::new(
+        reg,
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let start = c.auth_start(&Site::new("bluesky")).await.unwrap();
+    assert!(matches!(start, AuthStart::PasteInstructions { .. }));
+}
+
+#[tokio::test]
+async fn auth_finish_without_app_config() {
+    let mut reg = Registry::new();
+    reg.register(Arc::new(MockPub::text("bluesky")));
+    let vault = Arc::new(MemoryVault::new());
+    let c = Client::new(
+        reg,
+        vault.clone(),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let key = AccountKey::new("bluesky", "you.bsky.social");
+    let me = c
+        .auth_finish(
+            &key,
+            AuthReply::AppPassword {
+                identifier: "you.bsky.social".into(),
+                secret: "xxxx-xxxx".into(),
+                pds: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(me.handle.as_deref(), Some("tester"));
+    match vault.get(&key).unwrap() {
+        AccountCreds::AppPassword { identifier, .. } => {
+            assert_eq!(identifier, "you.bsky.social");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[tokio::test]

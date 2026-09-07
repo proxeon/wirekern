@@ -352,8 +352,15 @@ fn bluesky_feature_excludes_oauth() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apps::MemoryAppStore;
+    use crate::client::Client;
+    use crate::publisher::AuthReply;
+    use crate::registry::Registry;
+    use crate::types::AccountKey;
+    use crate::vault::{MemoryVault, Vault};
     use httpmock::prelude::*;
     use serde_json::json;
+    use std::sync::Arc;
 
     fn pw_creds() -> AccountCreds {
         AccountCreds::AppPassword {
@@ -411,6 +418,36 @@ mod tests {
         let ok = "é".repeat(300);
         assert_eq!(ok.graphemes(true).count(), 300);
         validate_text(&ok).unwrap();
+    }
+
+    #[tokio::test]
+    async fn client_auth_finish_without_app_file() {
+        let server = MockServer::start();
+        session_ok(&server);
+        session_ok(&server);
+        let mut reg = Registry::new();
+        reg.register(Arc::new(Bluesky::with_pds(server.base_url()).unwrap()));
+        let vault = Arc::new(MemoryVault::new());
+        let c = Client::new(reg, vault.clone(), Arc::new(MemoryAppStore::new()));
+        let key = AccountKey::new(SITE, "you.bsky.social");
+        let me = c
+            .auth_finish(
+                &key,
+                AuthReply::AppPassword {
+                    identifier: "you.bsky.social".into(),
+                    secret: "xxxx-xxxx".into(),
+                    pds: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(me.handle.as_deref(), Some("you.bsky.social"));
+        match vault.get(&key).unwrap() {
+            AccountCreds::AppPassword { identifier, .. } => {
+                assert_eq!(identifier, "you.bsky.social");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[tokio::test]
