@@ -117,11 +117,7 @@ impl Publisher for Threads {
         })
     }
 
-    async fn auth_finish(
-        &self,
-        app: &AppConfig,
-        reply: AuthReply,
-    ) -> Result<AccountCreds, Error> {
+    async fn auth_finish(&self, app: &AppConfig, reply: AuthReply) -> Result<AccountCreds, Error> {
         let oauth = require_oauth(app)?;
         let raw = match reply {
             AuthReply::Pasted { code } => code,
@@ -159,18 +155,11 @@ impl Publisher for Threads {
         .await
     }
 
-    async fn refresh(
-        &self,
-        _app: &AppConfig,
-        creds: &AccountCreds,
-    ) -> Result<AccountCreds, Error> {
+    async fn refresh(&self, _app: &AppConfig, creds: &AccountCreds) -> Result<AccountCreds, Error> {
         let token = access_token(creds)?;
         let user_id = extra_user_id(creds);
         let deadline = Deadline::from_secs(30);
-        let q = crate::oauth::form(&[
-            ("grant_type", "th_refresh_token"),
-            ("access_token", token),
-        ]);
+        let q = crate::oauth::form(&[("grant_type", "th_refresh_token"), ("access_token", token)]);
         let url = format!("{}/refresh_access_token?{q}", self.graph_origin);
         let resp = self
             .http
@@ -243,10 +232,10 @@ pub async fn post_text(
     let site = Site::new(SITE);
     let url = format!("{}/{}/threads", base.trim_end_matches('/'), user_id);
     let pairs = text_form_pairs(text, reply_to, access_token);
-    let req = http.post(&url).header(
-        "Content-Type",
-        "application/x-www-form-urlencoded",
-    ).body(form(&pairs));
+    let req = http
+        .post(&url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(form(&pairs));
     let resp = http.send(req, deadline, &site).await?;
     let created = read_json(resp, &site).await?;
     let created_id = created
@@ -322,11 +311,7 @@ async fn publish_container(
     deadline: Deadline,
 ) -> Result<String, Error> {
     let site = Site::new(SITE);
-    let url = format!(
-        "{}/{}/threads_publish",
-        base.trim_end_matches('/'),
-        user_id
-    );
+    let url = format!("{}/{}/threads_publish", base.trim_end_matches('/'), user_id);
     let mut last: Option<Error> = None;
     loop {
         if let Err(e) = deadline.check(&site) {
@@ -622,9 +607,7 @@ mod tests {
         Intent {
             site: Site::new(SITE),
             params: json!({}),
-            body: Body::Text {
-                text: text.into(),
-            },
+            body: Body::Text { text: text.into() },
             idempotency_key: None,
         }
     }
@@ -694,7 +677,9 @@ mod tests {
         assert_eq!(reply_to_id(&json!({ "reply_to_id": null })).unwrap(), None);
         assert_eq!(reply_to_id(&json!({ "reply_to_id": "" })).unwrap(), None);
         assert_eq!(
-            reply_to_id(&json!({ "reply_to_id": "17900" })).unwrap().as_deref(),
+            reply_to_id(&json!({ "reply_to_id": "17900" }))
+                .unwrap()
+                .as_deref(),
             Some("17900")
         );
         let err = reply_to_id(&json!({ "reply_to_id": 17900 })).unwrap_err();
@@ -761,8 +746,9 @@ mod tests {
         });
         let get = server.mock(|when, then| {
             when.method(GET).path("/v1.0/17900");
-            then.status(200)
-                .json_body(json!({ "id": "17900", "permalink": "https://www.threads.net/@x/post/abc" }));
+            then.status(200).json_body(
+                json!({ "id": "17900", "permalink": "https://www.threads.net/@x/post/abc" }),
+            );
         });
         let publish = server.mock(|when, then| {
             when.method(POST).path("/v1.0/me/threads_publish");
@@ -823,12 +809,7 @@ mod tests {
         let mut reply = text_intent("reply");
         reply.params = json!({ "reply_to_id": root.id.clone().unwrap() });
         let out = t
-            .publish(
-                &empty_app(),
-                &token_creds(),
-                reply,
-                Deadline::from_secs(30),
-            )
+            .publish(&empty_app(), &token_creds(), reply, Deadline::from_secs(30))
             .await
             .unwrap();
         reply_create.assert();
@@ -880,7 +861,8 @@ mod tests {
         });
         server.mock(|when, then| {
             when.method(GET).path("/v1.0/17900");
-            then.status(500).json_body(json!({ "error": { "message": "down" } }));
+            then.status(500)
+                .json_body(json!({ "error": { "message": "down" } }));
         });
         let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
         let out = t
@@ -978,9 +960,8 @@ mod tests {
                 state,
             } => {
                 assert!(authorize_url.contains("https://threads.net/oauth/authorize"));
-                assert!(authorize_url.contains(
-                    "threads_basic%2Cthreads_content_publish%2Cthreads_manage_replies"
-                ));
+                assert!(authorize_url
+                    .contains("threads_basic%2Cthreads_content_publish%2Cthreads_manage_replies"));
                 assert!(authorize_url.contains("response_type=code"));
                 assert!(!state.is_empty());
                 assert!(authorize_url.contains(&format!("state={state}")));
@@ -1009,11 +990,8 @@ mod tests {
                 "expires_in": 5183944
             }));
         });
-        let t = Threads::with_origins(
-            format!("{}/v1.0", server.base_url()),
-            server.base_url(),
-        )
-        .unwrap();
+        let t = Threads::with_origins(format!("{}/v1.0", server.base_url()), server.base_url())
+            .unwrap();
         let creds = t
             .auth_finish(
                 &oauth_app(),
@@ -1053,11 +1031,8 @@ mod tests {
                 "expires_in": 5183944
             }));
         });
-        let t = Threads::with_origins(
-            format!("{}/v1.0", server.base_url()),
-            server.base_url(),
-        )
-        .unwrap();
+        let t = Threads::with_origins(format!("{}/v1.0", server.base_url()), server.base_url())
+            .unwrap();
         let old = AccountCreds::OAuth2 {
             access_token: "OLD".into(),
             refresh_token: None,

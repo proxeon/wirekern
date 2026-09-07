@@ -37,8 +37,6 @@ impl Registry {
     }
 
     pub fn capabilities_for(&self, site: &Site) -> Option<Vec<Capability>> {
-        self.inner
-            .get(site)
-            .map(|p| p.capabilities().to_vec())
+        self.inner.get(site).map(|p| p.capabilities().to_vec())
     }
 }

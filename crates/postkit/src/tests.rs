@@ -4,8 +4,7 @@ use crate::error::Error;
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
 use crate::types::{
-    AccountCreds, AccountKey, AppConfig, Body, Capability, Deadline, Intent, Outcome, Site,
-    WhoAmI,
+    AccountCreds, AccountKey, AppConfig, Body, Capability, Deadline, Intent, Outcome, Site, WhoAmI,
 };
 use crate::vault::{MemoryVault, Vault};
 use async_trait::async_trait;
@@ -79,11 +78,7 @@ impl Publisher for MockPub {
         })
     }
 
-    async fn auth_finish(
-        &self,
-        _app: &AppConfig,
-        reply: AuthReply,
-    ) -> Result<AccountCreds, Error> {
+    async fn auth_finish(&self, _app: &AppConfig, reply: AuthReply) -> Result<AccountCreds, Error> {
         match reply {
             AuthReply::AppPassword {
                 identifier,
@@ -101,11 +96,7 @@ impl Publisher for MockPub {
         }
     }
 
-    async fn refresh(
-        &self,
-        _app: &AppConfig,
-        creds: &AccountCreds,
-    ) -> Result<AccountCreds, Error> {
+    async fn refresh(&self, _app: &AppConfig, creds: &AccountCreds) -> Result<AccountCreds, Error> {
         match creds {
             AccountCreds::OAuth2 { extra, .. } => Ok(AccountCreds::OAuth2 {
                 access_token: "refreshed".into(),
@@ -250,11 +241,7 @@ async fn auth_finish_without_app_config() {
     let mut reg = Registry::new();
     reg.register(Arc::new(MockPub::text("bluesky")));
     let vault = Arc::new(MemoryVault::new());
-    let c = Client::new(
-        reg,
-        vault.clone(),
-        Arc::new(MemoryAppStore::new()),
-    );
+    let c = Client::new(reg, vault.clone(), Arc::new(MemoryAppStore::new()));
     let key = AccountKey::new("bluesky", "you.bsky.social");
     let me = c
         .auth_finish(

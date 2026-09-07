@@ -138,7 +138,6 @@ impl From<&Error> for WireError {
 }
 
 impl WireError {
-
     /// 009 exit table. 0 is success (not this type).
     pub fn exit_code(&self) -> i32 {
         match self {

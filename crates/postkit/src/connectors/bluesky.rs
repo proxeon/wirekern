@@ -55,16 +55,11 @@ impl Publisher for Bluesky {
 
     async fn auth_start(&self, _app: &AppConfig) -> Result<AuthStart, Error> {
         Ok(AuthStart::PasteInstructions {
-            hint: "app password (not account password); identifier is --account (handle)"
-                .into(),
+            hint: "app password (not account password); identifier is --account (handle)".into(),
         })
     }
 
-    async fn auth_finish(
-        &self,
-        _app: &AppConfig,
-        reply: AuthReply,
-    ) -> Result<AccountCreds, Error> {
+    async fn auth_finish(&self, _app: &AppConfig, reply: AuthReply) -> Result<AccountCreds, Error> {
         let AuthReply::AppPassword {
             identifier,
             secret,
@@ -91,8 +86,14 @@ impl Publisher for Bluesky {
             .clone()
             .unwrap_or_else(|| pds.trim_end_matches('/').to_string());
         // Prove the app password works; do not vault JWTs.
-        let _ = create_session(&self.http, &pds, &identifier, &secret, Deadline::from_secs(30))
-            .await?;
+        let _ = create_session(
+            &self.http,
+            &pds,
+            &identifier,
+            &secret,
+            Deadline::from_secs(30),
+        )
+        .await?;
         Ok(AccountCreds::AppPassword {
             identifier,
             secret,
@@ -127,8 +128,8 @@ impl Publisher for Bluesky {
     async fn whoami(&self, _app: &AppConfig, creds: &AccountCreds) -> Result<WhoAmI, Error> {
         let (pds, identifier, secret) = app_password(creds)?;
         let pds = self.pds_override.as_deref().unwrap_or(pds);
-        let sess = create_session(&self.http, pds, identifier, secret, Deadline::from_secs(30))
-            .await?;
+        let sess =
+            create_session(&self.http, pds, identifier, secret, Deadline::from_secs(30)).await?;
         Ok(WhoAmI {
             site: self.site.clone(),
             id: sess.did,
@@ -265,7 +266,10 @@ fn app_password(creds: &AccountCreds) -> Result<(&str, &str, &str), Error> {
             secret,
             pds,
         } => {
-            let pds = pds.as_deref().filter(|s| !s.is_empty()).unwrap_or(DEFAULT_PDS);
+            let pds = pds
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(DEFAULT_PDS);
             Ok((pds, identifier, secret))
         }
         _ => Err(Error::Auth {
@@ -304,10 +308,7 @@ fn map_xrpc_error(http_status: u16, body: &str) -> Error {
     let site = Site::new(SITE);
     let v: Value = serde_json::from_str(body).unwrap_or(Value::Null);
     let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("");
-    let message = v
-        .get("message")
-        .and_then(|m| m.as_str())
-        .unwrap_or(body);
+    let message = v.get("message").and_then(|m| m.as_str()).unwrap_or(body);
     if http_status == 401
         || err == "AuthenticationRequired"
         || err == "ExpiredToken"
@@ -374,9 +375,7 @@ mod tests {
         Intent {
             site: Site::new(SITE),
             params: json!({}),
-            body: Body::Text {
-                text: text.into(),
-            },
+            body: Body::Text { text: text.into() },
             idempotency_key: None,
         }
     }

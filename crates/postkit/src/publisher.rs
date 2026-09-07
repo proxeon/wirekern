@@ -18,14 +18,20 @@ pub enum AuthStart {
         authorize_url: String,
         state: String,
     },
-    PasteInstructions { hint: String },
+    PasteInstructions {
+        hint: String,
+    },
     None,
 }
 
 #[derive(Clone, Debug)]
 pub enum AuthReply {
-    Redirect { url: String },
-    Pasted { code: String },
+    Redirect {
+        url: String,
+    },
+    Pasted {
+        code: String,
+    },
     AppPassword {
         identifier: String,
         secret: String,

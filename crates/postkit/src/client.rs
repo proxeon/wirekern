@@ -2,9 +2,7 @@ use crate::apps::AppStore;
 use crate::error::Error;
 use crate::publisher::{AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
-use crate::types::{
-    AccountCreds, AccountKey, AppConfig, Deadline, Intent, Outcome, Site, WhoAmI,
-};
+use crate::types::{AccountCreds, AccountKey, AppConfig, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::vault::Vault;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -78,7 +76,10 @@ impl Client {
 
     pub async fn whoami(&self, key: &AccountKey) -> Result<WhoAmI, Error> {
         let publisher = self.publisher(&key.site)?;
-        let app = self.apps.get(&key.site).unwrap_or_else(|_| empty_app(&key.site));
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
         let creds = self.vault.get(key)?;
         publisher.whoami(&app, &creds).await
     }
@@ -89,11 +90,7 @@ impl Client {
         publisher.auth_start(&app).await
     }
 
-    pub async fn auth_finish(
-        &self,
-        key: &AccountKey,
-        reply: AuthReply,
-    ) -> Result<WhoAmI, Error> {
+    pub async fn auth_finish(&self, key: &AccountKey, reply: AuthReply) -> Result<WhoAmI, Error> {
         let publisher = self.publisher(&key.site)?;
         let app = self
             .apps
@@ -171,6 +168,9 @@ pub fn refresh_is_due(creds: &AccountCreds) -> bool {
     if expires_at.saturating_sub(now) > 7 * 24 * 3600 {
         return false;
     }
-    let refreshed_at = extra.get("refreshed_at").and_then(|v| v.as_u64()).unwrap_or(0);
+    let refreshed_at = extra
+        .get("refreshed_at")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     now.saturating_sub(refreshed_at) >= 24 * 3600
 }

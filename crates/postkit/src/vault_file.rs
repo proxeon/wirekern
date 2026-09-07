@@ -120,7 +120,10 @@ impl AppStore for FileAppStore {
         if !valid_name(site.as_str()) {
             return Err(Error::InvalidName(site.as_str().into()));
         }
-        let path = self.root.join("apps").join(format!("{}.json", site.as_str()));
+        let path = self
+            .root
+            .join("apps")
+            .join(format!("{}.json", site.as_str()));
         let data = fs::read(&path).map_err(|_| Error::Auth {
             site: site.clone(),
             reason: "missing_app_config".into(),
@@ -239,7 +242,10 @@ mod tests {
         v.put(&key, &creds("tok")).unwrap();
         v.delete(&key).unwrap();
         assert!(matches!(v.get(&key).unwrap_err(), Error::UnknownAccount(_)));
-        assert!(matches!(v.delete(&key).unwrap_err(), Error::UnknownAccount(_)));
+        assert!(matches!(
+            v.delete(&key).unwrap_err(),
+            Error::UnknownAccount(_)
+        ));
     }
 
     #[test]
@@ -268,7 +274,10 @@ mod tests {
         v.put(&AccountKey::new("bluesky", "you"), &creds("t"))
             .unwrap();
         fs::write(
-            tmp.path().join("accounts").join("threads").join("notes.txt"),
+            tmp.path()
+                .join("accounts")
+                .join("threads")
+                .join("notes.txt"),
             "ignore me",
         )
         .unwrap();
@@ -307,7 +316,12 @@ mod tests {
         assert_eq!(mode(&tmp.path().join("accounts")), 0o700);
         assert_eq!(mode(&tmp.path().join("accounts").join("threads")), 0o700);
         assert_eq!(
-            mode(&tmp.path().join("accounts").join("threads").join("default.json")),
+            mode(
+                &tmp.path()
+                    .join("accounts")
+                    .join("threads")
+                    .join("default.json")
+            ),
             0o600
         );
     }
@@ -332,9 +346,7 @@ mod tests {
         assert_eq!(got.oauth.as_ref().unwrap().client_secret, "sec");
 
         let err = apps.get(&Site::new("nosuch")).unwrap_err();
-        assert!(
-            matches!(err, Error::Auth { reason, .. } if reason == "missing_app_config")
-        );
+        assert!(matches!(err, Error::Auth { reason, .. } if reason == "missing_app_config"));
 
         let err = apps
             .put(&AppConfig {

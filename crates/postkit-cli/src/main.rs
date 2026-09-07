@@ -2,18 +2,22 @@ mod output;
 
 use clap::{Parser, Subcommand};
 use output::{emit_err, emit_ok, emit_raw};
+use postkit::connectors::threads::validate_text;
 use postkit::{
     extract_code, query_param, valid_name, AccountKey, AppConfig, AppStore, AuthReply, Body,
     Client, Deadline, Error, FileAppStore, FileVault, Intent, OAuthApp, PostRequest, Registry,
     Site, Vault,
 };
-use postkit::connectors::threads::validate_text;
 use std::io::{self, BufRead, IsTerminal, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
-#[command(name = "postkit", version, about = "Publish to official APIs. BYO credentials.")]
+#[command(
+    name = "postkit",
+    version,
+    about = "Publish to official APIs. BYO credentials."
+)]
 struct Cli {
     /// JSON document on stdout (agents). Human text on stderr otherwise.
     #[arg(long, global = true)]
@@ -147,7 +151,11 @@ async fn run(cli: Cli) -> Result<(), i32> {
             check_name(&site, json)?;
             let apps = FileAppStore::new(&home).map_err(|e| fail(&e, json))?;
             let cfg = apps.get(&Site::new(&site)).map_err(|e| fail(&e, json))?;
-            let id = cfg.oauth.as_ref().map(|o| o.client_id.as_str()).unwrap_or("");
+            let id = cfg
+                .oauth
+                .as_ref()
+                .map(|o| o.client_id.as_str())
+                .unwrap_or("");
             let redir = cfg
                 .oauth
                 .as_ref()
@@ -160,7 +168,9 @@ async fn run(cli: Cli) -> Result<(), i32> {
                     "redirect_uri": redir,
                 }));
             } else {
-                println!("site={site} client_id={id} redirect_uri={redir} client_secret=[redacted]");
+                println!(
+                    "site={site} client_id={id} redirect_uri={redir} client_secret=[redacted]"
+                );
             }
             Ok(())
         }
@@ -293,9 +303,7 @@ async fn dispatch(
                 client.put_token(&key, &token).await
             } else if let Some(code) = code {
                 let code = extract_code(&code).map_err(|e| fail(&e, json))?;
-                client
-                    .auth_finish(&key, AuthReply::Pasted { code })
-                    .await
+                client.auth_finish(&key, AuthReply::Pasted { code }).await
             } else {
                 match client.auth_start(&Site::new(&site)).await {
                     Ok(start) => match start {
@@ -323,9 +331,7 @@ async fn dispatch(
                                 }
                             }
                             let code = extract_code(&line).map_err(|e| fail(&e, json))?;
-                            client
-                                .auth_finish(&key, AuthReply::Pasted { code })
-                                .await
+                            client.auth_finish(&key, AuthReply::Pasted { code }).await
                         }
                         postkit::AuthStart::PasteInstructions { hint } => {
                             eprintln!("{hint}");
@@ -348,9 +354,7 @@ async fn dispatch(
                                 .await
                         }
                         postkit::AuthStart::None => {
-                            eprintln!(
-                                "this site does not use OAuth; pass --token or --password"
-                            );
+                            eprintln!("this site does not use OAuth; pass --token or --password");
                             return Ok(());
                         }
                     },
@@ -442,7 +446,8 @@ async fn dispatch(
                             if code == 0 {
                                 code = e.exit_code();
                             }
-                            results.push(serde_json::to_value(postkit::WireError::from(&e)).unwrap());
+                            results
+                                .push(serde_json::to_value(postkit::WireError::from(&e)).unwrap());
                         }
                     }
                 }
@@ -648,12 +653,8 @@ fn parse_params(param: &[String], json: bool) -> Result<serde_json::Value, i32> 
 
 fn make_client(home: &std::path::Path) -> Result<Client, Error> {
     let mut registry = Registry::new();
-    registry.register(Arc::new(
-        postkit::connectors::threads::Threads::new()?,
-    ));
-    registry.register(Arc::new(
-        postkit::connectors::bluesky::Bluesky::new()?,
-    ));
+    registry.register(Arc::new(postkit::connectors::threads::Threads::new()?));
+    registry.register(Arc::new(postkit::connectors::bluesky::Bluesky::new()?));
     let vault = Arc::new(FileVault::new(home)?);
     let apps = Arc::new(FileAppStore::new(home)?);
     Ok(Client::new(registry, vault, apps))
@@ -693,10 +694,7 @@ mod tests {
     #[test]
     fn resolve_texts_requires_one() {
         assert_eq!(resolve_texts(vec![]).unwrap_err(), 2);
-        assert_eq!(
-            resolve_texts(vec!["a".into(), "-".into()]).unwrap_err(),
-            2
-        );
+        assert_eq!(resolve_texts(vec!["a".into(), "-".into()]).unwrap_err(), 2);
         assert_eq!(
             resolve_texts(vec!["root".into(), "reply".into()]).unwrap(),
             vec!["root", "reply"]
