@@ -14,11 +14,10 @@ cargo test -p postkit
 cargo run -p postkit-cli -- --help
 ```
 
-Lib default features are empty. CLI enables `vault-file` (`~/.postkit`, 0700/0600). No Graph connector in this scaffold — `postkit post threads` returns `unknown_site` until feature `threads` lands.
+Lib default features are empty. CLI enables `vault-file` and `threads` (`~/.postkit`, 0700/0600).
 
 ```bash
-postkit apps set threads --client-id ID --client-secret SEC --redirect-uri https://localhost/callback
-postkit auth threads --token THQVJ…   # needs a registered Publisher
+postkit auth threads --token THQVJ… --json
 postkit post threads --text "hi" --json
 ```
 

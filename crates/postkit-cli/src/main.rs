@@ -423,7 +423,10 @@ fn parse_params(param: &[String], json: bool) -> Result<serde_json::Value, i32> 
 }
 
 fn make_client(home: &std::path::Path) -> Result<Client, Error> {
-    let registry = Registry::new();
+    let mut registry = Registry::new();
+    registry.register(Arc::new(
+        postkit::connectors::threads::Threads::new()?,
+    ));
     let vault = Arc::new(FileVault::new(home)?);
     let apps = Arc::new(FileAppStore::new(home)?);
     Ok(Client::new(registry, vault, apps))

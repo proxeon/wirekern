@@ -13,6 +13,14 @@ mod vault;
 #[cfg(feature = "vault-file")]
 mod vault_file;
 
+#[cfg(feature = "client")]
+mod http;
+#[cfg(feature = "client")]
+pub use http::Http;
+
+#[cfg(feature = "threads")]
+pub mod connectors;
+
 pub use apps::{env_override, AppStore, MemoryAppStore};
 pub use client::{refresh_is_due, Client};
 pub use error::{Error, WireError};

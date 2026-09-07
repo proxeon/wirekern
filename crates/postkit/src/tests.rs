@@ -157,6 +157,31 @@ async fn unknown_account() {
 }
 
 #[tokio::test]
+async fn publish_without_app_config() {
+    let mut reg = Registry::new();
+    reg.register(Arc::new(MockPub::text("threads")));
+    let vault = Arc::new(MemoryVault::new());
+    let apps = Arc::new(MemoryAppStore::new());
+    let key = AccountKey::new("threads", "default");
+    vault
+        .put(
+            &key,
+            &AccountCreds::OAuth2 {
+                access_token: "tok".into(),
+                refresh_token: None,
+                extra: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    let c = Client::new(reg, vault, apps);
+    let out = c
+        .publish(&key, intent("threads", "hi"), Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(out.id.as_deref(), Some("id-hi"));
+}
+
+#[tokio::test]
 async fn happy_publish() {
     let (c, key) = setup(MockPub::text("threads"));
     let out = c

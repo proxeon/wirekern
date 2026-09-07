@@ -57,7 +57,10 @@ impl Client {
                 need,
             });
         }
-        let app = self.apps.get(&key.site)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
         creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
         match publisher

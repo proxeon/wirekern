@@ -16,7 +16,7 @@ default = []
 vault-file = []
 client = ["dep:reqwest"]
 oauth = ["client"]
-threads = ["client", "oauth"]
+threads = ["client"]
 bluesky = ["client"]
 
 [dependencies]
@@ -29,3 +29,4 @@ reqwest = { workspace = true, optional = true }
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }
+httpmock = "0.7"
