@@ -33,3 +33,4 @@ tokio = { workspace = true, optional = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 httpmock = "0.7"
+tempfile = "3"

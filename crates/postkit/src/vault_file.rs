@@ -32,6 +32,20 @@ impl FileVault {
             .join(key.site.as_str())
             .join(format!("{}.json", key.name)))
     }
+
+    /// `create_dir_all` leaves intermediates (e.g. `accounts/`) on umask
+    /// perms; tighten every dir from `dir` up to the vault root.
+    fn ensure_dir_under_root(&self, dir: &Path) -> Result<(), Error> {
+        ensure_dir(dir)?;
+        let mut cur = dir;
+        while cur != self.root {
+            cur = cur
+                .parent()
+                .ok_or_else(|| std::io::Error::other("vault dir has no parent"))?;
+            set_mode(cur, 0o700)?;
+        }
+        Ok(())
+    }
 }
 
 impl Vault for FileVault {
@@ -44,7 +58,7 @@ impl Vault for FileVault {
     fn put(&self, key: &AccountKey, creds: &AccountCreds) -> Result<(), Error> {
         let path = self.account_path(key)?;
         if let Some(parent) = path.parent() {
-            ensure_dir(parent)?;
+            self.ensure_dir_under_root(parent)?;
         }
         atomic_write(&path, &serde_json::to_vec_pretty(creds)?)?;
         Ok(())
@@ -163,4 +177,173 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), Error> {
         let _ = (path, mode);
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "vault-file"))]
+mod tests {
+    use super::*;
+    use crate::types::AccountCreds;
+    use crate::types::OAuthApp;
+    use serde_json::json;
+
+    fn creds(tok: &str) -> AccountCreds {
+        AccountCreds::OAuth2 {
+            access_token: tok.into(),
+            refresh_token: None,
+            extra: json!({}),
+        }
+    }
+
+    fn token_of(c: &AccountCreds) -> &str {
+        match c {
+            AccountCreds::OAuth2 { access_token, .. } => access_token,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn put_get_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        let key = AccountKey::new("threads", "default");
+        v.put(&key, &creds("tok")).unwrap();
+        assert_eq!(token_of(&v.get(&key).unwrap()), "tok");
+    }
+
+    #[test]
+    fn overwrite_replaces_creds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        let key = AccountKey::new("threads", "default");
+        v.put(&key, &creds("one")).unwrap();
+        v.put(&key, &creds("two")).unwrap();
+        assert_eq!(token_of(&v.get(&key).unwrap()), "two");
+        let dir = tmp.path().join("accounts").join("threads");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn get_missing_is_unknown_account() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        let key = AccountKey::new("threads", "default");
+        let err = v.get(&key).unwrap_err();
+        assert!(matches!(err, Error::UnknownAccount(k) if k == key));
+    }
+
+    #[test]
+    fn delete_removes_and_missing_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        let key = AccountKey::new("threads", "default");
+        v.put(&key, &creds("tok")).unwrap();
+        v.delete(&key).unwrap();
+        assert!(matches!(v.get(&key).unwrap_err(), Error::UnknownAccount(_)));
+        assert!(matches!(v.delete(&key).unwrap_err(), Error::UnknownAccount(_)));
+    }
+
+    #[test]
+    fn invalid_names_rejected_before_any_io() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        let err = v
+            .put(&AccountKey::new("threads", "../escape"), &creds("t"))
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidName(n) if n == "../escape"));
+        let err = v
+            .put(&AccountKey::new("a/b", "default"), &creds("t"))
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidName(n) if n == "a/b"));
+        assert!(!tmp.path().join("accounts").exists());
+    }
+
+    #[test]
+    fn list_filters_sites_and_skips_non_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        v.put(&AccountKey::new("threads", "work"), &creds("t"))
+            .unwrap();
+        v.put(&AccountKey::new("threads", "default"), &creds("t"))
+            .unwrap();
+        v.put(&AccountKey::new("bluesky", "you"), &creds("t"))
+            .unwrap();
+        fs::write(
+            tmp.path().join("accounts").join("threads").join("notes.txt"),
+            "ignore me",
+        )
+        .unwrap();
+
+        let all = v.list(None).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0], AccountKey::new("bluesky", "you"));
+        assert_eq!(all[1], AccountKey::new("threads", "default"));
+        assert_eq!(all[2], AccountKey::new("threads", "work"));
+
+        let threads: Vec<_> = v
+            .list(Some(&Site::new("threads")))
+            .unwrap()
+            .into_iter()
+            .map(|k| k.name)
+            .collect();
+        assert_eq!(threads, vec!["default", "work"]);
+    }
+
+    #[test]
+    fn list_missing_accounts_dir_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path().join("nested")).unwrap();
+        assert!(v.list(None).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_file_and_dir_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        v.put(&AccountKey::new("threads", "default"), &creds("t"))
+            .unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&tmp.path().join("accounts")), 0o700);
+        assert_eq!(mode(&tmp.path().join("accounts").join("threads")), 0o700);
+        assert_eq!(
+            mode(&tmp.path().join("accounts").join("threads").join("default.json")),
+            0o600
+        );
+    }
+
+    // Site name avoids POSTKIT_* env_override collisions in FileAppStore::get.
+    #[test]
+    fn app_store_roundtrip_missing_and_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let apps = FileAppStore::new(tmp.path()).unwrap();
+        let site = Site::new("ztests");
+        apps.put(&AppConfig {
+            site: site.clone(),
+            oauth: Some(OAuthApp {
+                client_id: "id".into(),
+                client_secret: "sec".into(),
+                redirect_uri: "https://localhost/callback".into(),
+            }),
+            extra: json!({}),
+        })
+        .unwrap();
+        let got = apps.get(&site).unwrap();
+        assert_eq!(got.oauth.as_ref().unwrap().client_secret, "sec");
+
+        let err = apps.get(&Site::new("nosuch")).unwrap_err();
+        assert!(
+            matches!(err, Error::Auth { reason, .. } if reason == "missing_app_config")
+        );
+
+        let err = apps
+            .put(&AppConfig {
+                site: Site::new("a/b"),
+                oauth: None,
+                extra: json!({}),
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidName(n) if n == "a/b"));
+        assert!(!tmp.path().join("apps").join("a").exists());
+    }
 }
