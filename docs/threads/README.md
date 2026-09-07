@@ -118,7 +118,7 @@ Reload App roles. Pending should clear.
 
 ## 5. Store credentials
 
-Repo-root `.env` (gitignored). Names the CLI already reads if they are in the **process** environment:
+Repo-root `.env` (gitignored). Copy from [`.env.example`](../../.env.example). Names the CLI already reads if they are in the **process** environment:
 
 ```bash
 POSTKIT_THREADS_CLIENT_ID=
