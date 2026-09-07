@@ -446,7 +446,7 @@ async fn dispatch(
                         }
                     }
                 }
-                emit_raw(&serde_json::json!({ "results": results }));
+                print_results(&results, json);
                 if code == 0 {
                     Ok(())
                 } else {
@@ -573,7 +573,7 @@ async fn chain_threads(
             }
         }
     }
-    emit_raw(&serde_json::json!({ "results": results }));
+    print_results(&results, json);
     if code != 0 {
         if !json {
             eprintln!("published {} then failed", results.len().saturating_sub(1));
@@ -603,6 +603,29 @@ async fn one_post(
         }
         Err(e) => Err(fail(&e, json)),
     }
+}
+
+/// `--json` prints `{ "results": [...] }`; human mode one line per result.
+fn print_results(results: &[serde_json::Value], json: bool) {
+    if json {
+        emit_raw(&serde_json::json!({ "results": results }));
+    } else {
+        for r in results {
+            println!("{}", result_line(r));
+        }
+    }
+}
+
+fn result_line(v: &serde_json::Value) -> String {
+    if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+        let site = v.get("site").and_then(|s| s.as_str()).unwrap_or("-");
+        let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("");
+        return format!("{err} {site} {reason}").trim_end().into();
+    }
+    let site = v.get("site").and_then(|s| s.as_str()).unwrap_or("-");
+    let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("-");
+    let url = v.get("url").and_then(|u| u.as_str()).unwrap_or("");
+    format!("{site} {id} {url}").trim_end().into()
 }
 
 fn parse_params(param: &[String], json: bool) -> Result<serde_json::Value, i32> {
@@ -712,5 +735,17 @@ mod tests {
         assert_eq!(p["reply_to_id"], "A");
         let p = with_reply_to(&serde_json::json!({}), "B");
         assert_eq!(p["reply_to_id"], "B");
+    }
+
+    #[test]
+    fn result_line_matches_outcome_and_wire_error() {
+        let ok = serde_json::json!({ "site": "threads", "id": "9", "url": "https://x/1" });
+        assert_eq!(result_line(&ok), "threads 9 https://x/1");
+        let no_url = serde_json::json!({ "site": "bluesky", "id": "at://x" });
+        assert_eq!(result_line(&no_url), "bluesky at://x");
+        let err = serde_json::json!({ "error": "invalid_post", "site": "threads", "reason": "text_too_long" });
+        assert_eq!(result_line(&err), "invalid_post threads text_too_long");
+        let terse = serde_json::json!({ "error": "rate_limited", "site": "threads" });
+        assert_eq!(result_line(&terse), "rate_limited threads");
     }
 }
