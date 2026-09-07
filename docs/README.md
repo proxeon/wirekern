@@ -8,3 +8,4 @@ Credentials: copy [`.env.example`](../.env.example) to `.env` (gitignored). The 
 |------|------|
 | [threads/](./threads/) | First live Threads post (Meta app, tester, paste-code OAuth, `post`). |
 | [bluesky/](./bluesky/) | First live Bluesky post (handle, app password, `auth` / `post`). |
+| [connectors.md](./connectors.md) | Add a site: 010 §8 checklist (feature flag, httpmock, runbook, CLI register). |
