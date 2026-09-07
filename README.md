@@ -2,9 +2,12 @@
 
 Official-API publish kernel. You bring the app credentials. No calendar.
 
-Rust library + CLI. HTTP later, same JSON. Design: [`design/`](design/).
+Rust library + CLI. HTTP later, same JSON.
 
-Implement from [012](design/012-kernel.md). Threads wire: [009](design/009-threads-runbook.md). Flags: [017](design/017-cli-and-http.md).
+```text
+cargo add postkit
+cargo install postkit-cli
+```
 
 ```text
 cargo test -p postkit
@@ -19,4 +22,4 @@ postkit auth threads --token THQVJ…   # needs a registered Publisher
 postkit post threads --text "hi" --json
 ```
 
-License: MIT OR Apache-2.0.
+License: MIT OR Apache-2.0. Repository: [github.com/proxeon/postkit](https://github.com/proxeon/postkit).

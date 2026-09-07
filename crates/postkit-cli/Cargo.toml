@@ -5,13 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "CLI for postkit. Flags compile to the same JSON as Client."
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["social", "publish", "cli"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "postkit"
 path = "src/main.rs"
 
 [dependencies]
-postkit = { path = "../postkit", features = ["vault-file"] }
+postkit = { version = "0.1.0", path = "../postkit", features = ["vault-file"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }

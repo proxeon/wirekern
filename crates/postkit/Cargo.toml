@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["social", "publish", "threads", "cli"]
+categories = ["api-bindings", "command-line-utilities"]
 
 [features]
 default = []
