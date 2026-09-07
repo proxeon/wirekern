@@ -26,6 +26,11 @@ pub enum AuthStart {
 pub enum AuthReply {
     Redirect { url: String },
     Pasted { code: String },
+    AppPassword {
+        identifier: String,
+        secret: String,
+        pds: Option<String>,
+    },
 }
 
 #[async_trait]

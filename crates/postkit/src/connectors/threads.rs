@@ -116,6 +116,12 @@ impl Publisher for Threads {
         let raw = match reply {
             AuthReply::Pasted { code } => code,
             AuthReply::Redirect { url } => url,
+            AuthReply::AppPassword { .. } => {
+                return Err(Error::Auth {
+                    site: self.site.clone(),
+                    reason: "use_code".into(),
+                });
+            }
         };
         let code = extract_code(&raw)?;
         let deadline = Deadline::from_secs(30);

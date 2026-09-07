@@ -56,7 +56,8 @@ enum Commands {
         code: Option<String>,
         #[arg(long)]
         listen: bool,
-        #[arg(long)]
+        /// Bluesky app password. Omit the value to prompt on a TTY.
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
         password: Option<String>,
     },
     Whoami {
@@ -248,14 +249,41 @@ async fn dispatch(
             token,
             code,
             listen,
-            password: _,
+            password,
         } => {
             if listen {
                 eprintln!("--listen is not implemented in this scaffold; paste the code instead");
                 return Err(2);
             }
             let key = AccountKey::new(&site, &account);
-            let result = if let Some(token) = token {
+            let result = if let Some(password) = password {
+                if token.is_some() || code.is_some() {
+                    eprintln!("--password cannot be combined with --token or --code");
+                    return Err(2);
+                }
+                let secret = if password.is_empty() {
+                    if !io::stdin().is_terminal() {
+                        eprintln!("then: postkit auth {site} --account <handle> --password <app-password>");
+                        return Ok(());
+                    }
+                    eprint!("app password: ");
+                    let mut line = String::new();
+                    io::stdin().lock().read_line(&mut line).map_err(|_| 5)?;
+                    line.trim().to_string()
+                } else {
+                    password
+                };
+                client
+                    .auth_finish(
+                        &key,
+                        AuthReply::AppPassword {
+                            identifier: account.clone(),
+                            secret,
+                            pds: None,
+                        },
+                    )
+                    .await
+            } else if let Some(token) = token {
                 if code.is_some() {
                     eprintln!("--token and --code are mutually exclusive");
                     return Err(2);
@@ -299,7 +327,23 @@ async fn dispatch(
                         }
                         postkit::AuthStart::PasteInstructions { hint } => {
                             eprintln!("{hint}");
-                            return Ok(());
+                            if !io::stdin().is_terminal() {
+                                eprintln!("then: postkit auth {site} --account <handle> --password <app-password>");
+                                return Ok(());
+                            }
+                            eprint!("app password: ");
+                            let mut line = String::new();
+                            io::stdin().lock().read_line(&mut line).map_err(|_| 5)?;
+                            client
+                                .auth_finish(
+                                    &key,
+                                    AuthReply::AppPassword {
+                                        identifier: account.clone(),
+                                        secret: line.trim().to_string(),
+                                        pds: None,
+                                    },
+                                )
+                                .await
                         }
                         postkit::AuthStart::None => {
                             eprintln!(
@@ -453,6 +497,9 @@ fn make_client(home: &std::path::Path) -> Result<Client, Error> {
     let mut registry = Registry::new();
     registry.register(Arc::new(
         postkit::connectors::threads::Threads::new()?,
+    ));
+    registry.register(Arc::new(
+        postkit::connectors::bluesky::Bluesky::new()?,
     ));
     let vault = Arc::new(FileVault::new(home)?);
     let apps = Arc::new(FileAppStore::new(home)?);

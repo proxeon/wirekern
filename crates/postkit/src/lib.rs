@@ -23,7 +23,7 @@ mod oauth;
 #[cfg(feature = "oauth")]
 pub use oauth::{authorize_url, exchange_code, extract_code, query_param, TokenResponse};
 
-#[cfg(feature = "threads")]
+#[cfg(any(feature = "threads", feature = "bluesky"))]
 pub mod connectors;
 
 pub use apps::{env_override, AppStore, MemoryAppStore};
