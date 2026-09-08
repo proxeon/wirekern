@@ -290,10 +290,10 @@ async fn dispatch(
                         eprintln!("then: postkit auth {site} --account <handle> --password <app-password>");
                         return Ok(());
                     }
-                    eprint!("app password: ");
-                    let mut line = String::new();
-                    io::stdin().lock().read_line(&mut line).map_err(|_| 5)?;
-                    line.trim().to_string()
+                    // Echo suppressed: an app password is a full
+                    // account-access credential and must not land in the
+                    // terminal scrollback, capture panes or screen-shares.
+                    rpassword::prompt_password("app password: ").map_err(|_| 5)?
                 } else {
                     password
                 };
@@ -341,15 +341,16 @@ async fn dispatch(
                                 eprintln!("then: postkit auth {site} --account <handle> --password <app-password>");
                                 return Ok(());
                             }
-                            eprint!("app password: ");
-                            let mut line = String::new();
-                            io::stdin().lock().read_line(&mut line).map_err(|_| 5)?;
+                            // Echo suppressed for the same reason as the
+                            // --password prompt above.
+                            let secret =
+                                rpassword::prompt_password("app password: ").map_err(|_| 5)?;
                             client
                                 .auth_finish(
                                     &key,
                                     AuthReply::AppPassword {
                                         identifier: account.clone(),
-                                        secret: line.trim().to_string(),
+                                        secret,
                                         pds: None,
                                     },
                                 )
