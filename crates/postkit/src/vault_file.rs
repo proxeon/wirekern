@@ -161,11 +161,40 @@ fn ensure_dir(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// Write `bytes` to `path` via a same-dir tmp file + rename, so readers
+/// never see a half-written document.
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, bytes)?;
-    set_mode(&tmp, 0o600)?;
+    use std::io::Write;
+    // Unique per process: two postkit runs writing the same account get
+    // distinct tmp files instead of interleaving writes into one shared
+    // name and renaming a torn document into place. Same-process writes
+    // are sequential (sync fs calls), so the pid is enough.
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    // Create the tmp 0600 from the first instant it exists: fs::write would
+    // create it on the process umask (typically 0644), leaving the token or
+    // client_secret world-readable for the window until a separate chmod
+    // caught up. OpenOptions.mode applies at creation, closing that window.
+    #[cfg(unix)]
+    let mut f = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?
+    };
+    #[cfg(not(unix))]
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(bytes)?;
+    drop(f);
+    // rename(2) onto an existing path is atomic and the mode travels with
+    // the inode, so the committed file appears fully written and 0600 in
+    // one step. (create+truncate rather than create_new also self-heals a
+    // stale tmp left by a crashed pid reuse instead of erroring on it.)
     fs::rename(&tmp, path)?;
+    // Belt-and-braces for pre-existing files that carry looser modes;
+    // a no-op on non-unix.
     set_mode(path, 0o600)?;
     Ok(())
 }
@@ -302,6 +331,44 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let v = FileVault::new(tmp.path().join("nested")).unwrap();
         assert!(v.list(None).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_tmp_is_0600_from_creation_with_unique_name() {
+        use std::os::unix::fs::PermissionsExt;
+        // umask 0000: anything created on umask alone would land 0666, so
+        // this pins the mode to the creation call itself, not a later
+        // chmod. The old fs::write-then-chmod left a world-readable tmp
+        // holding the token for the window between the two.
+        let prev_umask = unsafe { libc::umask(0o000) };
+        // Point the write at a directory so rename fails and the tmp file
+        // stays behind for inspection.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("accounts");
+        fs::create_dir(&target).unwrap();
+        let err = atomic_write(&target, b"secret").unwrap_err();
+        unsafe { libc::umask(prev_umask) };
+
+        assert!(matches!(err, Error::Io(_)), "rename onto a dir must fail");
+
+        let leftovers: Vec<String> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "accounts")
+            .collect();
+        assert_eq!(leftovers.len(), 1, "exactly one tmp file: {leftovers:?}");
+        // pid-suffixed, so concurrent processes never share a tmp name
+        assert_eq!(
+            leftovers[0],
+            format!("accounts.json.tmp.{}", std::process::id())
+        );
+        let mode = fs::metadata(tmp.path().join(&leftovers[0]))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[cfg(unix)]
