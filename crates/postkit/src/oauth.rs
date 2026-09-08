@@ -271,6 +271,43 @@ mod tests {
     }
 
     #[test]
+    fn new_state_draws_do_not_repeat() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..64 {
+            assert!(seen.insert(new_state().unwrap()));
+        }
+    }
+
+    #[test]
+    fn authorize_url_state_round_trips() {
+        let state = new_state().unwrap();
+        let url = authorize_url(
+            "https://threads.net/oauth/authorize",
+            "99",
+            "https://localhost/callback",
+            "threads_basic",
+            &state,
+        );
+        assert_eq!(query_param(&url, "state").as_deref(), Some(state.as_str()));
+    }
+
+    #[test]
+    fn verify_state_accepts_state_in_any_url_position() {
+        let st = "0123abcd";
+        // state before other params
+        assert!(verify_state(st, "https://example.com/cb?state=0123abcd&code=AQBx#_").is_ok());
+        // custom-scheme redirect (no http prefix, still a URL)
+        assert!(verify_state(st, "myapp://callback?code=AQBx&state=0123abcd").is_ok());
+        // read_line keeps the trailing newline
+        assert!(verify_state(st, "https://example.com/cb?code=AQBx&state=0123abcd#_\n").is_ok());
+        // and a custom-scheme URL still gets checked, not waved through
+        assert!(matches!(
+            verify_state(st, "myapp://callback?code=AQBx&state=zzz"),
+            Err(Error::Auth { reason, .. }) if reason == "state_mismatch"
+        ));
+    }
+
+    #[test]
     fn extract_code_from_url_and_hash() {
         assert_eq!(
             extract_code("https://localhost/callback?code=AQBx#_").unwrap(),

@@ -595,6 +595,41 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn auth_start_state_is_csprng_hex() {
+        let t = Threads::new().unwrap();
+        let app = oauth_app();
+        let (a, b) = match (t.auth_start(&app).await, t.auth_start(&app).await) {
+            (
+                Ok(AuthStart::Browser {
+                    authorize_url: ua,
+                    state: sa,
+                }),
+                Ok(AuthStart::Browser {
+                    authorize_url: ub,
+                    state: sb,
+                }),
+            ) => ((ua, sa), (ub, sb)),
+            _ => panic!("auth_start should return Browser"),
+        };
+        // 128 bits of lowercase hex — the old time-nanos state was ~11 chars.
+        for state in [&a.1, &b.1] {
+            assert_eq!(state.len(), 32);
+            assert!(state.chars().all(|c| c.is_ascii_hexdigit()));
+            assert!(state.chars().all(|c| !c.is_ascii_uppercase()));
+        }
+        assert_ne!(a.1, b.1);
+        // the authorize URL echoes the state the CLI will verify on paste
+        assert_eq!(
+            crate::oauth::query_param(&a.0, "state").as_deref(),
+            Some(&a.1[..])
+        );
+        assert_eq!(
+            crate::oauth::query_param(&b.0, "state").as_deref(),
+            Some(&b.1[..])
+        );
+    }
+
     fn text_intent(text: &str) -> Intent {
         Intent {
             site: Site::new(SITE),
