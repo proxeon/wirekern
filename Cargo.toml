@@ -22,5 +22,6 @@ clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 getrandom = "0.3"
+emojis = "0.6"
 unicode-segmentation = "1"
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "parsing"] }
