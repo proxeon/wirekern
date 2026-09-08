@@ -596,6 +596,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn whoami_redirect_is_an_error_not_a_follow() {
+        // whoami is a token-bearing GET: a 3xx must surface as an error and
+        // the host in Location must never receive the re-issued request.
+        let attacker = MockServer::start();
+        let sink = attacker.mock(|when, then| {
+            when.method(GET).path("/sink");
+            then.status(200).body("got it");
+        });
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/me");
+            then.status(302)
+                .header("Location", format!("{}/sink", attacker.base_url()));
+        });
+
+        let t = Threads::with_base(server.base_url()).unwrap();
+        let err = t.whoami(&empty_app(), &token_creds()).await.unwrap_err();
+        // read_json maps the raw 302 body through the graph error mapper;
+        // exact variant aside, it must be an error, not a follow.
+        assert!(matches!(
+            err,
+            Error::Auth { .. } | Error::Platform { .. } | Error::Network { .. }
+        ));
+        assert_eq!(sink.hits(), 0);
+    }
+
+    #[tokio::test]
     async fn auth_start_state_is_csprng_hex() {
         let t = Threads::new().unwrap();
         let app = oauth_app();
@@ -673,7 +700,8 @@ mod tests {
             matches!(err, Error::InvalidPost { reason, limit, .. } if reason == "text_too_long" && limit == Some(500))
         );
         let ok = "é".repeat(250);
-        assert_eq!(ok.as_bytes().len(), 500);
+        // str len() is UTF-8 bytes: 250 two-byte chars = 500, at the limit.
+        assert_eq!(ok.len(), 500);
         validate_text(&ok).unwrap();
     }
 
