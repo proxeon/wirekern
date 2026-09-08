@@ -14,6 +14,7 @@ use std::sync::Arc;
 struct MockPub {
     site: Site,
     caps: Vec<Capability>,
+    auth_kind: AuthKind,
     fail_auth_once: bool,
     publishes: AtomicUsize,
 }
@@ -23,6 +24,7 @@ impl MockPub {
         Self {
             site: Site::new(site),
             caps: vec![Capability::PublishText],
+            auth_kind: AuthKind::OAuth2AuthCode,
             fail_auth_once: false,
             publishes: AtomicUsize::new(0),
         }
@@ -38,7 +40,7 @@ impl Publisher for MockPub {
         &self.caps
     }
     fn auth_kind(&self) -> AuthKind {
-        AuthKind::OAuth2AuthCode
+        self.auth_kind
     }
 
     async fn publish(
@@ -275,6 +277,26 @@ async fn put_token_then_whoami() {
     let key = AccountKey::new("threads", "default");
     let me = c.put_token(&key, "THQVJ").await.unwrap();
     assert_eq!(me.id, "user-1");
+}
+
+#[tokio::test]
+async fn put_token_refused_for_app_password_sites() {
+    // `auth bluesky --token x` used to store OAuth2 creds that publish
+    // rejected much later; the guard must refuse at the door and leave the
+    // vault untouched.
+    let mut mock = MockPub::text("bluesky");
+    mock.auth_kind = AuthKind::AppPassword;
+    let mut reg = Registry::new();
+    reg.register(Arc::new(mock));
+    let vault = Arc::new(MemoryVault::new());
+    let c = Client::new(reg, vault.clone(), Arc::new(MemoryAppStore::new()));
+    let key = AccountKey::new("bluesky", "you.bsky.social");
+    let err = c.put_token(&key, "whatever").await.unwrap_err();
+    assert!(matches!(err, Error::Auth { reason, .. } if reason == "token_bootstrap_unsupported"));
+    assert!(
+        matches!(vault.get(&key), Err(Error::UnknownAccount(_))),
+        "no creds may be written on refusal"
+    );
 }
 
 #[tokio::test]

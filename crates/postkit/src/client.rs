@@ -1,6 +1,6 @@
 use crate::apps::AppStore;
 use crate::error::Error;
-use crate::publisher::{AuthReply, AuthStart, Publisher};
+use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
 use crate::types::{AccountCreds, AccountKey, AppConfig, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::vault::Vault;
@@ -104,6 +104,17 @@ impl Client {
     /// 009 bootstrap. Does not require an app file.
     pub async fn put_token(&self, key: &AccountKey, token: &str) -> Result<WhoAmI, Error> {
         let publisher = self.publisher(&key.site)?;
+        // A raw token is an OAuth2 bootstrap. On app-password sites (Bluesky)
+        // the write used to succeed and publish failed much later with a
+        // cred-kind error far from the actual mistake. The connector's
+        // declared auth kind is the contract; enforce it at the door so the
+        // refusal lands where the flag was typed.
+        if publisher.auth_kind() != AuthKind::OAuth2AuthCode {
+            return Err(Error::Auth {
+                site: key.site.clone(),
+                reason: "token_bootstrap_unsupported".into(),
+            });
+        }
         let app = self
             .apps
             .get(&key.site)
