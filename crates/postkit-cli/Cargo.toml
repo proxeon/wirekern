@@ -20,6 +20,5 @@ postkit = { version = "0.1.0", path = "../postkit", features = ["vault-file", "t
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
-anyhow = { workspace = true }
 tokio = { workspace = true }
 rpassword = { workspace = true }

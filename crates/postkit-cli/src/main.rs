@@ -23,7 +23,7 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
     /// Vault root. Default ~/.postkit
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "POSTKIT_HOME")]
     home: Option<PathBuf>,
     /// Seconds for publish. Default 30.
     #[arg(long, global = true, default_value_t = 30)]
@@ -116,15 +116,11 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), i32> {
-    let home = resolve_home(
-        cli.home,
-        std::env::var_os("POSTKIT_HOME").map(PathBuf::from),
-        std::env::var_os("HOME").map(PathBuf::from),
-    )
-    .map_err(|msg| {
-        eprintln!("{msg}");
-        2
-    })?;
+    let home =
+        resolve_home(cli.home, std::env::var_os("HOME").map(PathBuf::from)).map_err(|msg| {
+            eprintln!("{msg}");
+            2
+        })?;
     let json = cli.json;
     let account = cli.account.clone();
     let deadline = Deadline::from_secs(cli.deadline);
@@ -679,21 +675,18 @@ fn make_client(home: &std::path::Path) -> Result<Client, Error> {
     Ok(Client::new(registry, vault, apps))
 }
 
-/// Vault home: `--home` > `POSTKIT_HOME` > `$HOME/.postkit`. Never falls
-/// back to the current directory: with HOME unset (cron, systemd units,
-/// `env -i` shells) a CWD fallback would silently write tokens into
-/// whatever directory the process started in — possibly a checkout or a
-/// world-writable /tmp. Pure over its inputs so the precedence is
-/// unit-testable without touching the process environment.
+/// Vault home: `--home`/`POSTKIT_HOME` (clap folds the env var into the
+/// flag) > `$HOME/.postkit`. Never falls back to the current directory:
+/// with HOME unset (cron, systemd units, `env -i` shells) a CWD fallback
+/// would silently write tokens into whatever directory the process
+/// started in — possibly a checkout or a world-writable /tmp. Pure over
+/// its inputs so the precedence is unit-testable without touching the
+/// process environment.
 fn resolve_home(
-    flag: Option<PathBuf>,
-    postkit_env: Option<PathBuf>,
+    flag_or_env: Option<PathBuf>,
     user_home: Option<PathBuf>,
 ) -> Result<PathBuf, String> {
-    if let Some(p) = flag {
-        return Ok(p);
-    }
-    if let Some(p) = postkit_env {
+    if let Some(p) = flag_or_env {
         return Ok(p);
     }
     user_home.map(|h| h.join(".postkit")).ok_or_else(|| {
@@ -720,26 +713,31 @@ mod tests {
 
     #[test]
     fn home_precedence_and_no_cwd_fallback() {
-        let f = Some(PathBuf::from("/flag"));
-        let pk = Some(PathBuf::from("/pk"));
+        let fe = Some(PathBuf::from("/flag-or-env"));
         let hm = Some(PathBuf::from("/user"));
-        // --home > POSTKIT_HOME > $HOME/.postkit
+        // --home / POSTKIT_HOME (same field via clap env) > $HOME/.postkit
         assert_eq!(
-            resolve_home(f.clone(), pk.clone(), hm.clone()).unwrap(),
-            PathBuf::from("/flag")
+            resolve_home(fe.clone(), hm.clone()).unwrap(),
+            PathBuf::from("/flag-or-env")
         );
         assert_eq!(
-            resolve_home(None, pk.clone(), hm.clone()).unwrap(),
-            PathBuf::from("/pk")
-        );
-        assert_eq!(
-            resolve_home(None, None, hm.clone()).unwrap(),
+            resolve_home(None, hm.clone()).unwrap(),
             PathBuf::from("/user/.postkit")
         );
         // HOME unset (cron, systemd, env -i): never guess the CWD — the old
         // code silently wrote tokens into ./.postkit
-        let err = resolve_home(None, None, None).unwrap_err();
+        let err = resolve_home(None, None).unwrap_err();
         assert!(err.contains("POSTKIT_HOME or HOME"));
+    }
+
+    #[test]
+    fn postkit_home_env_feeds_the_home_flag() {
+        // clap's env feature folds POSTKIT_HOME into --home, so the var is
+        // visible in --help and the manual env read stays out of run().
+        std::env::set_var("POSTKIT_HOME", "/from-env");
+        let cli = Cli::try_parse_from(["postkit", "whoami", "threads"]).unwrap();
+        assert_eq!(cli.home, Some(PathBuf::from("/from-env")));
+        std::env::remove_var("POSTKIT_HOME");
     }
 
     #[test]
