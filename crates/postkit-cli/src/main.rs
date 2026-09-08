@@ -116,7 +116,15 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), i32> {
-    let home = cli.home.unwrap_or_else(default_home);
+    let home = resolve_home(
+        cli.home,
+        std::env::var_os("POSTKIT_HOME").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+    .map_err(|msg| {
+        eprintln!("{msg}");
+        2
+    })?;
     let json = cli.json;
     let account = cli.account.clone();
     let deadline = Deadline::from_secs(cli.deadline);
@@ -220,13 +228,14 @@ async fn run(cli: Cli) -> Result<(), i32> {
         }
         other => {
             let client = make_client(&home).map_err(|e| fail(&e, json))?;
-            dispatch(client, other, json, account, deadline).await
+            dispatch(client, &home, other, json, account, deadline).await
         }
     }
 }
 
 async fn dispatch(
     client: Client,
+    home: &std::path::Path,
     cmd: Commands,
     json: bool,
     account: String,
@@ -367,7 +376,14 @@ async fn dispatch(
             match result {
                 Ok(w) => {
                     emit_ok(&w, json, || {
-                        format!("ok {} {}", w.site, w.handle.as_deref().unwrap_or(&w.id))
+                        // Say where credentials landed so a misdirected
+                        // vault is visible immediately (issue 014).
+                        format!(
+                            "ok {} {} (vault: {})",
+                            w.site,
+                            w.handle.as_deref().unwrap_or(&w.id),
+                            home.display()
+                        )
                     });
                     Ok(())
                 }
@@ -663,18 +679,26 @@ fn make_client(home: &std::path::Path) -> Result<Client, Error> {
     Ok(Client::new(registry, vault, apps))
 }
 
-fn default_home() -> PathBuf {
-    std::env::var_os("POSTKIT_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs_home()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".postkit")
-        })
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+/// Vault home: `--home` > `POSTKIT_HOME` > `$HOME/.postkit`. Never falls
+/// back to the current directory: with HOME unset (cron, systemd units,
+/// `env -i` shells) a CWD fallback would silently write tokens into
+/// whatever directory the process started in — possibly a checkout or a
+/// world-writable /tmp. Pure over its inputs so the precedence is
+/// unit-testable without touching the process environment.
+fn resolve_home(
+    flag: Option<PathBuf>,
+    postkit_env: Option<PathBuf>,
+    user_home: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    if let Some(p) = flag {
+        return Ok(p);
+    }
+    if let Some(p) = postkit_env {
+        return Ok(p);
+    }
+    user_home.map(|h| h.join(".postkit")).ok_or_else(|| {
+        "POSTKIT_HOME or HOME must be set to locate the vault; refusing to guess from the current directory".into()
+    })
 }
 
 fn check_name(s: &str, json: bool) -> Result<(), i32> {
@@ -693,6 +717,30 @@ fn fail(e: &Error, json: bool) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_precedence_and_no_cwd_fallback() {
+        let f = Some(PathBuf::from("/flag"));
+        let pk = Some(PathBuf::from("/pk"));
+        let hm = Some(PathBuf::from("/user"));
+        // --home > POSTKIT_HOME > $HOME/.postkit
+        assert_eq!(
+            resolve_home(f.clone(), pk.clone(), hm.clone()).unwrap(),
+            PathBuf::from("/flag")
+        );
+        assert_eq!(
+            resolve_home(None, pk.clone(), hm.clone()).unwrap(),
+            PathBuf::from("/pk")
+        );
+        assert_eq!(
+            resolve_home(None, None, hm.clone()).unwrap(),
+            PathBuf::from("/user/.postkit")
+        );
+        // HOME unset (cron, systemd, env -i): never guess the CWD — the old
+        // code silently wrote tokens into ./.postkit
+        let err = resolve_home(None, None, None).unwrap_err();
+        assert!(err.contains("POSTKIT_HOME or HOME"));
+    }
 
     #[test]
     fn resolve_texts_requires_one() {
