@@ -17,6 +17,7 @@ struct MockPub {
     auth_kind: AuthKind,
     fail_auth_once: bool,
     fail_publish: bool,
+    whoami_fails: bool,
     refresh_network_err: bool,
     refresh_dead_session: bool,
     publishes: AtomicUsize,
@@ -30,6 +31,7 @@ impl MockPub {
             auth_kind: AuthKind::OAuth2AuthCode,
             fail_auth_once: false,
             fail_publish: false,
+            whoami_fails: false,
             refresh_network_err: false,
             refresh_dead_session: false,
             publishes: AtomicUsize::new(0),
@@ -80,6 +82,12 @@ impl Publisher for MockPub {
     }
 
     async fn whoami(&self, _app: &AppConfig, _creds: &AccountCreds) -> Result<WhoAmI, Error> {
+        if self.whoami_fails {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "invalid_token".into(),
+            });
+        }
         Ok(WhoAmI {
             site: self.site.clone(),
             id: "user-1".into(),
@@ -342,6 +350,47 @@ async fn put_token_then_whoami() {
     let key = AccountKey::new("threads", "default");
     let me = c.put_token(&key, "THQVJ").await.unwrap();
     assert_eq!(me.id, "user-1");
+}
+
+#[tokio::test]
+async fn put_token_persists_whoami_id() {
+    // The id that whoami already fetches lands in extra — same shape as
+    // the OAuth path — so both auth flows publish against /{user_id}/….
+    let mut reg = Registry::new();
+    reg.register(Arc::new(MockPub::text("threads")));
+    let vault = Arc::new(MemoryVault::new());
+    let c = Client::new(reg, vault.clone(), Arc::new(MemoryAppStore::new()));
+    let key = AccountKey::new("threads", "default");
+    let me = c.put_token(&key, "THQVJ").await.unwrap();
+    assert_eq!(me.id, "user-1");
+    match vault.get(&key).unwrap() {
+        AccountCreds::OAuth2 { extra, .. } => {
+            assert_eq!(
+                extra.get("user_id").and_then(|v| v.as_str()),
+                Some("user-1")
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn put_token_rejects_bad_token_before_vault_write() {
+    // whoami verifies before the store: an invalid token never lands in
+    // the vault to shadow the next publish.
+    let mut p = MockPub::text("threads");
+    p.whoami_fails = true;
+    let mut reg = Registry::new();
+    reg.register(Arc::new(p));
+    let vault = Arc::new(MemoryVault::new());
+    let c = Client::new(reg, vault.clone(), Arc::new(MemoryAppStore::new()));
+    let key = AccountKey::new("threads", "default");
+    let err = c.put_token(&key, "bogus").await.unwrap_err();
+    assert!(matches!(err, Error::Auth { reason, .. } if reason == "invalid_token"));
+    assert!(
+        matches!(vault.get(&key), Err(Error::UnknownAccount(_))),
+        "an unverified token must not be stored"
+    );
 }
 
 #[tokio::test]

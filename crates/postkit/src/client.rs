@@ -140,8 +140,20 @@ impl Client {
             refresh_token: None,
             extra: serde_json::json!({}),
         };
+        // Verify the token *before* anything lands in the vault: the old
+        // store-then-whoami order persisted an invalid token and only then
+        // rejected it. The id that comes back is persisted into `extra`,
+        // matching the OAuth path (`creds_from_long`), so both auth shapes
+        // publish against /{user_id}/threads instead of this path leaning
+        // on the /me alias for its whole lifetime.
+        let me = publisher.whoami(&app, &creds).await?;
+        let creds = AccountCreds::OAuth2 {
+            access_token: token.to_string(),
+            refresh_token: None,
+            extra: serde_json::json!({ "user_id": me.id }),
+        };
         self.vault.put(key, &creds)?;
-        publisher.whoami(&app, &creds).await
+        Ok(me)
     }
 
     fn publisher(&self, site: &Site) -> Result<Arc<dyn Publisher>, Error> {
