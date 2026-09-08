@@ -110,6 +110,9 @@ impl Publisher for Bluesky {
     ) -> Result<Outcome, Error> {
         let Body::Text { text } = &intent.body;
         validate_text(text)?;
+        // Reject before any HTTP: an unsupported param must error here,
+        // never become a published post of the wrong shape.
+        validate_params(&intent.params)?;
         let (pds, identifier, secret) = app_password(creds)?;
         let pds = self.pds_override.as_deref().unwrap_or(pds);
         let sess = create_session(&self.http, pds, identifier, secret, deadline).await?;
@@ -153,6 +156,24 @@ pub fn validate_text(text: &str) -> Result<(), Error> {
             site,
             reason: "text_too_long".into(),
             limit: Some(MAX_GRAPHEMES as u32),
+        });
+    }
+    Ok(())
+}
+
+/// Bluesky supports no `Intent.params` today. A dropped param is not
+/// neutral: `--param reply_to_id=…` would be silently discarded and a
+/// **root post** published instead of the intended reply — wrong public
+/// output while reporting a success `Outcome`, the worst failure mode
+/// this kernel can have. So any param is an error until the connector
+/// actually implements it (replies via `reply.parent` will teach this
+/// fn the key instead of rejecting it).
+pub fn validate_params(params: &Value) -> Result<(), Error> {
+    if let Some(k) = params.as_object().and_then(|o| o.keys().next()) {
+        return Err(Error::InvalidPost {
+            site: Site::new(SITE),
+            reason: format!("unsupported_param:{k}"),
+            limit: None,
         });
     }
     Ok(())
@@ -405,6 +426,40 @@ mod tests {
     fn empty_text_no_http() {
         let err = validate_text("  ").unwrap_err();
         assert!(matches!(err, Error::InvalidPost { reason, .. } if reason == "empty"));
+    }
+
+    #[tokio::test]
+    async fn params_rejected_before_http() {
+        // reply_to_id used to be dropped and a root post published in its
+        // place. The param must be refused before a session is even created.
+        let server = MockServer::start();
+        let session = server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(200).json_body(json!({
+                "did": "did:plc:abc",
+                "handle": "you.bsky.social",
+                "accessJwt": "jwt",
+                "refreshJwt": "rjwt"
+            }));
+        });
+        let t = Bluesky::with_pds(server.base_url()).unwrap();
+        let mut intent = text_intent("hi");
+        intent.params = json!({ "reply_to_id": "at://did:plc:abc/app.bsky.feed.post/3kx" });
+        let err = t
+            .publish(&empty_app(), &pw_creds(), intent, Deadline::from_secs(30))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidPost { reason, .. } if reason == "unsupported_param:reply_to_id")
+        );
+        assert_eq!(session.hits(), 0, "no HTTP before the param check");
+    }
+
+    #[test]
+    fn empty_params_object_passes() {
+        validate_params(&json!({})).unwrap();
+        validate_params(&Value::Null).unwrap();
     }
 
     #[test]

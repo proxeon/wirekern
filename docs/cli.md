@@ -25,7 +25,7 @@ postkit post --stdin
 |------|--|
 | `<site>` or `--to a,b` | One site, or same text/`--param` on each. Mixed success → `{ "results": [ … ] }` |
 | `--text` | `Body::Text`. Repeatable on **threads** = reply chain (`reply_to_id`). One `--text` is a single `Outcome`; two or more is `{ "results": [ … ] }`. Other sites: two `--text` → `thread_unsupported` before HTTP. |
-| `--param k=v` | `Intent.params` (repeatable). `--param reply_to_id=` = one reply to an existing post |
+| `--param k=v` | `Intent.params` (repeatable). `--param reply_to_id=` = one reply to an existing post (**threads**; Bluesky rejects unknown params with `unsupported_param:<k>` before HTTP) |
 | `--idempotency` | Root segment only on a chain. Honored only if the platform does |
 | `--stdin` | Raw request JSON. One body. Exclusive with `--text` |
 
