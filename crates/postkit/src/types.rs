@@ -263,6 +263,10 @@ pub const USER_AGENT: &str = concat!("postkit/", env!("CARGO_PKG_VERSION"));
 /// Account / site file names: `[A-Za-z0-9._-]+`.
 pub fn valid_name(s: &str) -> bool {
     !s.is_empty()
+        // `.json` is the reserved file extension in the vault; a name
+        // ending in it cannot round-trip through list()/get() without
+        // aliasing onto another account's file.
+        && !s.ends_with(".json")
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }

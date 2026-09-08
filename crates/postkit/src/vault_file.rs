@@ -102,8 +102,15 @@ impl Vault for FileVault {
                 continue;
             }
             for name in read_dir_names(&dir)? {
-                let stem = name.trim_end_matches(".json");
-                if stem == name {
+                // Strip exactly one `.json`: trim_end_matches would also eat
+                // the suffix from a legacy `x.json.json`, aliasing two
+                // accounts onto one file. Stems that are no longer legal
+                // names are skipped — a listing must only contain accounts
+                // that actually resolve.
+                let Some(stem) = name.strip_suffix(".json") else {
+                    continue;
+                };
+                if !valid_name(stem) {
                     continue;
                 }
                 out.push(AccountKey::new(s.as_str(), stem));
@@ -359,6 +366,33 @@ mod tests {
             .map(|k| k.name)
             .collect();
         assert_eq!(threads, vec!["default", "work"]);
+    }
+
+    #[test]
+    fn list_strips_exactly_one_json_suffix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        v.put(&AccountKey::new("threads", "foo"), &creds("t"))
+            .unwrap();
+        // legacy artifact from before .json-suffixed names were rejected;
+        // its stem is not a legal name, so it must not be listed
+        let dir = tmp.path().join("accounts").join("threads");
+        fs::write(dir.join("legacy.json.json"), "{}").unwrap();
+        let listed: Vec<String> = v.list(None).unwrap().into_iter().map(|k| k.name).collect();
+        assert_eq!(listed, vec!["foo"]);
+    }
+
+    #[test]
+    fn json_suffix_names_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        let err = v
+            .put(&AccountKey::new("threads", "foo.json"), &creds("t"))
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidName(n) if n == "foo.json"));
+        // dotted names without the reserved suffix still pass
+        v.put(&AccountKey::new("threads", "a.b_c-d"), &creds("t"))
+            .unwrap();
     }
 
     #[test]
