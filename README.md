@@ -43,6 +43,38 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | `threads` | `publish.text` | OAuth paste-code, or `--token` long-lived `THQVJ…` | 500 chars; emoji as UTF-8 bytes |
 | `bluesky` | `publish.text` | App password (`--password`). `--account` **is the handle** (`default` rejected) | 300 graphemes |
 
+### Feature coverage
+
+What works today, per site:
+
+| Capability | Threads | Bluesky |
+|------------|---------|---------|
+| Text post | ✓ | ✓ |
+| Reply chain (repeat `--text`) | ✓ | ✗ `thread_unsupported` |
+| Reply to existing post (`--param reply_to_id=`) | ✓ | ✗ |
+| Token refresh | ✓ long-lived, auto within 7d of expiry | n/a (app passwords) |
+| `whoami` | ✓ | ✓ |
+| Images / video | ✗ roadmap | ✗ roadmap |
+| Scheduling / drafts | ✗ by design — send **now** or nothing | ✗ by design |
+
+Kernel-level, all sites: 0600 vault with atomic writes, CSPRNG OAuth `state`, redirect-following off, per-target `Outcome`/`WireError` on fan-out, `--json` + exit-code contract.
+
+### Positioning
+
+Stable axes only (prices move; these don't):
+
+| | **postkit** | Hosted post APIs (Ayrshare, Upload-Post, Outstand) | Self-hosted schedulers (Postiz) | Official SDKs |
+|---|---|---|---|---|
+| Token custody | **Your vault, 0600, local** | Their cloud | The app's DB, even self-hosted | Yours |
+| Platform app | **BYO** (your Meta app) | Theirs — no App Review for you | Per-instance | BYO per SDK |
+| Cost | **$0** | Paid subscription | $0 + your hosting | $0 |
+| Scheduling | ✗ | ✓ | ✓ (the product) | ✗ |
+| Media | ✗ roadmap | ✓ | ✓ | Varies |
+| Agent surface | **exec CLI / `cargo add`** | REST + API key | Web app | Hand-rolled |
+| License | **MIT OR Apache-2.0** | Proprietary | AGPL-3.0 | Vendor ToS |
+
+Roadmap, in priority order: images/video (get on the comparison grid), HTTP `serve` mode with `pk_live_` keys (contest the hosted-API-for-agents lane without giving up custody).
+
 Live setup: [docs/threads](./docs/threads/), [docs/bluesky](./docs/bluesky/). Add a site: [docs/connectors.md](./docs/connectors.md).
 
 ---
