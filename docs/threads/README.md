@@ -203,7 +203,7 @@ Later posts reuse the vault. No browser:
 pk post threads --text 'hello' --json
 ```
 
-Text limit: **500 UTF-8 bytes** per post. Empty text is rejected.
+Text limit: **500 characters**, emoji counting as their UTF-8 bytes (Meta's rule; CJK/Arabic are 1 each). Empty text is rejected.
 
 Reply chain (not a carousel). Repeat `--text`; each line is one Graph post. Segment 2+ send `reply_to_id` of the previous id (create container, then `threads_publish` — not `auto_publish_text`). Not atomic: if a later segment fails, earlier posts stay live (delete in the Threads app). `--to` + two `--text` is refused (`thread_unsupported`). Use `--deadline 60` if a reply is slow to publish.
 

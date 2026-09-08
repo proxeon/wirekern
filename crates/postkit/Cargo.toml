@@ -16,7 +16,7 @@ default = []
 vault-file = []
 client = ["dep:reqwest"]
 oauth = ["client", "dep:getrandom"]
-threads = ["client", "oauth", "dep:tokio"]
+threads = ["client", "oauth", "dep:tokio", "dep:emojis"]
 bluesky = ["client", "dep:unicode-segmentation", "dep:time"]
 
 [dependencies]
@@ -26,6 +26,7 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
+emojis = { workspace = true, optional = true }
 unicode-segmentation = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

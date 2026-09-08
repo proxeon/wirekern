@@ -40,7 +40,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 
 | Site | Capability | Auth | Limit |
 |------|------------|------|--------|
-| `threads` | `publish.text` | OAuth paste-code, or `--token` long-lived `THQVJ…` | 500 UTF-8 bytes |
+| `threads` | `publish.text` | OAuth paste-code, or `--token` long-lived `THQVJ…` | 500 chars; emoji as UTF-8 bytes |
 | `bluesky` | `publish.text` | App password (`--password`). `--account` **is the handle** (`default` rejected) | 300 graphemes |
 
 Live setup: [docs/threads](./docs/threads/), [docs/bluesky](./docs/bluesky/). Add a site: [docs/connectors.md](./docs/connectors.md).

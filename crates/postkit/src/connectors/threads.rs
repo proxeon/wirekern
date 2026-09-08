@@ -16,7 +16,10 @@ pub const GRAPH_ORIGIN: &str = "https://graph.threads.net";
 pub const AUTHORIZE: &str = "https://threads.net/oauth/authorize";
 pub const SITE: &str = "threads";
 pub const SCOPES: &str = "threads_basic,threads_content_publish,threads_manage_replies";
-pub const MAX_TEXT_BYTES: usize = 500;
+/// Meta's Threads text limit in Meta's own counting units: "Text posts are
+/// limited to 500 characters. Emojis are counted as the number of UTF-8
+/// bytes" (developers.facebook.com/docs/threads/posts). See [`threads_len`].
+pub const MAX_TEXT: usize = 500;
 
 fn default_base() -> String {
     format!("https://{GRAPH_HOST}/{GRAPH_VERSION}")
@@ -170,6 +173,33 @@ impl Publisher for Threads {
     }
 }
 
+/// Count text the way Meta does: every character is 1 — CJK, Arabic,
+/// combining marks included — except an emoji, which counts as its UTF-8
+/// byte length (typically 4). The previous whole-string `str::len()` rule
+/// charged every non-ASCII script 2–4x its real count and falsely rejected
+/// valid posts (e.g. 400 Japanese characters = 1200 bytes, well under the
+/// platform's 500).
+///
+/// ZWJ sequences (family emoji etc.) are approximated per codepoint: each
+/// emoji member is charged its bytes, the joiner counts 1. The server's
+/// exact rule for composed sequences is undocumented; worst case such a
+/// post at the boundary is rejected by the platform and surfaces as its
+/// error instead of ours.
+pub fn threads_len(text: &str) -> usize {
+    text.chars()
+        .map(|c| {
+            // emojis::get takes &str; encode_utf8 borrows a stack buffer
+            // instead of allocating a String per character
+            let mut buf = [0u8; 4];
+            match emojis::get(c.encode_utf8(&mut buf)) {
+                // an emoji burns as many slots as it has UTF-8 bytes
+                Some(_) => c.len_utf8(),
+                None => 1,
+            }
+        })
+        .sum()
+}
+
 pub fn validate_text(text: &str) -> Result<(), Error> {
     let site = Site::new(SITE);
     if text.trim().is_empty() {
@@ -179,11 +209,11 @@ pub fn validate_text(text: &str) -> Result<(), Error> {
             limit: None,
         });
     }
-    if text.len() > MAX_TEXT_BYTES {
+    if threads_len(text) > MAX_TEXT {
         return Err(Error::InvalidPost {
             site,
             reason: "text_too_long".into(),
-            limit: Some(MAX_TEXT_BYTES as u32),
+            limit: Some(MAX_TEXT as u32),
         });
     }
     Ok(())
@@ -693,16 +723,41 @@ mod tests {
     }
 
     #[test]
-    fn too_long_is_bytes() {
-        let s = "a".repeat(501);
-        let err = validate_text(&s).unwrap_err();
+    fn limit_is_metas_character_rule() {
+        // Meta: 500 characters, emoji charged as their UTF-8 byte length.
+        validate_text(&"a".repeat(500)).unwrap();
+        let err = validate_text(&"a".repeat(501)).unwrap_err();
         assert!(
             matches!(err, Error::InvalidPost { reason, limit, .. } if reason == "text_too_long" && limit == Some(500))
         );
-        let ok = "é".repeat(250);
-        // str len() is UTF-8 bytes: 250 two-byte chars = 500, at the limit.
-        assert_eq!(ok.len(), 500);
-        validate_text(&ok).unwrap();
+    }
+
+    #[test]
+    fn cjk_counts_one_per_character() {
+        // The old byte rule rejected this: 400 chars = 1200 UTF-8 bytes.
+        validate_text(&"漢".repeat(400)).unwrap();
+        validate_text(&"漢".repeat(500)).unwrap();
+        let err = validate_text(&"漢".repeat(501)).unwrap_err();
+        assert!(matches!(err, Error::InvalidPost { reason, .. } if reason == "text_too_long"));
+    }
+
+    #[test]
+    fn emoji_charged_as_utf8_bytes() {
+        // 😀 is 4 bytes: eats four of the 500 slots.
+        validate_text(&format!("{}😀", "a".repeat(496))).unwrap(); // 500
+        let err = validate_text(&format!("{}😀", "a".repeat(497))).unwrap_err(); // 501
+        assert!(matches!(err, Error::InvalidPost { reason, .. } if reason == "text_too_long"));
+    }
+
+    #[test]
+    fn threads_len_matches_metas_rule() {
+        // ascii + two CJK chars (1 each) + one emoji (4 bytes)
+        assert_eq!(threads_len("abc漢字😀"), 9);
+        assert_eq!(threads_len(&"漢".repeat(400)), 400);
+        assert_eq!(threads_len("😀"), 4);
+        // ZWJ family: each emoji member its bytes, joiners 1 — the
+        // documented per-codepoint approximation.
+        assert_eq!(threads_len("👨‍👩‍👧"), 4 + 1 + 4 + 1 + 4);
     }
 
     #[test]
