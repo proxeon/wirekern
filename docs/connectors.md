@@ -1,8 +1,10 @@
 # Adding a connector
 
-A site is a **`Publisher` module**, not a new `Client`. Bluesky exists so this page is allowed ([010](../design/010-crate-and-later.md) §8): a checklist written after Threads alone would say “copy Graph.”
+A site is a **`Publisher` module**, not a new `Client`. A checklist written after Threads alone would say “copy Graph”; Bluesky existing is what makes this page general.
 
-**Done when:** `postkit post <site> --json` has worked once for you ([013](../design/013-platforms-inventory.md)). Do not add a row to the inventory instead of a live `Outcome.id`.
+**Done when:** `postkit post <site> --json` has worked once for you. Do not add a row to the inventory instead of a live `Outcome.id`.
+
+> Numbered references below (`012`, `010 §5`, …) point to private, untracked design notes. This page is self-contained without them.
 
 Official publish API, BYO credentials, publish only. If the website can do it and the API cannot, it stays out. No calendar, inbox, Chrome, or Meta-dashboard scrape.
 
@@ -19,7 +21,7 @@ Operator runbooks for shipped sites: [threads/](./threads/), [bluesky/](./bluesk
 | Hosts | `graph.threads.net` + unversioned oauth | `{pds}/xrpc/…` default `https://bsky.social` |
 | App file | Required in the **connector** (`missing_app_config`) | None |
 | Vault | `AccountCreds::OAuth2` long-lived token | `AccountCreds::AppPassword` (no JWT) |
-| Limit | 500 UTF-8 **bytes** | 300 **graphemes** |
+| Limit | 500 chars; emoji as UTF-8 bytes | 300 **graphemes** |
 | `--account` | usually `default` | **handle** (`default` → `identifier_required`) |
 
 Graph consts, `th_exchange_token`, permalink GET, and `auto_publish_text` stay in `connectors/threads.rs`. AT Proto lexicon and `createSession` stay in `connectors/bluesky.rs`. Core has no site URLs.
