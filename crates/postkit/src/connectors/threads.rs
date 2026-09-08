@@ -333,6 +333,13 @@ fn retry_container_publish(e: &Error) -> bool {
     }
 }
 
+/// Container publish poll bound, independent of the deadline: a
+/// misclassified permanent error (say "try again" in unrelated copy)
+/// must fail in ~4s, not burn the whole 30s budget polling a dead
+/// container. Whichever fires first — attempts or deadline — wins.
+const MAX_CONTAINER_ATTEMPTS: usize = 10;
+const CONTAINER_RETRY_DELAY_MS: u64 = 400;
+
 async fn publish_container(
     http: &Http,
     base: &str,
@@ -344,7 +351,7 @@ async fn publish_container(
     let site = Site::new(SITE);
     let url = format!("{}/{}/threads_publish", base.trim_end_matches('/'), user_id);
     let mut last: Option<Error> = None;
-    loop {
+    for _ in 1..=MAX_CONTAINER_ATTEMPTS {
         if let Err(e) = deadline.check(&site) {
             return Err(last.unwrap_or(e));
         }
@@ -367,8 +374,13 @@ async fn publish_container(
         if let Err(e) = deadline.check(&site) {
             return Err(last.unwrap_or(e));
         }
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        tokio::time::sleep(Duration::from_millis(CONTAINER_RETRY_DELAY_MS)).await;
     }
+    Err(last.unwrap_or_else(|| Error::Platform {
+        site,
+        code: "container_not_published".into(),
+        message: format!("threads_publish not ready after {MAX_CONTAINER_ATTEMPTS} attempts"),
+    }))
 }
 
 async fn whoami(
@@ -536,25 +548,31 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
         .or_else(|| v.get("error_message").and_then(|m| m.as_str()))
         .unwrap_or(body);
     let lower = message.to_ascii_lowercase();
-
-    if code == 190
-        || lower.contains("validating access token")
-        || lower.contains("expired")
-        || lower.contains("invalid oauth")
-    {
+    // Numeric codes are the primary classifier; the English-substring
+    // fallbacks run ONLY when Meta sent no code at all. Heuristics that
+    // carried equal weight with codes let any code-bearing error
+    // reclassify whenever its copy happened to contain "quota" or
+    // "expired" — and Meta rewords that copy over time. With no code the
+    // strings are all we have (some Graph errors arrive message-only).
+    let (auth_hit, rate_hit) = if code != 0 {
+        (code == 190, matches!(code, 4 | 17 | 32 | 613))
+    } else {
+        (
+            lower.contains("validating access token")
+                || lower.contains("expired")
+                || lower.contains("invalid oauth"),
+            lower.contains("quota")
+                || lower.contains("rate limit")
+                || lower.contains("publishing limit"),
+        )
+    };
+    if auth_hit {
         return Error::Auth {
             site,
             reason: "token_expired".into(),
         };
     }
-    if code == 4
-        || code == 17
-        || code == 32
-        || code == 613
-        || lower.contains("quota")
-        || lower.contains("rate limit")
-        || lower.contains("publishing limit")
-    {
+    if rate_hit {
         return Error::RateLimited {
             site,
             retry_after: None,
@@ -899,6 +917,68 @@ mod tests {
         reply_create.assert();
         reply_publish.assert();
         assert_eq!(out.id.as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn graph_error_code_outranks_message_copy() {
+        // A precise code must not be hijacked by English copy that happens
+        // to contain the heuristic words — Meta rewords copy over time.
+        let err = map_graph_error(
+            400,
+            r#"{"error":{"code":100,"message":"this token has expired; quota weirdness"}}"#,
+        );
+        assert!(matches!(err, Error::Platform { code, .. } if code == "100"));
+        // No code at all: the substring fallback still classifies.
+        let err = map_graph_error(
+            400,
+            r#"{"error":{"message":"Error validating access token: Session has expired"}}"#,
+        );
+        assert!(matches!(err, Error::Auth { reason, .. } if reason == "token_expired"));
+        let err = map_graph_error(400, r#"{"error":{"message":"rate limit reached"}}"#);
+        assert!(matches!(err, Error::RateLimited { .. }));
+    }
+
+    #[test]
+    fn rate_limit_codes_are_rate_limited() {
+        // 17 / 32 / 613 were checked but untested before.
+        for code in [4, 17, 32, 613] {
+            let body = format!(r#"{{"error":{{"code":{code},"message":"generic"}}}}"#);
+            let err = map_graph_error(400, &body);
+            assert!(
+                matches!(err, Error::RateLimited { .. }),
+                "code {code} should be RateLimited, got {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn container_publish_gives_up_after_max_attempts() {
+        // A permanently "not ready" container must fail after
+        // MAX_CONTAINER_ATTEMPTS (≈4s), not burn the whole deadline.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads");
+            then.status(200).json_body(json!({ "id": "17900" }));
+        });
+        let poll = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads_publish");
+            then.status(400)
+                .json_body(json!({ "error": { "code": 100, "message": "media not ready" } }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
+        let mut intent = text_intent("reply");
+        intent.params = json!({ "reply_to_id": "1790" });
+        let err = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                intent,
+                Deadline::from_secs(60),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Platform { .. }));
+        assert_eq!(poll.hits(), MAX_CONTAINER_ATTEMPTS);
     }
 
     #[test]
