@@ -1,4 +1,5 @@
 use crate::error::Error;
+use crate::form::form;
 use crate::http::Http;
 use crate::types::{Deadline, Site};
 use serde_json::Value;
@@ -170,32 +171,8 @@ pub async fn exchange_code(
     })
 }
 
-pub(crate) fn form(pairs: &[(&str, &str)]) -> String {
-    let mut s = String::new();
-    for (i, (k, v)) in pairs.iter().enumerate() {
-        if i > 0 {
-            s.push('&');
-        }
-        s.push_str(&form_encode(k));
-        s.push('=');
-        s.push_str(&form_encode(v));
-    }
-    s
-}
-
-fn form_encode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*b as char);
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
+// Form encoding lives in crate::form — one encoder shared with the
+// connectors instead of per-module copies that drift.
 
 fn form_decode(s: &str) -> String {
     let s = s.replace('+', " ");

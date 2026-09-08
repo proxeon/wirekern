@@ -18,6 +18,11 @@ mod http;
 #[cfg(feature = "client")]
 pub use http::Http;
 
+// Shared form primitive for oauth + connectors; gated so a bluesky-only
+// build does not compile (and warn about) unused code.
+#[cfg(any(feature = "oauth", feature = "threads"))]
+pub(crate) mod form;
+
 #[cfg(feature = "oauth")]
 mod oauth;
 #[cfg(feature = "oauth")]

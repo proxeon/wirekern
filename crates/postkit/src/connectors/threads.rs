@@ -1,4 +1,5 @@
 use crate::error::Error;
+use crate::form::form;
 use crate::http::Http;
 use crate::oauth::{authorize_url, exchange_code, extract_code, new_state};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
@@ -162,7 +163,7 @@ impl Publisher for Threads {
         let token = access_token(creds)?;
         let user_id = extra_user_id(creds);
         let deadline = Deadline::from_secs(30);
-        let q = crate::oauth::form(&[("grant_type", "th_refresh_token"), ("access_token", token)]);
+        let q = form(&[("grant_type", "th_refresh_token"), ("access_token", token)]);
         let url = format!("{}/refresh_access_token?{q}", self.graph_origin);
         let resp = self
             .http
@@ -400,34 +401,7 @@ async fn whoami(
     Ok(WhoAmI { site, id, handle })
 }
 
-fn form(pairs: &[(&str, &str)]) -> String {
-    let mut s = String::new();
-    for (i, (k, v)) in pairs.iter().enumerate() {
-        if i > 0 {
-            s.push('&');
-        }
-        s.push_str(&form_encode(k));
-        s.push('=');
-        s.push_str(&form_encode(v));
-    }
-    s
-}
-
-fn form_encode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*b as char);
-            }
-            b' ' => out.push('+'),
-            _ => {
-                out.push_str(&format!("%{b:02X}"));
-            }
-        }
-    }
-    out
-}
+// Form encoding lives in crate::form, shared with oauth.rs — no local copy.
 
 fn require_oauth(app: &AppConfig) -> Result<&OAuthApp, Error> {
     app.oauth.as_ref().ok_or_else(|| Error::Auth {
@@ -452,7 +426,7 @@ async fn long_lived(
     deadline: Deadline,
 ) -> Result<AccountCreds, Error> {
     let site = Site::new(SITE);
-    let q = crate::oauth::form(&[
+    let q = form(&[
         ("grant_type", "th_exchange_token"),
         ("client_secret", client_secret),
         ("access_token", short),
