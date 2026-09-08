@@ -28,7 +28,7 @@ pub use oauth::{
 #[cfg(any(feature = "threads", feature = "bluesky"))]
 pub mod connectors;
 
-pub use apps::{env_override, AppStore, MemoryAppStore};
+pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
 pub use client::{refresh_is_due, Client};
 pub use error::{Error, WireError};
 pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};

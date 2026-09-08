@@ -4,9 +4,9 @@ use clap::{Parser, Subcommand};
 use output::{emit_err, emit_ok, emit_raw};
 use postkit::connectors::threads::validate_text;
 use postkit::{
-    extract_code, valid_name, verify_state, AccountKey, AppConfig, AppStore, AuthReply, Body,
-    Client, Deadline, Error, FileAppStore, FileVault, Intent, OAuthApp, PostRequest, Registry,
-    Site, Vault,
+    app_source, extract_code, valid_name, verify_state, AccountKey, AppConfig, AppStore, AuthReply,
+    Body, Client, Deadline, Error, FileAppStore, FileVault, Intent, OAuthApp, PostRequest,
+    Registry, Site, Vault,
 };
 use std::io::{self, BufRead, IsTerminal, Read};
 use std::path::PathBuf;
@@ -140,6 +140,14 @@ async fn run(cli: Cli) -> Result<(), i32> {
                 extra: serde_json::json!({}),
             })
             .map_err(|e| fail(&e, json))?;
+            // The env layer outranks the file; say so when the write that
+            // just "succeeded" will never be read back while it is set.
+            if app_source(&Site::new(&site)) == "env" {
+                let key = site.to_ascii_uppercase().replace('-', "_");
+                eprintln!(
+                    "note: POSTKIT_{key}_CLIENT_ID/_CLIENT_SECRET are set and take precedence over apps/{site}.json"
+                );
+            }
             if json {
                 emit_raw(&serde_json::json!({ "site": site }));
             } else {
@@ -161,15 +169,19 @@ async fn run(cli: Cli) -> Result<(), i32> {
                 .as_ref()
                 .map(|o| o.redirect_uri.as_str())
                 .unwrap_or("");
+            // env credentials silently outrank the file; the operator must
+            // be able to see which layer answered
+            let source = app_source(&Site::new(&site));
             if json {
                 emit_raw(&serde_json::json!({
                     "site": site,
+                    "source": source,
                     "client_id": id,
                     "redirect_uri": redir,
                 }));
             } else {
                 println!(
-                    "site={site} client_id={id} redirect_uri={redir} client_secret=[redacted]"
+                    "site={site} source={source} client_id={id} redirect_uri={redir} client_secret=[redacted]"
                 );
             }
             Ok(())

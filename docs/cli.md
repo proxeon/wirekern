@@ -69,7 +69,7 @@ postkit accounts list [--site threads]
 postkit accounts delete <site> --yes
 ```
 
-`apps set` → `~/.postkit/apps/<site>.json`. Accounts → `~/.postkit/accounts/<site>/<name>.json`. List prints names, not tokens.
+`apps set` → `~/.postkit/apps/<site>.json`; warns on stderr when `POSTKIT_<SITE>_*` env vars will shadow the file. `apps show` reports `"source": "env" | "file"` — env credentials outrank the file whenever both exist. Accounts → `~/.postkit/accounts/<site>/<name>.json`. List prints names, not tokens.
 
 ## Output document and exit codes
 

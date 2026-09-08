@@ -63,3 +63,38 @@ pub fn env_override(site: &Site) -> Option<AppConfig> {
         extra: serde_json::json!({}),
     })
 }
+
+/// Which layer answers `AppStore::get` for this site: env vars outrank the
+/// `apps/<site>.json` file, and that shadowing must be visible — `apps set`
+/// warns when its write will be shadowed, `apps show` reports the source.
+pub fn app_source(site: &Site) -> &'static str {
+    if env_override(site).is_some() {
+        "env"
+    } else {
+        "file"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Unique site name: env tests set process-global vars, so the name must
+    // not collide with any other test's site.
+    #[test]
+    fn app_source_reports_env_shadowing() {
+        let site = Site::new("zzenvtests");
+        std::env::remove_var("POSTKIT_ZZENVTESTS_CLIENT_ID");
+        assert_eq!(app_source(&site), "file");
+
+        std::env::set_var("POSTKIT_ZZENVTESTS_CLIENT_ID", "id");
+        // client_id alone is not enough — env_override needs the secret too
+        assert_eq!(app_source(&site), "file");
+
+        std::env::set_var("POSTKIT_ZZENVTESTS_CLIENT_SECRET", "sec");
+        assert_eq!(app_source(&site), "env");
+
+        std::env::remove_var("POSTKIT_ZZENVTESTS_CLIENT_ID");
+        std::env::remove_var("POSTKIT_ZZENVTESTS_CLIENT_SECRET");
+    }
+}
