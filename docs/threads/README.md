@@ -164,6 +164,8 @@ pk auth threads --code 'https://example.com/callback?code=AQBx-…#_' --json
 
 `--code` accepts the raw code or the whole URL. `#_` is stripped. Codes are one-shot, ~1 hour.
 
+`state` is 128 random bits and the pasted redirect URL must echo it: mismatched or missing `state` is rejected (`state_mismatch` / `missing_state`). The two-invocation `--code` path cannot verify `state`; paste the redirected URL unedited.
+
 Success looks like:
 
 ```json

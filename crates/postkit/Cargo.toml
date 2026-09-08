@@ -15,7 +15,7 @@ categories = ["api-bindings", "command-line-utilities"]
 default = []
 vault-file = []
 client = ["dep:reqwest"]
-oauth = ["client"]
+oauth = ["client", "dep:getrandom"]
 threads = ["client", "oauth", "dep:tokio"]
 bluesky = ["client", "dep:unicode-segmentation", "dep:time"]
 
@@ -25,6 +25,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
 unicode-segmentation = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

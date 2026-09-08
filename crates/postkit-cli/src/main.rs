@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use output::{emit_err, emit_ok, emit_raw};
 use postkit::connectors::threads::validate_text;
 use postkit::{
-    extract_code, query_param, valid_name, AccountKey, AppConfig, AppStore, AuthReply, Body,
+    extract_code, valid_name, verify_state, AccountKey, AppConfig, AppStore, AuthReply, Body,
     Client, Deadline, Error, FileAppStore, FileVault, Intent, OAuthApp, PostRequest, Registry,
     Site, Vault,
 };
@@ -319,17 +319,7 @@ async fn dispatch(
                             eprintln!("paste the redirected URL or code, then Enter");
                             let mut line = String::new();
                             io::stdin().lock().read_line(&mut line).map_err(|_| 5)?;
-                            if let Some(got) = query_param(line.trim(), "state") {
-                                if got != state {
-                                    return Err(fail(
-                                        &Error::Auth {
-                                            site: Site::new(&site),
-                                            reason: "state_mismatch".into(),
-                                        },
-                                        json,
-                                    ));
-                                }
-                            }
+                            verify_state(&state, &line).map_err(|e| fail(&e, json))?;
                             let code = extract_code(&line).map_err(|e| fail(&e, json))?;
                             client.auth_finish(&key, AuthReply::Pasted { code }).await
                         }

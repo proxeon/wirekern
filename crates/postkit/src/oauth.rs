@@ -34,6 +34,39 @@ pub fn authorize_url(
     }
 }
 
+/// RFC 6749 §10.12: unguessable `state`, 128 bits from the OS CSPRNG.
+pub fn new_state() -> Result<String, Error> {
+    let mut buf = [0u8; 16];
+    getrandom::fill(&mut buf).map_err(|_| Error::Auth {
+        site: Site::new(""),
+        reason: "os_rng".into(),
+    })?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// RFC 6749 §10.12 CSRF check on a pasted redirect. A URL must echo `state`
+/// exactly; a URL without one is rejected (authorize URLs always carry it).
+/// A raw code carries no state and passes unchecked — inherent to the
+/// two-invocation paste flow. The Meta `#_` fragment is stripped first.
+pub fn verify_state(expected: &str, pasted: &str) -> Result<(), Error> {
+    let without_frag = pasted.trim().split('#').next().unwrap_or("");
+    let looks_url = without_frag.contains("://") || without_frag.starts_with("http");
+    if !looks_url {
+        return Ok(());
+    }
+    match query_param(without_frag, "state") {
+        Some(got) if got == expected => Ok(()),
+        Some(_) => Err(Error::Auth {
+            site: Site::new(""),
+            reason: "state_mismatch".into(),
+        }),
+        None => Err(Error::Auth {
+            site: Site::new(""),
+            reason: "missing_state".into(),
+        }),
+    }
+}
+
 /// Pull `code` from a pasted redirect URL or a raw code. Strips Meta `#_`.
 pub fn extract_code(pasted: &str) -> Result<String, Error> {
     let s = pasted.trim();
@@ -204,6 +237,37 @@ mod tests {
         assert!(u.contains("redirect_uri=https%3A%2F%2Flocalhost%2Fcallback"));
         assert!(u.contains("scope=threads_basic%2Cthreads_content_publish"));
         assert!(u.contains("state=st"));
+    }
+
+    #[test]
+    fn new_state_is_128_bits_of_hex() {
+        let a = new_state().unwrap();
+        let b = new_state().unwrap();
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(a.chars().all(|c| !c.is_ascii_uppercase()));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn verify_state_gates_pasted_redirects() {
+        let st = "0123abcd";
+        // genuine redirect: state echoes, Meta fragment stripped
+        let url = "https://example.com/callback?code=AQBx&state=0123abcd#_";
+        assert!(verify_state(st, url).is_ok());
+        assert!(verify_state(st, &format!("  {url}  ")).is_ok());
+        // wrong state
+        assert!(matches!(
+            verify_state(st, "https://example.com/cb?code=AQBx&state=zzz#_"),
+            Err(Error::Auth { reason, .. }) if reason == "state_mismatch"
+        ));
+        // state stripped from the URL bypasses nothing: hard error
+        assert!(matches!(
+            verify_state(st, "https://example.com/cb?code=AQBx"),
+            Err(Error::Auth { reason, .. }) if reason == "missing_state"
+        ));
+        // raw code (no URL) carries no state
+        assert!(verify_state(st, "AQBx-hBs#_").is_ok());
     }
 
     #[test]

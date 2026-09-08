@@ -1,6 +1,6 @@
 use crate::error::Error;
 use crate::http::Http;
-use crate::oauth::{authorize_url, exchange_code, extract_code};
+use crate::oauth::{authorize_url, exchange_code, extract_code, new_state};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::types::{
     AccountCreds, AppConfig, Body, Capability, Deadline, Intent, OAuthApp, Outcome, Site, WhoAmI,
@@ -103,7 +103,7 @@ impl Publisher for Threads {
 
     async fn auth_start(&self, app: &AppConfig) -> Result<AuthStart, Error> {
         let oauth = require_oauth(app)?;
-        let state = new_state();
+        let state = new_state()?;
         let authorize_url = authorize_url(
             AUTHORIZE,
             &oauth.client_id,
@@ -404,14 +404,6 @@ fn require_oauth(app: &AppConfig) -> Result<&OAuthApp, Error> {
         site: Site::new(SITE),
         reason: "missing_app_config".into(),
     })
-}
-
-fn new_state() -> String {
-    let n = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{n:x}")
 }
 
 fn unix_now() -> u64 {

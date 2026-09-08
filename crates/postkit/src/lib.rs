@@ -21,7 +21,9 @@ pub use http::Http;
 #[cfg(feature = "oauth")]
 mod oauth;
 #[cfg(feature = "oauth")]
-pub use oauth::{authorize_url, exchange_code, extract_code, query_param, TokenResponse};
+pub use oauth::{
+    authorize_url, exchange_code, extract_code, query_param, verify_state, TokenResponse,
+};
 
 #[cfg(any(feature = "threads", feature = "bluesky"))]
 pub mod connectors;
