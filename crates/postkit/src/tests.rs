@@ -17,6 +17,8 @@ struct MockPub {
     auth_kind: AuthKind,
     fail_auth_once: bool,
     fail_publish: bool,
+    refresh_network_err: bool,
+    refresh_dead_session: bool,
     publishes: AtomicUsize,
 }
 
@@ -28,6 +30,8 @@ impl MockPub {
             auth_kind: AuthKind::OAuth2AuthCode,
             fail_auth_once: false,
             fail_publish: false,
+            refresh_network_err: false,
+            refresh_dead_session: false,
             publishes: AtomicUsize::new(0),
         }
     }
@@ -108,6 +112,18 @@ impl Publisher for MockPub {
     }
 
     async fn refresh(&self, _app: &AppConfig, creds: &AccountCreds) -> Result<AccountCreds, Error> {
+        if self.refresh_network_err {
+            return Err(Error::Network {
+                site: self.site.clone(),
+                message: "mock refresh outage".into(),
+            });
+        }
+        if self.refresh_dead_session {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "session_expired".into(),
+            });
+        }
         match creds {
             AccountCreds::OAuth2 { extra, .. } => Ok(AccountCreds::OAuth2 {
                 access_token: "refreshed".into(),
@@ -152,6 +168,39 @@ fn intent(site: &str, text: &str) -> Intent {
         body: Body::Text { text: text.into() },
         idempotency_key: None,
     }
+}
+
+/// Client whose stored token expires in an hour — inside the 7-day window,
+/// so every publish attempts a proactive refresh first.
+fn setup_expiring(p: MockPub) -> (Client, AccountKey) {
+    let mut reg = Registry::new();
+    let site = p.site.clone();
+    reg.register(Arc::new(p));
+    let vault = Arc::new(MemoryVault::new());
+    let apps = Arc::new(MemoryAppStore::new());
+    let key = AccountKey::new(site.as_str(), "default");
+    apps.put(&AppConfig {
+        site: site.clone(),
+        oauth: None,
+        extra: serde_json::json!({}),
+    })
+    .unwrap();
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+    vault
+        .put(
+            &key,
+            &AccountCreds::OAuth2 {
+                access_token: "tok".into(),
+                refresh_token: None,
+                extra: serde_json::json!({ "expires_at": expires_at, "refreshed_at": 0 }),
+            },
+        )
+        .unwrap();
+    (Client::new(reg, vault, apps), key)
 }
 
 fn intent_with_idem(site: &str, text: &str, idem: &str) -> Intent {
@@ -385,6 +434,35 @@ async fn failed_publish_is_not_recorded() {
         c.vault().get_outcome(&key, "k").unwrap().is_none(),
         "ledger must stay empty after a failure"
     );
+}
+
+#[tokio::test]
+async fn transient_refresh_failure_still_publishes() {
+    // Proactive refresh is an optimization: the stored token is still
+    // valid for another hour, so a network failure on the refresh endpoint
+    // must degrade to publishing with the current token, not abort it.
+    let mut p = MockPub::text("threads");
+    p.refresh_network_err = true;
+    let (c, key) = setup_expiring(p);
+    let out = c
+        .publish(&key, intent("threads", "hi"), Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(out.id.as_deref(), Some("id-hi"));
+}
+
+#[tokio::test]
+async fn dead_session_refresh_fails_fast() {
+    // A refresh rejected by the platform means the session is dead;
+    // failing fast with the auth error beats dying later inside publish.
+    let mut p = MockPub::text("threads");
+    p.refresh_dead_session = true;
+    let (c, key) = setup_expiring(p);
+    let err = c
+        .publish(&key, intent("threads", "hi"), Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Auth { reason, .. } if reason == "session_expired"));
 }
 
 #[tokio::test]

@@ -166,6 +166,20 @@ impl Client {
                 Ok(new)
             }
             Err(Error::Auth { reason, .. }) if reason == "no_refresh" => Ok(creds),
+            // Proactive refresh is an optimization, not a prerequisite: it
+            // fires while the stored token is still valid (up to 7 days
+            // left), so a transient failure — network, 5xx, rate limit,
+            // timeout — must degrade to publishing with the current token.
+            // The next publish retries the refresh. Auth failures stay
+            // fatal: a rejected refresh means the session is dead, and
+            // failing fast with a re-auth error beats dying later inside
+            // publish.
+            Err(
+                Error::Network { .. }
+                | Error::RateLimited { .. }
+                | Error::Platform { .. }
+                | Error::DeadlineExceeded { .. },
+            ) => Ok(creds),
             Err(e) => Err(e),
         }
     }
