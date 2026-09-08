@@ -70,7 +70,7 @@ postkit accounts list|delete
 postkit apps show|set
 ```
 
-Every subcommand takes `--json`: the machine document on **stdout**, human text on stderr. Agents always pass this.
+Every subcommand takes `--json`: with it, stdout carries exactly one JSON document; without it, stdout stays empty and every line (results included) goes to stderr.
 
 Flag-by-flag reference, auth flows, vault layout, exit codes: **[docs/cli.md](./docs/cli.md)**.
 

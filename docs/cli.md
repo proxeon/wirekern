@@ -1,6 +1,6 @@
 # CLI reference
 
-Global flags work on every subcommand. `--json` prints the machine document on **stdout** and human text on stderr — agents always pass it. Without it, documents are suppressed and only the human lines print.
+Global flags work on every subcommand. Output-stream contract, one rule: with `--json`, stdout carries exactly one JSON document; without it, **stdout stays empty** and every line — results included — goes to stderr. Scripts that want data on stdout pass `--json`.
 
 ## Global flags
 

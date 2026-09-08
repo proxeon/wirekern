@@ -1,7 +1,7 @@
 mod output;
 
 use clap::{Parser, Subcommand};
-use output::{emit_err, emit_ok, emit_raw};
+use output::{emit_err, emit_ok, emit_raw, human_line};
 use postkit::connectors::threads::validate_text;
 use postkit::{
     app_source, extract_code, valid_name, verify_state, AccountKey, AppConfig, AppStore, AuthReply,
@@ -184,9 +184,9 @@ async fn run(cli: Cli) -> Result<(), i32> {
                     "redirect_uri": redir,
                 }));
             } else {
-                println!(
+                human_line(format!(
                     "site={site} source={source} client_id={id} redirect_uri={redir} client_secret=[redacted]"
-                );
+                ));
             }
             Ok(())
         }
@@ -202,7 +202,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
                 emit_raw(&serde_json::json!({ "accounts": rows }));
             } else {
                 for k in keys {
-                    println!("{}/{}", k.site, k.name);
+                    human_line(format!("{}/{}", k.site, k.name));
                 }
             }
             Ok(())
@@ -247,7 +247,7 @@ async fn dispatch(
                         if json {
                             emit_raw(&serde_json::json!({ site.as_str(): names }));
                         } else {
-                            println!("{}: {}", site, names.join(", "));
+                            human_line(format!("{}: {}", site, names.join(", ")));
                         }
                     }
                     None => {
@@ -257,7 +257,7 @@ async fn dispatch(
             } else if json {
                 emit_raw(&client.registry().capabilities_json());
             } else {
-                println!("{}", client.registry().capabilities_json());
+                human_line(client.registry().capabilities_json().to_string());
             }
             Ok(())
         }
@@ -625,13 +625,14 @@ async fn one_post(
     }
 }
 
-/// `--json` prints `{ "results": [...] }`; human mode one line per result.
+/// `--json` prints `{ "results": [...] }`; human mode one line per result,
+/// on stderr per the output-stream contract.
 fn print_results(results: &[serde_json::Value], json: bool) {
     if json {
         emit_raw(&serde_json::json!({ "results": results }));
     } else {
         for r in results {
-            println!("{}", result_line(r));
+            human_line(result_line(r));
         }
     }
 }
