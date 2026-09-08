@@ -1,6 +1,6 @@
 use crate::apps::{env_override, AppStore};
 use crate::error::Error;
-use crate::types::{valid_name, AccountCreds, AccountKey, AppConfig, Site};
+use crate::types::{valid_name, AccountCreds, AccountKey, AppConfig, Outcome, Site};
 use crate::vault::Vault;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -45,6 +45,24 @@ impl FileVault {
             set_mode(cur, 0o700)?;
         }
         Ok(())
+    }
+
+    /// Idempotency ledger path: `idempotency/<site>/<account>/<key>.json`.
+    /// Same `valid_name` discipline as account paths — an idempotency key
+    /// is caller input and names a file.
+    fn outcome_path(&self, key: &AccountKey, idem: &str) -> Result<PathBuf, Error> {
+        if !valid_name(key.site.as_str()) || !valid_name(&key.name) {
+            return Err(Error::InvalidName(key.name.clone()));
+        }
+        if !valid_name(idem) {
+            return Err(Error::InvalidName(idem.into()));
+        }
+        Ok(self
+            .root
+            .join("idempotency")
+            .join(key.site.as_str())
+            .join(&key.name)
+            .join(format!("{idem}.json")))
     }
 }
 
@@ -97,6 +115,23 @@ impl Vault for FileVault {
     fn delete(&self, key: &AccountKey) -> Result<(), Error> {
         let path = self.account_path(key)?;
         fs::remove_file(&path).map_err(|_| Error::UnknownAccount(key.clone()))
+    }
+
+    fn put_outcome(&self, key: &AccountKey, idem: &str, out: &Outcome) -> Result<(), Error> {
+        let path = self.outcome_path(key, idem)?;
+        if let Some(parent) = path.parent() {
+            self.ensure_dir_under_root(parent)?;
+        }
+        atomic_write(&path, &serde_json::to_vec_pretty(out)?)
+    }
+
+    fn get_outcome(&self, key: &AccountKey, idem: &str) -> Result<Option<Outcome>, Error> {
+        let path = self.outcome_path(key, idem)?;
+        match fs::read(&path) {
+            Ok(data) => Ok(Some(serde_json::from_slice(&data)?)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 
@@ -331,6 +366,36 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let v = FileVault::new(tmp.path().join("nested")).unwrap();
         assert!(v.list(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn outcome_ledger_roundtrip_and_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        let key = AccountKey::new("threads", "default");
+        let out = Outcome {
+            site: Site::new("threads"),
+            id: Some("123".into()),
+            url: Some("https://example.test/123".into()),
+            limits: None,
+        };
+        assert!(v.get_outcome(&key, "k").unwrap().is_none());
+        v.put_outcome(&key, "k", &out).unwrap();
+        assert_eq!(
+            v.get_outcome(&key, "k").unwrap().unwrap().id.as_deref(),
+            Some("123")
+        );
+        // lands under idempotency/<site>/<account>/<key>.json
+        assert!(tmp
+            .path()
+            .join("idempotency")
+            .join("threads")
+            .join("default")
+            .join("k.json")
+            .exists());
+        // an idempotency key is caller input and names a file
+        let err = v.put_outcome(&key, "../escape", &out).unwrap_err();
+        assert!(matches!(err, Error::InvalidName(n) if n == "../escape"));
     }
 
     #[cfg(unix)]

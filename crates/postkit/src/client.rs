@@ -55,13 +55,24 @@ impl Client {
                 need,
             });
         }
+        // Client-side idempotency: a retry with the same key returns the
+        // first completed Outcome without touching the network. Only
+        // *completed* publishes are remembered — an attempt that died after
+        // the platform already created the post was never learned, so it
+        // cannot dedupe (see docs/cli.md, --idempotency).
+        let idem = intent.idempotency_key.clone();
+        if let Some(idem) = idem.as_deref() {
+            if let Some(out) = self.vault.get_outcome(key, idem)? {
+                return Ok(out);
+            }
+        }
         let app = self
             .apps
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
         creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
-        match publisher
+        let out = match publisher
             .publish(&app, &creds, intent.clone(), deadline)
             .await
         {
@@ -71,7 +82,12 @@ impl Client {
                 publisher.publish(&app, &new, intent, deadline).await
             }
             other => other,
+        }?;
+        // Record after success only: a failed attempt must stay retryable.
+        if let Some(idem) = idem.as_deref() {
+            self.vault.put_outcome(key, idem, &out)?;
         }
+        Ok(out)
     }
 
     pub async fn whoami(&self, key: &AccountKey) -> Result<WhoAmI, Error> {

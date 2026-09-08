@@ -16,6 +16,7 @@ struct MockPub {
     caps: Vec<Capability>,
     auth_kind: AuthKind,
     fail_auth_once: bool,
+    fail_publish: bool,
     publishes: AtomicUsize,
 }
 
@@ -26,6 +27,7 @@ impl MockPub {
             caps: vec![Capability::PublishText],
             auth_kind: AuthKind::OAuth2AuthCode,
             fail_auth_once: false,
+            fail_publish: false,
             publishes: AtomicUsize::new(0),
         }
     }
@@ -51,6 +53,13 @@ impl Publisher for MockPub {
         _deadline: Deadline,
     ) -> Result<Outcome, Error> {
         let n = self.publishes.fetch_add(1, Ordering::SeqCst);
+        if self.fail_publish {
+            return Err(Error::Platform {
+                site: self.site.clone(),
+                code: "boom".into(),
+                message: "mock failure".into(),
+            });
+        }
         if self.fail_auth_once && n == 0 {
             return Err(Error::Auth {
                 site: self.site.clone(),
@@ -142,6 +151,13 @@ fn intent(site: &str, text: &str) -> Intent {
         params: serde_json::json!({}),
         body: Body::Text { text: text.into() },
         idempotency_key: None,
+    }
+}
+
+fn intent_with_idem(site: &str, text: &str, idem: &str) -> Intent {
+    Intent {
+        idempotency_key: Some(idem.into()),
+        ..intent(site, text)
     }
 }
 
@@ -296,6 +312,78 @@ async fn put_token_refused_for_app_password_sites() {
     assert!(
         matches!(vault.get(&key), Err(Error::UnknownAccount(_))),
         "no creds may be written on refusal"
+    );
+}
+
+#[tokio::test]
+async fn idempotency_retry_returns_stored_outcome() {
+    // Same key twice: exactly one connector publish; the retry replays
+    // the stored Outcome without HTTP.
+    let mock = Arc::new(MockPub::text("threads"));
+    let mut reg = Registry::new();
+    reg.register(mock.clone());
+    let vault = Arc::new(MemoryVault::new());
+    let apps = Arc::new(MemoryAppStore::new());
+    let key = AccountKey::new("threads", "default");
+    apps.put(&AppConfig {
+        site: Site::new("threads"),
+        oauth: None,
+        extra: serde_json::json!({}),
+    })
+    .unwrap();
+    vault
+        .put(
+            &key,
+            &AccountCreds::OAuth2 {
+                access_token: "tok".into(),
+                refresh_token: None,
+                extra: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    let c = Client::new(reg, vault, apps);
+    let d = Deadline::from_secs(30);
+
+    let out1 = c
+        .publish(&key, intent_with_idem("threads", "hi", "k"), d)
+        .await
+        .unwrap();
+    // retry with the same key — even with different text — must not republish
+    let out2 = c
+        .publish(&key, intent_with_idem("threads", "CHANGED", "k"), d)
+        .await
+        .unwrap();
+    assert_eq!(out1.id, out2.id);
+    assert_eq!(mock.publishes.load(Ordering::SeqCst), 1);
+
+    // a different key posts again; no key, no dedupe
+    c.publish(&key, intent_with_idem("threads", "hi", "k2"), d)
+        .await
+        .unwrap();
+    c.publish(&key, intent("threads", "plain"), d)
+        .await
+        .unwrap();
+    assert_eq!(mock.publishes.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn failed_publish_is_not_recorded() {
+    // A failed attempt must stay retryable: nothing enters the ledger.
+    let mut p = MockPub::text("threads");
+    p.fail_publish = true;
+    let (c, key) = setup(p);
+    let err = c
+        .publish(
+            &key,
+            intent_with_idem("threads", "hi", "k"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Platform { .. }));
+    assert!(
+        c.vault().get_outcome(&key, "k").unwrap().is_none(),
+        "ledger must stay empty after a failure"
     );
 }
 
