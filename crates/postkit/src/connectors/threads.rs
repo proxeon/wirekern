@@ -22,6 +22,14 @@ pub const SCOPES: &str = "threads_basic,threads_content_publish,threads_manage_r
 /// bytes" (developers.facebook.com/docs/threads/posts). See [`threads_len`].
 pub const MAX_TEXT: usize = 500;
 
+/// Pacing between reply-container retries while Meta's write path catches
+/// up with the just-published parent (issue 020). Measured live: the read
+/// path serves the parent's permalink at ~2s while reply creation still
+/// returns `code 24` until ~30s — and the window varies with Meta-side
+/// load, so this is deliberately *not* a backoff schedule guessing the
+/// window; completion is gated on the 24-to-success transition itself.
+pub const DEFAULT_REPLY_RETRY_DELAY: Duration = Duration::from_secs(2);
+
 fn default_base() -> String {
     format!("https://{GRAPH_HOST}/{GRAPH_VERSION}")
 }
@@ -36,6 +44,9 @@ pub struct Threads {
     site: Site,
     base: String,
     graph_origin: String,
+    /// Pacing between reply-container retries on Graph `code 24`. A
+    /// sampling rate, not a window prediction — see `post_text`.
+    reply_retry_delay: Duration,
 }
 
 impl Threads {
@@ -58,7 +69,15 @@ impl Threads {
             site: Site::new(SITE),
             base: publish_base.into().trim_end_matches('/').to_string(),
             graph_origin: graph_origin.into().trim_end_matches('/').to_string(),
+            reply_retry_delay: DEFAULT_REPLY_RETRY_DELAY,
         })
+    }
+
+    /// Test helper: shrink the code-24 retry pacing so regression tests
+    /// run in milliseconds instead of seconds.
+    pub fn with_reply_retry_delay(mut self, delay: Duration) -> Self {
+        self.reply_retry_delay = delay;
+        self
     }
 }
 
@@ -96,6 +115,7 @@ impl Publisher for Threads {
             text,
             reply_to.as_deref(),
             deadline,
+            self.reply_retry_delay,
         )
         .await
     }
@@ -251,6 +271,7 @@ pub fn reply_to_id(params: &Value) -> Result<Option<String>, Error> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn post_text(
     http: &Http,
     base: &str,
@@ -259,16 +280,55 @@ pub async fn post_text(
     text: &str,
     reply_to: Option<&str>,
     deadline: Deadline,
+    reply_retry_delay: Duration,
 ) -> Result<Outcome, Error> {
     let site = Site::new(SITE);
     let url = format!("{}/{}/threads", base.trim_end_matches('/'), user_id);
     let pairs = text_form_pairs(text, reply_to, access_token);
-    let req = http
-        .post(&url)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(form(&pairs));
-    let resp = http.send(req, deadline, &site).await?;
-    let created = read_json(resp, &site).await?;
+    // Reply containers race Meta's propagation: the parent is readable
+    // (permalink GET green) seconds before the write path accepts replies
+    // to it, answering `code 24` ("resource does not exist") in the
+    // meantime — issue 020. The reply attempt itself is the only readiness
+    // signal that flips in lockstep with acceptance, so retry the creation,
+    // gated on the code and the deadline. Retrying is safe: a 24 is an
+    // application-level rejection (parent lookup failed server-side), not
+    // a lost response — a retried creation cannot double-post. Root posts
+    // never retry: a 24 there means a genuinely bad target id.
+    let mut last_24: Option<Error> = None;
+    let created = loop {
+        // Out of time mid-retry: the propagation 24 explains the stall
+        // better than a bare timeout, so it is the error we surface.
+        if deadline.check(&site).is_err() {
+            if let Some(e) = last_24.take() {
+                return Err(e);
+            }
+        }
+        let req = http
+            .post(&url)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form(&pairs));
+        let resp = match http.send(req, deadline, &site).await {
+            Ok(r) => r,
+            // the same race one layer down: send's own expiry check can
+            // fire between retries — still surface the 24, not the timeout
+            Err(e @ Error::DeadlineExceeded { .. }) => match last_24.take() {
+                Some(twenty_four) => return Err(twenty_four),
+                None => return Err(e),
+            },
+            Err(e) => return Err(e),
+        };
+        match read_json(resp, &site).await {
+            Ok(body) => break body,
+            Err(e)
+                if reply_to.is_some()
+                    && matches!(&e, Error::Platform { ref code, .. } if code.as_str() == "24") =>
+            {
+                last_24 = Some(e);
+                tokio::time::sleep(reply_retry_delay).await;
+            }
+            Err(e) => return Err(e),
+        }
+    };
     let created_id = created
         .get("id")
         .and_then(|v| v.as_str())
@@ -608,6 +668,7 @@ mod tests {
     use super::*;
     use httpmock::prelude::*;
     use serde_json::json;
+    use std::sync::Arc;
 
     fn token_creds() -> AccountCreds {
         AccountCreds::OAuth2 {
@@ -979,6 +1040,113 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::Platform { .. }));
         assert_eq!(poll.hits(), MAX_CONTAINER_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn reply_container_retries_code_24_until_accepted() {
+        // httpmock has no call-limit API, so a spawned task swaps the 24
+        // mock for a success mock mid-publish; the current-thread runtime
+        // advances the swap timer while post_text awaits between retries.
+        // The server is leaked so the Mock handle (Mock<'static>) can move
+        // into the spawned task; the process reclaims it at test exit.
+        let server: &'static MockServer = Box::leak(Box::new(MockServer::start()));
+        let m24 = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads");
+            then.status(400).json_body(json!({
+                "error": { "code": 24, "message": "The requested resource does not exist" }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads_publish");
+            then.status(200).json_body(json!({ "id": "18800" }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1.0/18800");
+            then.status(200)
+                .json_body(json!({ "permalink": "https://example.test/18800" }));
+        });
+        let hits24 = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let hits = hits24.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                hits.store(m24.hits(), std::sync::atomic::Ordering::SeqCst);
+                m24.delete_async().await;
+                server.mock(|when, then| {
+                    when.method(POST).path("/v1.0/me/threads");
+                    then.status(200).json_body(json!({ "id": "17900" }));
+                });
+            });
+        }
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url()))
+            .unwrap()
+            .with_reply_retry_delay(Duration::from_millis(1));
+        let mut intent = text_intent("reply");
+        intent.params = json!({ "reply_to_id": "1790" });
+        let out = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                intent,
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.id.as_deref(), Some("18800"));
+        assert!(
+            hits24.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "the 24 must have been sampled before the swap"
+        );
+    }
+
+    #[tokio::test]
+    async fn reply_container_24_past_deadline_surfaces_the_platform_error() {
+        // Deadline exhausted mid-retry: the propagation 24 is the
+        // informative error, not a bare timeout.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads");
+            then.status(400).json_body(json!({
+                "error": { "code": 24, "message": "The requested resource does not exist" }
+            }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url()))
+            .unwrap()
+            .with_reply_retry_delay(Duration::from_millis(50));
+        let mut intent = text_intent("reply");
+        intent.params = json!({ "reply_to_id": "1790" });
+        let err = t
+            .publish(&empty_app(), &token_creds(), intent, Deadline::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Platform { ref code, .. } if code == "24"));
+    }
+
+    #[tokio::test]
+    async fn root_container_24_does_not_retry() {
+        // A 24 on a root creation means a genuinely bad target id, not
+        // propagation: it must surface immediately, once.
+        let server = MockServer::start();
+        let m = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads");
+            then.status(400).json_body(json!({
+                "error": { "code": 24, "message": "The requested resource does not exist" }
+            }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url()))
+            .unwrap()
+            .with_reply_retry_delay(Duration::from_millis(1));
+        let err = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                text_intent("root"),
+                Deadline::from_secs(5),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Platform { ref code, .. } if code == "24"));
+        assert_eq!(m.hits(), 1);
     }
 
     #[test]

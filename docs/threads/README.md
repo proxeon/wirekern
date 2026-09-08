@@ -205,7 +205,7 @@ pk post threads --text 'hello' --json
 
 Text limit: **500 characters**, emoji counting as their UTF-8 bytes (Meta's rule; CJK/Arabic are 1 each). Empty text is rejected.
 
-Reply chain (not a carousel). Repeat `--text`; each line is one Graph post. Segment 2+ send `reply_to_id` of the previous id (create container, then `threads_publish` — not `auto_publish_text`). Not atomic: if a later segment fails, earlier posts stay live (delete in the Threads app). `--to` + two `--text` is refused (`thread_unsupported`). Use `--deadline 60` if a reply is slow to publish.
+Reply chain (not a carousel). Repeat `--text`; each line is one Graph post. Segment 2+ send `reply_to_id` of the previous id (create container, then `threads_publish` — not `auto_publish_text`). Meta's write path lags its read path: replying to a seconds-old post returns Graph `code 24` until the parent propagates (~30s measured, varies with load). postkit retries reply creation every 2s until the deadline — give chains `--deadline 120` as margin on slow nights. Not atomic: if a later segment fails, earlier posts stay live (delete in the Threads app). `--to` + two `--text` is refused (`thread_unsupported`).
 
 ```bash
 pk post threads --json --text 'root' --text '1/' --text '2/'

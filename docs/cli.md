@@ -33,7 +33,7 @@ Details that bite:
 
 - No `--token` on `post`. Auth writes the vault; `post` reads it.
 - `--to` uses **one** `--account` for every site. Threads is usually `default`; Bluesky is the handle — two commands, or the same alias in both vaults.
-- Reply chains are not atomic: if a later segment fails, earlier posts stay live (delete them in the app). Use `--deadline 60` if a reply is slow to publish.
+- Reply chains are not atomic: if a later segment fails, earlier posts stay live (delete them in the app). Reply creation retries Graph `code 24` (parent propagation, ~30s on Meta's side) every 2s until the deadline — give chains `--deadline 120` as margin.
 
 ## `auth`
 
