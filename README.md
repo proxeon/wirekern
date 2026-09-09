@@ -104,4 +104,6 @@ Roadmap, in order: images/video, then HTTP `serve` mode with `pk_live_` keys.
 
 `serve` / `pk_live_`, `--listen`, `--image` / video, schedule, inbox, LinkedIn, Telegram, Mastodon. Add a site: [docs/connectors.md](./docs/connectors.md). Gates: [plans/001/004-after-kernel.md](./plans/001/004-after-kernel.md).
 
+Notable changes, release by release: [CHANGELOG.md](./CHANGELOG.md).
+
 License: MIT OR Apache-2.0. Repository: [github.com/proxeon/postkit](https://github.com/proxeon/postkit).
