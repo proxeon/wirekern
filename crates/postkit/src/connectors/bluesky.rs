@@ -584,6 +584,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multiline_text_round_trips_and_counts_newlines_as_graphemes() {
+        // Bluesky text rides inside JSON, so serde escapes \n natively
+        // (backslash-n in the raw body); the grapheme limit counts each
+        // newline as 1. Locked so a future pre-encoding or stripping of
+        // newlines cannot land silently.
+        let server = MockServer::start();
+        session_ok(&server);
+        let record = server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.repo.createRecord")
+                .body_contains("Baris pertama\\n\\nBaris kedua");
+            then.status(200).json_body(json!({
+                "uri": "at://did:plc:abc/app.bsky.feed.post/xyz",
+                "cid": "bafy"
+            }));
+        });
+        let t = Bluesky::with_pds(server.base_url()).unwrap();
+        let out = t
+            .publish(
+                &empty_app(),
+                &pw_creds(),
+                text_intent("Baris pertama\n\nBaris kedua"),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        record.assert();
+        assert_eq!(
+            out.id.as_deref(),
+            Some("at://did:plc:abc/app.bsky.feed.post/xyz")
+        );
+        // 298 letters + 2 newlines = 300 passes; one more of either fails
+        validate_text(&format!("{}\n\n", "a".repeat(298))).unwrap();
+        let err = validate_text(&format!("{}\n\n", "a".repeat(299))).unwrap_err();
+        assert!(matches!(err, Error::InvalidPost { reason, .. } if reason == "text_too_long"));
+    }
+
+    #[tokio::test]
     async fn session_401_is_auth() {
         let server = MockServer::start();
         server.mock(|when, then| {

@@ -53,6 +53,10 @@ mod tests {
         // reserved and non-ASCII escape as uppercase hex
         assert_eq!(form_encode("a&=b/c"), "a%26%3Db%2Fc");
         assert_eq!(form_encode("é"), "%C3%A9");
+        // control characters must never ride raw: a literal newline inside
+        // an application/x-www-form-urlencoded body is ambiguous to
+        // parsers — multi-line Threads posts depend on %0A
+        assert_eq!(form_encode("a\nb"), "a%0Ab");
         // the shape oauth and Graph both rely on
         assert_eq!(
             form(&[

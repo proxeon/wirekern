@@ -1270,6 +1270,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multiline_text_posts_percent_encoded_newlines() {
+        // Threads renders \n as line breaks, but a
+        // application/x-www-form-urlencoded body may not carry them raw —
+        // form() must emit %0A (validated live 2026-09-09: Meta accepted a
+        // %0A-encoded multi-line post, 329/500 units). The mock only
+        // matches when the escaped form arrives; a raw-newline body falls
+        // through to an unmatched route and fails loudly.
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1.0/me/threads")
+                .body_contains("text=Baris+pertama%0A%0ABaris+kedua");
+            then.status(200).json_body(json!({ "id": "17900" }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1.0/17900");
+            then.status(200)
+                .json_body(json!({ "permalink": "https://example.test/17900" }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
+        let out = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                text_intent("Baris pertama\n\nBaris kedua"),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        create.assert();
+        assert_eq!(out.id.as_deref(), Some("17900"));
+    }
+
+    #[tokio::test]
     async fn probe_rejects_invalid_text_before_http() {
         let server = MockServer::start();
         let create = server.mock(|when, then| {
