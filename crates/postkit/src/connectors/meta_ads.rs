@@ -9,7 +9,7 @@
 use crate::error::Error;
 use crate::form::form;
 use crate::http::Http;
-use crate::insights::{InsightRow, InsightsQuery, InsightsReply, Metric};
+use crate::insights::{AttributionWindow, InsightRow, InsightsQuery, InsightsReply, Metric};
 use crate::oauth::{authorize_url, exchange_code, extract_code, new_state};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::types::{
@@ -227,7 +227,10 @@ impl Publisher for MetaAds {
             ("fields", &fields.join(",")),
             ("time_range", &range),
             ("time_increment", "1"),
-            ("action_attribution_windows", query.attribution.as_str()),
+            (
+                "action_attribution_windows",
+                attribution_param(query.attribution),
+            ),
             ("access_token", token),
         ]);
         let mut rows: Vec<InsightRow> = Vec::new();
@@ -286,6 +289,17 @@ fn meta_field(m: Metric) -> Option<&'static str> {
         Metric::Cpc => Some("cpc"),
         Metric::Cpm => Some("cpm"),
         Metric::Purchases => None,
+    }
+}
+
+/// Graph's `action_attribution_windows` wants an array of atomic windows
+/// (`["7d_click","1d_view"]`); the combined `7d_click_1d_view` is only the
+/// Ads Manager display name for that preset and is rejected with code 100.
+fn attribution_param(a: AttributionWindow) -> &'static str {
+    match a {
+        AttributionWindow::SevenDayClickOneDayView => r#"["7d_click","1d_view"]"#,
+        AttributionWindow::OneDayClick => r#"["1d_click"]"#,
+        AttributionWindow::OneDayView => r#"["1d_view"]"#,
     }
 }
 
@@ -832,7 +846,7 @@ mod tests {
                     "time_range",
                     r#"{"since":"2026-06-01","until":"2026-06-02"}"#,
                 )
-                .query_param("action_attribution_windows", "7d_click_1d_view")
+                .query_param("action_attribution_windows", r#"["7d_click","1d_view"]"#)
                 .query_param("fields", "impressions,spend,actions");
             then.status(200).json_body(json!({
                 "data": [ {

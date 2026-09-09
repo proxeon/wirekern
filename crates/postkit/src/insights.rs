@@ -111,7 +111,9 @@ impl FromStr for Metric {
 /// Attribution is an explicit argument, never a silent default (026 §3):
 /// ROAS answers change with the window, and a caller who cannot say which
 /// window they meant cannot interpret the number they get back. The string
-/// forms are Meta's own `action_attribution_windows` labels.
+/// forms are operator-facing presets (Ads Manager display names); the Meta
+/// connector maps them onto Graph's atomic `action_attribution_windows`
+/// array on the wire.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AttributionWindow {
     #[serde(rename = "7d_click_1d_view")]
