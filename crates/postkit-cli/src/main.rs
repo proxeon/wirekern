@@ -87,7 +87,7 @@ enum Commands {
         /// account | campaign | adset | ad.
         #[arg(long, default_value = "account")]
         level: String,
-        /// Comma-separated: spend,impressions,clicks,reach,ctr,cpc,cpm,purchases.
+        /// Comma-separated: spend,impressions,clicks,reach,ctr,cpc,cpm,purchases,purchase_value,roas.
         #[arg(long, default_value = "spend,impressions,clicks,purchases")]
         metrics: String,
         /// 7d_click_1d_view | 1d_click | 1d_view. Explicit — ROAS answers
@@ -989,6 +989,7 @@ fn fail(e: &Error, json: bool) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn build_insights_query_parses_and_defaults() {
@@ -1113,6 +1114,23 @@ mod tests {
         assert!(
             matches!(cli.command, Commands::Ads(AdsCmd::Accounts { site }) if site == "meta_ads")
         );
+    }
+
+    #[test]
+    fn insights_help_lists_all_supported_metrics() {
+        // Keep the user-facing discovery text aligned with Metric::from_str.
+        // This caught the Tier A+ metrics being accepted by the parser but
+        // absent from `postkit insights --help`.
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("insights")
+            .expect("insights command")
+            .get_arguments()
+            .find(|arg| arg.get_id() == "metrics")
+            .and_then(|arg| arg.get_help())
+            .expect("metrics help")
+            .to_string();
+        assert!(help.contains("purchase_value,roas"));
     }
 
     #[test]
