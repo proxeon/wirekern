@@ -43,7 +43,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 |------|------------|------|--------|
 | `threads` | `publish.text` | OAuth paste-code, or `--token` long-lived `THQVJ…` | 500 chars; emoji as UTF-8 bytes |
 | `bluesky` | `publish.text` | App password (`--password`). `--account` **is** the handle (`default` rejected) | 300 graphemes |
-| `meta_ads` | `read.metrics` | OAuth paste-code (`ads_read`), long-lived via `fb_exchange_token` | ≤ 90-day range; explicit attribution window |
+| `meta_ads` | `read.metrics`, `read.ad_accounts`, `create.paused_ads` | OAuth paste-code (`ads_read,ads_management`), long-lived via `fb_exchange_token` | ≤ 90-day reads; creates are fixed `PAUSED` |
 
 ### Feature coverage
 
@@ -54,6 +54,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | Reply to existing post (`reply_to_id`) | ✓ | ✗ | — |
 | Dry-run probe (`--dry-run`) | ✓ create-only, expires unpublished in 24h | ✗ `dry_run_unsupported` (atomic `createRecord`) | — |
 | Spend / performance insights | ✗ roadmap | ✗ roadmap | ✓ `insights`, daily rows by entity |
+| Paused campaign / ad set / ad create | ✗ | ✗ | ✓ `ads create-*`, activation unavailable |
 | Token refresh | ✓ auto, within 7 days of expiry | n/a (app passwords) | ✓ re-issue via `fb_exchange_token` |
 | `whoami` | ✓ | ✓ | ✓ (+ first ad account resolved at auth) |
 | Images / video | ✗ roadmap | ✗ roadmap | — |
@@ -69,6 +70,7 @@ postkit post threads --text 'root' --text 'reply'   # reply chain on Threads
 postkit post threads --text '…' --dry-run   # probe: publish nothing (threads)
 postkit auth <site> [--token | --code | --password]
 postkit insights meta_ads --from 2026-06-01 --to 2026-06-30 --attribution 7d_click_1d_view --level campaign
+postkit ads create-campaign meta_ads --name 'Draft' --objective sales
 postkit whoami <site>
 postkit capabilities [site]
 postkit accounts list|delete

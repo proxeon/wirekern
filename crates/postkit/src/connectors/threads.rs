@@ -766,7 +766,8 @@ mod tests {
     use super::*;
     use httpmock::prelude::*;
     use serde_json::json;
-    use std::sync::Arc;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     fn token_creds() -> AccountCreds {
         AccountCreds::OAuth2 {
@@ -1189,41 +1190,56 @@ mod tests {
 
     #[tokio::test]
     async fn reply_container_retries_code_24_until_accepted() {
-        // httpmock has no call-limit API, so a spawned task swaps the 24
-        // mock for a success mock mid-publish; the current-thread runtime
-        // advances the swap timer while post_text awaits between retries.
-        // The server is leaked so the Mock handle (Mock<'static>) can move
-        // into the spawned task; the process reclaims it at test exit.
-        let server: &'static MockServer = Box::leak(Box::new(MockServer::start()));
-        let m24 = server.mock(|when, then| {
-            when.method(POST).path("/v1.0/me/threads");
-            then.status(400).json_body(json!({
-                "error": { "code": 24, "message": "The requested resource does not exist" }
-            }));
+        // httpmock cannot return a bounded sequence from one route. The old
+        // test deleted the code-24 mock on a timer and briefly had no route,
+        // producing an intermittent false failure in parallel CI. This tiny
+        // local server instead owns a deterministic five-request script:
+        // 24, 24, container success, publish success, permalink success.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut code_24_hits = 0usize;
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0u8; 1024];
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0, "request ended before HTTP headers");
+                    request.extend_from_slice(&chunk[..n]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let path = std::str::from_utf8(&request)
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|target| target.split('?').next())
+                    .unwrap();
+                let (status, body) = match path {
+                    "/v1.0/me/threads" if code_24_hits < 2 => {
+                        code_24_hits += 1;
+                        (
+                            "400 Bad Request",
+                            r#"{"error":{"code":24,"message":"not ready"}}"#,
+                        )
+                    }
+                    "/v1.0/me/threads" => ("200 OK", r#"{"id":"17900"}"#),
+                    "/v1.0/me/threads_publish" => ("200 OK", r#"{"id":"18800"}"#),
+                    "/v1.0/18800" => ("200 OK", r#"{"permalink":"https://example.test/18800"}"#),
+                    other => panic!("unexpected test request: {other}"),
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            code_24_hits
         });
-        server.mock(|when, then| {
-            when.method(POST).path("/v1.0/me/threads_publish");
-            then.status(200).json_body(json!({ "id": "18800" }));
-        });
-        server.mock(|when, then| {
-            when.method(GET).path("/v1.0/18800");
-            then.status(200)
-                .json_body(json!({ "permalink": "https://example.test/18800" }));
-        });
-        let hits24 = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        {
-            let hits = hits24.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(40)).await;
-                hits.store(m24.hits(), std::sync::atomic::Ordering::SeqCst);
-                m24.delete_async().await;
-                server.mock(|when, then| {
-                    when.method(POST).path("/v1.0/me/threads");
-                    then.status(200).json_body(json!({ "id": "17900" }));
-                });
-            });
-        }
-        let t = Threads::with_base(format!("{}/v1.0", server.base_url()))
+        let t = Threads::with_base(format!("http://{address}/v1.0"))
             .unwrap()
             .with_reply_retry_delay(Duration::from_millis(1));
         let mut intent = text_intent("reply");
@@ -1238,10 +1254,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.id.as_deref(), Some("18800"));
-        assert!(
-            hits24.load(std::sync::atomic::Ordering::SeqCst) >= 1,
-            "the 24 must have been sampled before the swap"
-        );
+        assert_eq!(server.join().unwrap(), 2, "the 24 branch must be sampled");
     }
 
     #[tokio::test]

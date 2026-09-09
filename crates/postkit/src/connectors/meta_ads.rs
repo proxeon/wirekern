@@ -1,11 +1,12 @@
-//! Meta Ads connector — Tier A: read-only insights (026 §5).
+//! Meta Ads connector — Tier A reads plus Tier B paused creates (026 §5).
 //!
-//! One-way surface: `read.metrics` only. No verb in this module can spend.
-//! Management (paused-first creates) and activation (policy-gated) are
-//! Tier B/C and deliberately absent. Auth reuses the Threads paste-code
-//! machinery against the Facebook OAuth host; the long-lived exchange is
-//! Meta's `fb_exchange_token` grant (~60 days).
+//! The only management verbs create `PAUSED` drafts; this module exposes no
+//! activation or budget-update endpoint. `Client` calls `policy.rs` before a
+//! create reaches this connector. Auth reuses the Threads paste-code machinery
+//! against the Facebook OAuth host; the long-lived exchange is Meta's
+//! `fb_exchange_token` grant (~60 days).
 
+use crate::ads::{CreatePausedAdRequest, CreatedAd, PausedAdCreate};
 use crate::error::Error;
 use crate::form::form;
 use crate::http::Http;
@@ -29,8 +30,9 @@ pub const GRAPH_VERSION: &str = "v26.0";
 pub const GRAPH_ORIGIN: &str = "https://graph.facebook.com";
 pub const AUTHORIZE: &str = "https://www.facebook.com/dialog/oauth";
 pub const SITE: &str = "meta_ads";
-/// Tier A scope. `ads_management` joins only with Tier B (026 §5).
-pub const SCOPES: &str = "ads_read";
+/// Tier B adds paused management. Existing `ads_read` tokens keep working for
+/// insights, but an operator must re-authenticate before a create is allowed.
+pub const SCOPES: &str = "ads_read,ads_management";
 
 /// Daily rows over a ≤90-day range fit in one Graph page; this cap exists
 /// so a runaway cursor loop fails loudly instead of paging forever.
@@ -78,7 +80,11 @@ impl Publisher for MetaAds {
     }
 
     fn capabilities(&self) -> &[Capability] {
-        &[Capability::ReadMetrics, Capability::ReadAdAccounts]
+        &[
+            Capability::ReadMetrics,
+            Capability::ReadAdAccounts,
+            Capability::CreatePausedAds,
+        ]
     }
 
     fn auth_kind(&self) -> AuthKind {
@@ -332,6 +338,115 @@ impl Publisher for MetaAds {
             accounts,
         })
     }
+
+    async fn create_paused_ad(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &CreatePausedAdRequest,
+        deadline: Deadline,
+    ) -> Result<CreatedAd, Error> {
+        let token = access_token(creds)?;
+        let account = account_id(creds, request.account.as_deref())?;
+        create_paused_ad(
+            &self.http,
+            &self.base,
+            &self.site,
+            &account,
+            token,
+            &request.create,
+            deadline,
+        )
+        .await
+    }
+}
+
+/// Submit the one intentionally narrow Tier B form. `status=PAUSED` lives in
+/// this function rather than in a public request type, so neither CLI users
+/// nor library callers have a way to turn a create into an active delivery.
+async fn create_paused_ad(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    account: &str,
+    token: &str,
+    create: &PausedAdCreate,
+    deadline: Deadline,
+) -> Result<CreatedAd, Error> {
+    let (path, entity, mut fields) = match create {
+        PausedAdCreate::Campaign(campaign) => (
+            "campaigns",
+            crate::ads::AdEntity::Campaign,
+            vec![
+                ("name", campaign.name.clone()),
+                ("objective", campaign.objective.meta_value().into()),
+                (
+                    "special_ad_categories",
+                    serde_json::to_string(&campaign.special_ad_categories)
+                        .expect("Vec<String> serializes"),
+                ),
+            ],
+        ),
+        PausedAdCreate::Adset(adset) => (
+            "adsets",
+            crate::ads::AdEntity::Adset,
+            vec![
+                ("name", adset.name.clone()),
+                ("campaign_id", adset.campaign_id.clone()),
+                ("daily_budget", adset.daily_budget.to_string()),
+                ("billing_event", adset.billing_event.clone()),
+                ("optimization_goal", adset.optimization_goal.clone()),
+                (
+                    "targeting",
+                    serde_json::to_string(&adset.targeting).expect("Value serializes"),
+                ),
+            ],
+        ),
+        PausedAdCreate::Ad(ad) => (
+            "ads",
+            crate::ads::AdEntity::Ad,
+            vec![
+                ("name", ad.name.clone()),
+                ("adset_id", ad.adset_id.clone()),
+                (
+                    "creative",
+                    serde_json::json!({ "creative_id": ad.creative_id }).to_string(),
+                ),
+            ],
+        ),
+    };
+    fields.push(("status", "PAUSED".into()));
+    // The token goes in the form body rather than a URL query so proxy logs,
+    // errors, and test output have fewer opportunities to expose it.
+    fields.push(("access_token", token.into()));
+    let pairs: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect();
+    let body = form(&pairs);
+    let url = format!("{base}/act_{account}/{path}");
+    let response = http
+        .send(
+            http.post(&url)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(body),
+            deadline,
+            site,
+        )
+        .await?;
+    let response = read_json(response, site).await?;
+    let id = value_string(response.get("id")).ok_or_else(|| Error::Platform {
+        site: site.clone(),
+        code: "missing_id".into(),
+        message: "paused create returned no id".into(),
+    })?;
+    Ok(CreatedAd {
+        site: site.clone(),
+        account_id: format!("act_{account}"),
+        entity,
+        id,
+        status: "PAUSED".into(),
+    })
 }
 
 /// Map a metric to its Graph insights field name; `None` for metrics that
@@ -840,6 +955,7 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ads::{CampaignObjective, PausedAd, PausedAdset, PausedCampaign};
     use crate::insights::{AttributionWindow, InsightsLevel};
     use httpmock::prelude::*;
     use serde_json::json;
@@ -959,7 +1075,10 @@ mod tests {
                 state,
             } => {
                 assert!(authorize_url.starts_with("https://www.facebook.com/dialog/oauth?"));
-                assert!(authorize_url.contains("scope=ads_read"));
+                assert_eq!(
+                    crate::oauth::query_param(&authorize_url, "scope").as_deref(),
+                    Some(SCOPES)
+                );
                 assert!(authorize_url.contains("response_type=code"));
                 assert_eq!(
                     crate::oauth::query_param(&authorize_url, "state").as_deref(),
@@ -970,6 +1089,97 @@ mod tests {
         }
         let err = t.auth_start(&empty_app()).await.unwrap_err();
         assert!(matches!(err, Error::Auth { reason, .. } if reason == "missing_app_config"));
+    }
+
+    #[tokio::test]
+    async fn paused_creates_use_only_paused_forms_and_correct_edges() {
+        let server = MockServer::start();
+        let campaign = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/campaigns")
+                .body_contains("objective=OUTCOME_SALES")
+                .body_contains("status=PAUSED")
+                .body_contains("special_ad_categories=%5B%5D");
+            then.status(200).json_body(json!({ "id": "100" }));
+        });
+        let adset = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/adsets")
+                .body_contains("campaign_id=100")
+                .body_contains("daily_budget=2500")
+                .body_contains("targeting=%7B")
+                .body_contains("status=PAUSED");
+            then.status(200).json_body(json!({ "id": "200" }));
+        });
+        let ad = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/ads")
+                .body_contains("adset_id=200")
+                .body_contains("creative=%7B%22creative_id%22%3A%22300%22%7D")
+                .body_contains("status=PAUSED");
+            then.status(200).json_body(json!({ "id": "400" }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let creds = token_creds("123");
+
+        let campaign_out = connector
+            .create_paused_ad(
+                &empty_app(),
+                &creds,
+                &CreatePausedAdRequest {
+                    account: None,
+                    create: PausedAdCreate::Campaign(PausedCampaign {
+                        name: "paused campaign".into(),
+                        objective: CampaignObjective::Sales,
+                        special_ad_categories: vec![],
+                    }),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        let adset_out = connector
+            .create_paused_ad(
+                &empty_app(),
+                &creds,
+                &CreatePausedAdRequest {
+                    account: None,
+                    create: PausedAdCreate::Adset(PausedAdset {
+                        name: "paused ad set".into(),
+                        campaign_id: "100".into(),
+                        daily_budget: 2500,
+                        billing_event: "IMPRESSIONS".into(),
+                        optimization_goal: "REACH".into(),
+                        targeting: json!({ "geo_locations": { "countries": ["MY"] } }),
+                    }),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        let ad_out = connector
+            .create_paused_ad(
+                &empty_app(),
+                &creds,
+                &CreatePausedAdRequest {
+                    account: None,
+                    create: PausedAdCreate::Ad(PausedAd {
+                        name: "paused ad".into(),
+                        adset_id: "200".into(),
+                        creative_id: "300".into(),
+                    }),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        campaign.assert();
+        adset.assert();
+        ad.assert();
+        assert_eq!(campaign_out.id, "100");
+        assert_eq!(adset_out.entity, crate::ads::AdEntity::Adset);
+        assert_eq!(ad_out.status, "PAUSED");
     }
 
     #[tokio::test]

@@ -17,6 +17,12 @@ pub enum Error {
     },
     #[error("invalid query: {reason}")]
     InvalidQuery { site: Site, reason: String },
+    #[error("policy denied {action}: {reason}")]
+    PolicyDenied {
+        site: Site,
+        action: String,
+        reason: String,
+    },
     #[error("auth: {reason}")]
     Auth { site: Site, reason: String },
     #[error("rate limited")]
@@ -67,6 +73,11 @@ pub enum WireError {
     },
     InvalidQuery {
         site: Site,
+        reason: String,
+    },
+    PolicyDenied {
+        site: Site,
+        action: String,
         reason: String,
     },
     Auth {
@@ -143,6 +154,15 @@ impl From<&Error> for WireError {
                 site: site.clone(),
                 reason: reason.clone(),
             },
+            Error::PolicyDenied {
+                site,
+                action,
+                reason,
+            } => Self::PolicyDenied {
+                site: site.clone(),
+                action: action.clone(),
+                reason: reason.clone(),
+            },
         }
     }
 }
@@ -155,7 +175,8 @@ impl WireError {
             | Self::UnknownAccount { .. }
             | Self::Unsupported { .. }
             | Self::InvalidPost { .. }
-            | Self::InvalidQuery { .. } => 2,
+            | Self::InvalidQuery { .. }
+            | Self::PolicyDenied { .. } => 2,
             Self::Auth { .. } => 3,
             Self::RateLimited { .. } => 4,
             Self::Platform { .. } | Self::Network { .. } | Self::Timeout { .. } => 5,

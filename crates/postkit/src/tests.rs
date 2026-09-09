@@ -1,3 +1,6 @@
+use crate::ads::{
+    CampaignObjective, CreatePausedAdRequest, CreatedAd, PausedAdCreate, PausedCampaign,
+};
 use crate::apps::{AppStore, MemoryAppStore};
 use crate::client::Client;
 use crate::error::Error;
@@ -5,6 +8,7 @@ use crate::insights::{
     AdAccount, AdAccountsReply, AttributionWindow, InsightRow, InsightsLevel, InsightsQuery,
     InsightsReply, Metric,
 };
+use crate::policy::{AdsAction, AdsPolicy};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
 use crate::types::{
@@ -27,6 +31,7 @@ struct MockPub {
     refresh_dead_session: bool,
     publishes: AtomicUsize,
     probes: AtomicUsize,
+    paused_creates: AtomicUsize,
 }
 
 impl MockPub {
@@ -42,6 +47,7 @@ impl MockPub {
             refresh_dead_session: false,
             publishes: AtomicUsize::new(0),
             probes: AtomicUsize::new(0),
+            paused_creates: AtomicUsize::new(0),
         }
     }
 
@@ -55,6 +61,13 @@ impl MockPub {
     fn ad_accounts(site: &str) -> Self {
         Self {
             caps: vec![Capability::ReadAdAccounts],
+            ..Self::text(site)
+        }
+    }
+
+    fn paused_ads(site: &str) -> Self {
+        Self {
+            caps: vec![Capability::CreatePausedAds],
             ..Self::text(site)
         }
     }
@@ -181,6 +194,23 @@ impl Publisher for MockPub {
         })
     }
 
+    async fn create_paused_ad(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &CreatePausedAdRequest,
+        _deadline: Deadline,
+    ) -> Result<CreatedAd, Error> {
+        let n = self.paused_creates.fetch_add(1, Ordering::SeqCst);
+        Ok(CreatedAd {
+            site: self.site.clone(),
+            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
+            entity: request.create.entity(),
+            id: format!("draft-{n}"),
+            status: "PAUSED".into(),
+        })
+    }
+
     async fn auth_start(&self, _app: &AppConfig) -> Result<AuthStart, Error> {
         Ok(AuthStart::PasteInstructions {
             hint: "app password".into(),
@@ -226,6 +256,20 @@ impl Publisher for MockPub {
             }),
             other => Ok(other.clone()),
         }
+    }
+}
+
+/// A deliberately strict application policy used to prove Client calls the
+/// policy before it looks up credentials or routes to a connector.
+struct DenyAds;
+
+impl AdsPolicy for DenyAds {
+    fn authorize(&self, site: &Site, action: AdsAction) -> Result<(), Error> {
+        Err(Error::PolicyDenied {
+            site: site.clone(),
+            action: action.as_str().into(),
+            reason: "test_denied".into(),
+        })
     }
 }
 
@@ -790,6 +834,17 @@ fn insights_query(from: &str, to: &str) -> InsightsQuery {
     }
 }
 
+fn paused_campaign_request(name: &str) -> CreatePausedAdRequest {
+    CreatePausedAdRequest {
+        account: Some("act_1".into()),
+        create: PausedAdCreate::Campaign(PausedCampaign {
+            name: name.into(),
+            objective: CampaignObjective::Sales,
+            special_ad_categories: vec![],
+        }),
+    }
+}
+
 /// 026 read seam: Client routes the query to the connector, and the
 /// capability gate turns a publish-only site away before any HTTP.
 #[tokio::test]
@@ -838,6 +893,74 @@ async fn client_ad_accounts_routes_and_checks_capability() {
     assert!(
         matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadAdAccounts)
     );
+}
+
+/// Tier B follows the same capability routing discipline as reads, with an
+/// extra policy gate before it can touch a credential or issue a write.
+#[tokio::test]
+async fn client_paused_create_routes_and_refuses_before_vault_access() {
+    let (client, key) = setup(MockPub::paused_ads("meta_ads"));
+    let created = client
+        .create_paused_ad(
+            &key,
+            paused_campaign_request("draft"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.entity.as_str(), "campaign");
+    assert_eq!(created.status, "PAUSED");
+
+    let (no_management, key) = setup(MockPub::text("meta_ads"));
+    let err = no_management
+        .create_paused_ad(
+            &key,
+            paused_campaign_request("draft"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::CreatePausedAds)
+    );
+
+    // Deliberately leave the vault empty. Policy denial must win over an
+    // `unknown_account` error, proving the gate is before credential access.
+    let mut registry = Registry::new();
+    registry.register(Arc::new(MockPub::paused_ads("meta_ads")));
+    let denied = Client::with_ads_policy(
+        registry,
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+        Arc::new(DenyAds),
+    )
+    .create_paused_ad(
+        &AccountKey::new("meta_ads", "default"),
+        paused_campaign_request("draft"),
+        Deadline::from_secs(30),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(denied, Error::PolicyDenied { action, reason, .. } if action == "create_paused_campaign" && reason == "test_denied")
+    );
+
+    // Validation is also local: a malformed draft cannot reach vault lookup
+    // or HTTP, even under the normal paused-only policy.
+    let empty_vault = Client::new(
+        Registry::new(),
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let err = empty_vault
+        .create_paused_ad(
+            &AccountKey::new("meta_ads", "default"),
+            paused_campaign_request("   "),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidQuery { reason, .. } if reason == "missing_name"));
 }
 
 /// The trait's default `insights` must refuse — the same honesty the

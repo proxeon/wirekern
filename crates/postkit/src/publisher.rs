@@ -1,3 +1,4 @@
+use crate::ads::{CreatePausedAdRequest, CreatedAd};
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
 use crate::types::{
@@ -109,6 +110,23 @@ pub trait Publisher: Send + Sync {
         Err(Error::UnsupportedCapability {
             site: self.site().clone(),
             need: Capability::ReadAdAccounts,
+        })
+    }
+
+    /// Create one advertising entity that is structurally paused. The
+    /// default closes the management path for every connector that has not
+    /// explicitly implemented it; a capability declaration alone is never
+    /// permission to issue a write.
+    async fn create_paused_ad(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _request: &CreatePausedAdRequest,
+        _deadline: Deadline,
+    ) -> Result<CreatedAd, Error> {
+        Err(Error::UnsupportedCapability {
+            site: self.site().clone(),
+            need: Capability::CreatePausedAds,
         })
     }
 

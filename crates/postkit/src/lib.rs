@@ -2,10 +2,12 @@
 //!
 //! Default features are empty. Inject `Vault` / `AppStore`, or enable `vault-file`.
 
+mod ads;
 mod apps;
 mod client;
 mod error;
 mod insights;
+mod policy;
 mod publisher;
 mod registry;
 mod types;
@@ -34,6 +36,10 @@ pub use oauth::{
 #[cfg(any(feature = "threads", feature = "bluesky", feature = "meta-ads"))]
 pub mod connectors;
 
+pub use ads::{
+    AdEntity, CampaignObjective, CreatePausedAdRequest, CreatedAd, PausedAd, PausedAdCreate,
+    PausedAdset, PausedCampaign,
+};
 pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
 pub use client::{refresh_is_due, Client};
 pub use error::{Error, WireError};
@@ -41,6 +47,7 @@ pub use insights::{
     AdAccount, AdAccountsReply, AttributionWindow, Breakdown, DateRange, InsightRow, InsightsLevel,
     InsightsQuery, InsightsReply, Metric, MAX_RANGE_DAYS,
 };
+pub use policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};
 pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 pub use registry::Registry;
 pub use types::{

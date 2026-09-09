@@ -1,6 +1,8 @@
+use crate::ads::{CreatePausedAdRequest, CreatedAd};
 use crate::apps::AppStore;
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
+use crate::policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
 use crate::types::{
@@ -14,14 +16,28 @@ pub struct Client {
     registry: Registry,
     vault: Arc<dyn Vault>,
     apps: Arc<dyn AppStore>,
+    ads_policy: Arc<dyn AdsPolicy>,
 }
 
 impl Client {
     pub fn new(registry: Registry, vault: Arc<dyn Vault>, apps: Arc<dyn AppStore>) -> Self {
+        Self::with_ads_policy(registry, vault, apps, Arc::new(PausedOnlyAdsPolicy))
+    }
+
+    /// Construct a client with an explicitly chosen advertising policy. The
+    /// normal constructor installs `PausedOnlyAdsPolicy`; callers can only
+    /// loosen that contract by passing an intentional policy object here.
+    pub fn with_ads_policy(
+        registry: Registry,
+        vault: Arc<dyn Vault>,
+        apps: Arc<dyn AppStore>,
+        ads_policy: Arc<dyn AdsPolicy>,
+    ) -> Self {
         Self {
             registry,
             vault,
             apps,
+            ads_policy,
         }
     }
 
@@ -173,6 +189,52 @@ impl Client {
                 let new = publisher.refresh(&app, &creds).await?;
                 self.vault.put(key, &new)?;
                 publisher.ad_accounts(&app, &new, deadline).await
+            }
+            other => other,
+        }
+    }
+
+    /// Create a Meta advertising draft under the policy boundary. Approval
+    /// happens before the vault is read, so a denied future spend action
+    /// cannot refresh a token or send a request as a side effect.
+    pub async fn create_paused_ad(
+        &self,
+        key: &AccountKey,
+        request: CreatePausedAdRequest,
+        deadline: Deadline,
+    ) -> Result<CreatedAd, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy
+            .authorize(&key.site, AdsAction::for_paused_create(&request.create))?;
+        let publisher = self.publisher(&key.site)?;
+        if !publisher
+            .capabilities()
+            .contains(&Capability::CreatePausedAds)
+        {
+            return Err(Error::UnsupportedCapability {
+                site: key.site.clone(),
+                need: Capability::CreatePausedAds,
+            });
+        }
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let mut creds = self.vault.get(key)?;
+        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        match publisher
+            .create_paused_ad(&app, &creds, &request, deadline)
+            .await
+        {
+            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
+                let new = publisher.refresh(&app, &creds).await?;
+                self.vault.put(key, &new)?;
+                publisher
+                    .create_paused_ad(&app, &new, &request, deadline)
+                    .await
             }
             other => other,
         }

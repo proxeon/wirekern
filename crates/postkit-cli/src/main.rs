@@ -5,9 +5,10 @@ use output::{emit_err, emit_ok, emit_raw, human_line};
 use postkit::connectors::threads::validate_text;
 use postkit::{
     app_source, extract_code, valid_name, verify_state, AccountKey, AdAccount, AppConfig, AppStore,
-    AttributionWindow, AuthReply, Body, Breakdown, Client, DateRange, Deadline, Error,
-    FileAppStore, FileVault, InsightRow, InsightsLevel, InsightsQuery, Intent, Metric, OAuthApp,
-    PostRequest, Registry, Site, Vault,
+    AttributionWindow, AuthReply, Body, Breakdown, CampaignObjective, Client,
+    CreatePausedAdRequest, CreatedAd, DateRange, Deadline, Error, FileAppStore, FileVault,
+    InsightRow, InsightsLevel, InsightsQuery, Intent, Metric, OAuthApp, PausedAd, PausedAdCreate,
+    PausedAdset, PausedCampaign, PostRequest, Registry, Site, Vault,
 };
 use std::io::{self, BufRead, IsTerminal, Read};
 use std::path::PathBuf;
@@ -27,7 +28,7 @@ struct Cli {
     /// Vault root. Default ~/.postkit
     #[arg(long, global = true, env = "POSTKIT_HOME")]
     home: Option<PathBuf>,
-    /// Seconds for publish. Default 30.
+    /// Seconds for a network operation. Default 30.
     #[arg(long, global = true, default_value_t = 30)]
     deadline: u64,
     /// Account alias. Default default.
@@ -133,6 +134,54 @@ enum AccountsCmd {
 enum AdsCmd {
     /// List Meta ad accounts visible to the selected credential.
     Accounts { site: String },
+    /// Create a Meta campaign with status hard-coded to PAUSED.
+    CreateCampaign {
+        site: String,
+        /// Override the account stored by Meta OAuth (123 or act_123).
+        #[arg(long)]
+        ad_account: Option<String>,
+        #[arg(long)]
+        name: String,
+        /// awareness | traffic | engagement | leads | app_promotion | sales.
+        #[arg(long)]
+        objective: String,
+        /// Comma-separated Meta special-ad categories; blank means none.
+        #[arg(long, default_value = "")]
+        special_ad_categories: String,
+    },
+    /// Create a Meta ad set with status hard-coded to PAUSED.
+    CreateAdset {
+        site: String,
+        #[arg(long)]
+        ad_account: Option<String>,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        campaign_id: String,
+        /// Daily budget in the ad account's minor currency unit.
+        #[arg(long)]
+        daily_budget: u64,
+        #[arg(long)]
+        billing_event: String,
+        #[arg(long)]
+        optimization_goal: String,
+        /// JSON object with the Meta targeting specification.
+        #[arg(long)]
+        targeting_file: PathBuf,
+    },
+    /// Create a Meta ad with status hard-coded to PAUSED.
+    CreateAd {
+        site: String,
+        #[arg(long)]
+        ad_account: Option<String>,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        adset_id: String,
+        /// Existing Meta ad-creative ID; postkit creates no creative defaults.
+        #[arg(long)]
+        creative_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -297,6 +346,94 @@ async fn dispatch(
                 }
                 Err(e) => Err(fail(&e, json)),
             }
+        }
+        Commands::Ads(AdsCmd::CreateCampaign {
+            site,
+            ad_account,
+            name,
+            objective,
+            special_ad_categories,
+        }) => {
+            let request = build_paused_campaign_request(
+                &site,
+                ad_account,
+                &name,
+                &objective,
+                &special_ad_categories,
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_paused_create(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::CreateAdset {
+            site,
+            ad_account,
+            name,
+            campaign_id,
+            daily_budget,
+            billing_event,
+            optimization_goal,
+            targeting_file,
+        }) => {
+            // A file avoids shell-escaping a nested targeting object and
+            // makes the exact audience specification reviewable before any
+            // write. Do not put the file path in an error: CI paths and home
+            // directories add no actionable operator information.
+            let targeting = std::fs::read_to_string(targeting_file).map_err(|_| {
+                fail(
+                    &Error::InvalidQuery {
+                        site: Site::new(&site),
+                        reason: "targeting_file_unreadable".into(),
+                    },
+                    json,
+                )
+            })?;
+            let request = build_paused_adset_request(
+                &site,
+                PausedAdsetOptions {
+                    ad_account,
+                    name,
+                    campaign_id,
+                    daily_budget,
+                    billing_event,
+                    optimization_goal,
+                    targeting,
+                },
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_paused_create(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::CreateAd {
+            site,
+            ad_account,
+            name,
+            adset_id,
+            creative_id,
+        }) => {
+            let request =
+                build_paused_ad_request(&site, ad_account, &name, &adset_id, &creative_id)
+                    .map_err(|e| fail(&e, json))?;
+            one_paused_create(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
         }
         Commands::Capabilities { site } => {
             if let Some(s) = site {
@@ -807,6 +944,25 @@ async fn one_post(
     }
 }
 
+/// Paused ads have their own result type instead of being rendered as social
+/// posts. The status is shown prominently so an operator can verify the
+/// safety invariant in scripts and terminal output alike.
+async fn one_paused_create(
+    client: &Client,
+    key: &AccountKey,
+    request: CreatePausedAdRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.create_paused_ad(key, request, deadline).await {
+        Ok(created) => {
+            emit_ok(&created, json, || created_ad_line(&created));
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
 /// `--json` prints `{ "results": [...] }`; human mode one line per result,
 /// on stderr per the output-stream contract.
 fn print_results(results: &[serde_json::Value], json: bool) {
@@ -870,6 +1026,100 @@ struct InsightsOptions {
     ad_account: Option<String>,
     entity_ids: Vec<String>,
     breakdowns: String,
+}
+
+/// Common builder error shape for advertising input. These errors name only
+/// the invalid field, never echo targeting JSON or an operator's local path.
+fn ads_input_error(site: &str, reason: impl Into<String>) -> Error {
+    Error::InvalidQuery {
+        site: Site::new(site),
+        reason: reason.into(),
+    }
+}
+
+fn build_paused_campaign_request(
+    site: &str,
+    ad_account: Option<String>,
+    name: &str,
+    objective: &str,
+    special_ad_categories: &str,
+) -> Result<CreatePausedAdRequest, Error> {
+    let objective =
+        CampaignObjective::from_str(objective).map_err(|reason| ads_input_error(site, reason))?;
+    let request = CreatePausedAdRequest {
+        account: ad_account,
+        create: PausedAdCreate::Campaign(PausedCampaign {
+            name: name.into(),
+            objective,
+            special_ad_categories: special_ad_categories
+                .split(',')
+                .map(str::trim)
+                .filter(|category| !category.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        }),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+fn build_paused_adset_request(
+    site: &str,
+    options: PausedAdsetOptions,
+) -> Result<CreatePausedAdRequest, Error> {
+    let targeting = serde_json::from_str(&options.targeting)
+        .map_err(|_| ads_input_error(site, "bad_targeting_json"))?;
+    let request = CreatePausedAdRequest {
+        account: options.ad_account,
+        create: PausedAdCreate::Adset(PausedAdset {
+            name: options.name,
+            campaign_id: options.campaign_id,
+            daily_budget: options.daily_budget,
+            billing_event: options.billing_event,
+            optimization_goal: options.optimization_goal,
+            targeting,
+        }),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+/// The many required ad-set fields travel together from Clap to the pure
+/// builder. This keeps adding one targeting option from turning the builder
+/// into an error-prone positional parameter list.
+struct PausedAdsetOptions {
+    ad_account: Option<String>,
+    name: String,
+    campaign_id: String,
+    daily_budget: u64,
+    billing_event: String,
+    optimization_goal: String,
+    targeting: String,
+}
+
+fn build_paused_ad_request(
+    site: &str,
+    ad_account: Option<String>,
+    name: &str,
+    adset_id: &str,
+    creative_id: &str,
+) -> Result<CreatePausedAdRequest, Error> {
+    let request = CreatePausedAdRequest {
+        account: ad_account,
+        create: PausedAdCreate::Ad(PausedAd {
+            name: name.into(),
+            adset_id: adset_id.into(),
+            creative_id: creative_id.into(),
+        }),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
 }
 
 /// CLI flags → `InsightsQuery`. Pure over its inputs so the parse errors
@@ -951,6 +1201,18 @@ fn ad_account_line(account: &AdAccount) -> String {
         account.currency.as_deref().unwrap_or("-"),
         account.timezone.as_deref().unwrap_or("-"),
         account.status.as_deref().unwrap_or("-")
+    )
+}
+
+/// The id is adjacent to its entity name, followed by explicit `PAUSED`, so
+/// it can be copied into Ads Manager without a human mistaking it for active.
+fn created_ad_line(created: &CreatedAd) -> String {
+    format!(
+        "{} {} status={} account={}",
+        created.entity.as_str(),
+        created.id,
+        created.status,
+        created.account_id
     )
 }
 
@@ -1114,6 +1376,96 @@ mod tests {
         assert!(
             matches!(cli.command, Commands::Ads(AdsCmd::Accounts { site }) if site == "meta_ads")
         );
+    }
+
+    #[test]
+    fn paused_ads_commands_and_builders_require_explicit_safe_inputs() {
+        let cli = Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "create-campaign",
+            "meta_ads",
+            "--name",
+            "Paused validation",
+            "--objective",
+            "sales",
+            "--ad-account",
+            "act_123",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ads(AdsCmd::CreateCampaign { site, ad_account: Some(account), .. })
+                if site == "meta_ads" && account == "act_123"
+        ));
+
+        let campaign = build_paused_campaign_request(
+            "meta_ads",
+            Some("act_123".into()),
+            "Paused validation",
+            "sales",
+            "HOUSING, EMPLOYMENT",
+        )
+        .unwrap();
+        assert!(matches!(
+            campaign.create,
+            PausedAdCreate::Campaign(PausedCampaign { objective: CampaignObjective::Sales, special_ad_categories, .. })
+                if special_ad_categories == ["HOUSING", "EMPLOYMENT"]
+        ));
+
+        let adset = build_paused_adset_request(
+            "meta_ads",
+            PausedAdsetOptions {
+                ad_account: None,
+                name: "Paused ad set".into(),
+                campaign_id: "100".into(),
+                daily_budget: 2500,
+                billing_event: "IMPRESSIONS".into(),
+                optimization_goal: "REACH".into(),
+                targeting: r#"{"geo_locations":{"countries":["MY"]}}"#.into(),
+            },
+        )
+        .unwrap();
+        assert!(matches!(adset.create, PausedAdCreate::Adset(_)));
+
+        for (objective, targeting, reason) in [
+            ("clicks", "{}", "unknown_objective:clicks"),
+            ("sales", "[]", "targeting_must_be_object"),
+            ("sales", "not json", "bad_targeting_json"),
+        ] {
+            let result = if objective == "clicks" {
+                build_paused_campaign_request("meta_ads", None, "x", objective, "")
+            } else {
+                build_paused_adset_request(
+                    "meta_ads",
+                    PausedAdsetOptions {
+                        ad_account: None,
+                        name: "x".into(),
+                        campaign_id: "100".into(),
+                        daily_budget: 1,
+                        billing_event: "IMPRESSIONS".into(),
+                        optimization_goal: "REACH".into(),
+                        targeting: targeting.into(),
+                    },
+                )
+            };
+            assert!(
+                matches!(result, Err(Error::InvalidQuery { reason: actual, .. }) if actual == reason),
+                "{objective}/{targeting} should be {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn paused_create_line_cannot_hide_its_status() {
+        let line = created_ad_line(&CreatedAd {
+            site: Site::new("meta_ads"),
+            account_id: "act_123".into(),
+            entity: postkit::AdEntity::Campaign,
+            id: "100".into(),
+            status: "PAUSED".into(),
+        });
+        assert_eq!(line, "campaign 100 status=PAUSED account=act_123");
     }
 
     #[test]
