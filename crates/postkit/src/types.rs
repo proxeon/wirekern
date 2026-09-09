@@ -183,6 +183,22 @@ pub struct Outcome {
     pub limits: Option<Limits>,
 }
 
+/// Result of a create-only probe (027). Deliberately NOT an `Outcome`:
+/// `container_id` refers to an unpublished container, not a post — nothing
+/// is live, there is no permalink, and the container expires unused after
+/// 24h. Conflating the two would let a script treat a probe as a post
+/// (e.g. feed the id into `reply_to_id`, which references posts, or into
+/// an idempotency ledger keyed on publishes).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Probe {
+    pub site: Site,
+    /// Meta's creation_id: an unpublished media container. expires_in_hours
+    /// after creation it disappears; postkit never publishes it.
+    pub container_id: String,
+    /// How long the platform keeps the unpublished container.
+    pub expires_in_hours: u32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Limits {
     pub remaining: Option<u32>,

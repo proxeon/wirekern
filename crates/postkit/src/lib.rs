@@ -40,7 +40,7 @@ pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 pub use registry::Registry;
 pub use types::{
     valid_name, AccountCreds, AccountKey, AppConfig, Body, Capability, Deadline, Intent, Limits,
-    OAuthApp, Outcome, PostRequest, Site, WhoAmI, USER_AGENT,
+    OAuthApp, Outcome, PostRequest, Probe, Site, WhoAmI, USER_AGENT,
 };
 pub use vault::{MemoryVault, Vault};
 

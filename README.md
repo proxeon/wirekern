@@ -51,6 +51,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | Text post | ✓ | ✓ |
 | Reply chain (repeat `--text`) | ✓ | ✗ `thread_unsupported` |
 | Reply to existing post (`reply_to_id`) | ✓ | ✗ |
+| Dry-run probe (`--dry-run`) | ✓ create-only, expires unpublished in 24h | ✗ `dry_run_unsupported` (atomic `createRecord`) |
 | Token refresh | ✓ auto, within 7 days of expiry | n/a (app passwords) |
 | `whoami` | ✓ | ✓ |
 | Images / video | ✗ roadmap | ✗ roadmap |
@@ -63,6 +64,7 @@ Kernel-level, all sites: 0600 vault with atomic writes, CSPRNG OAuth `state`, re
 ```text
 postkit post <site> --text "…"              # publish now; --to threads,bluesky fans out
 postkit post threads --text 'root' --text 'reply'   # reply chain on Threads
+postkit post threads --text '…' --dry-run   # probe: publish nothing (threads)
 postkit auth <site> [--token | --code | --password]
 postkit whoami <site>
 postkit capabilities [site]

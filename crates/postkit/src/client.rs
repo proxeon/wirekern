@@ -2,7 +2,9 @@ use crate::apps::AppStore;
 use crate::error::Error;
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
-use crate::types::{AccountCreds, AccountKey, AppConfig, Deadline, Intent, Outcome, Site, WhoAmI};
+use crate::types::{
+    AccountCreds, AccountKey, AppConfig, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
+};
 use crate::vault::Vault;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -98,6 +100,60 @@ impl Client {
             .unwrap_or_else(|_| empty_app(&key.site));
         let creds = self.vault.get(key)?;
         publisher.whoami(&app, &creds).await
+    }
+
+    /// Create-only probe (027): same routing, capability check and
+    /// credentials as [`publish`](Self::publish), minus everything that
+    /// only a real publication is entitled to.
+    ///
+    /// - No idempotency, read *or* write. The ledger stores completed
+    ///   publishes; a probe that recorded its result would make a later
+    ///   real publish with the same key "succeed" by replaying the probe,
+    ///   and a probe that consulted it could be silenced by an old
+    ///   publish. Neither state belongs to the other.
+    /// - No proactive `maybe_refresh`. Refresh-on-publish is an
+    ///   optimization; here the probe's own response is the instrument —
+    ///   it reports the token state exactly as a publish would see it.
+    ///   The reactive `token_expired` → refresh → retry mapping is kept,
+    ///   because a probe that fails on a refreshable token would report
+    ///   "broken" where the next publish would have self-healed.
+    pub async fn probe(
+        &self,
+        key: &AccountKey,
+        intent: Intent,
+        deadline: Deadline,
+    ) -> Result<Probe, Error> {
+        if key.site != intent.site {
+            return Err(Error::InvalidPost {
+                site: intent.site,
+                reason: "site_mismatch".into(),
+                limit: None,
+            });
+        }
+        let publisher = self.publisher(&intent.site)?;
+        let need = intent.body.required_capability();
+        if !publisher.capabilities().contains(&need) {
+            return Err(Error::UnsupportedCapability {
+                site: intent.site.clone(),
+                need,
+            });
+        }
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        match publisher
+            .probe(&app, &creds, intent.clone(), deadline)
+            .await
+        {
+            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
+                let new = publisher.refresh(&app, &creds).await?;
+                self.vault.put(key, &new)?;
+                publisher.probe(&app, &new, intent, deadline).await
+            }
+            other => other,
+        }
     }
 
     pub async fn auth_start(&self, site: &Site) -> Result<AuthStart, Error> {

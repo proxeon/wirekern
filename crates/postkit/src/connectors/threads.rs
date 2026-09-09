@@ -4,7 +4,8 @@ use crate::http::Http;
 use crate::oauth::{authorize_url, exchange_code, extract_code, new_state};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::types::{
-    AccountCreds, AppConfig, Body, Capability, Deadline, Intent, OAuthApp, Outcome, Site, WhoAmI,
+    AccountCreds, AppConfig, Body, Capability, Deadline, Intent, OAuthApp, Outcome, Probe, Site,
+    WhoAmI,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -25,9 +26,11 @@ pub const MAX_TEXT: usize = 500;
 /// Pacing between reply-container retries while Meta's write path catches
 /// up with the just-published parent (issue 020). Measured live: the read
 /// path serves the parent's permalink at ~2s while reply creation still
-/// returns `code 24` until ~30s — and the window varies with Meta-side
-/// load, so this is deliberately *not* a backoff schedule guessing the
-/// window; completion is gated on the 24-to-success transition itself.
+/// returns `code 24` — until ~30s on 2026-09-08 but 12–15 min on
+/// 2026-09-09, so the window varies with Meta-side load by more than an
+/// order of magnitude. This is deliberately *not* a backoff schedule
+/// guessing the window; completion is gated on the 24-to-success
+/// transition itself — the deadline is the operator's bound, not ours.
 pub const DEFAULT_REPLY_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 fn default_base() -> String {
@@ -118,6 +121,52 @@ impl Publisher for Threads {
             self.reply_retry_delay,
         )
         .await
+    }
+
+    /// 027 create-only probe: everything a publish does except the step
+    /// that makes it visible. One container-creation attempt, then stop —
+    /// no `threads_publish`, and unlike the publish path, no `code 24`
+    /// retry: the 2s loop exists to *complete* a publish against the 020
+    /// propagation window, while a probe's job is to report the write
+    /// path's answer *now*. One call, three operator states (validated
+    /// live 2026-09-09): `container_id` → ready, a publish would go
+    /// through; Graph `24` "resource does not exist" → a well-formed id
+    /// the reply path cannot see yet (the 020 window — or a deleted or
+    /// foreign post: wait or re-check, don't retry blindly); Graph `100`
+    /// "not a valid threads_media ID" → the id itself is bad, fix the
+    /// input. A root-shaped probe (no `reply_to_id`) exercises the same
+    /// creation the smoke-test use case wants: credentials and app
+    /// accepted end-to-end, nothing visible, container expires in 24h.
+    async fn probe(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        intent: Intent,
+        deadline: Deadline,
+    ) -> Result<Probe, Error> {
+        let Body::Text { text } = &intent.body;
+        validate_text(text)?;
+        let token = access_token(creds)?;
+        let user_id = path_user_id(&intent, creds);
+        let reply_to = reply_to_id(&intent.params)?;
+        let container_id = create_text_container(
+            &self.http,
+            &self.base,
+            token,
+            &user_id,
+            text,
+            reply_to.as_deref(),
+            deadline,
+        )
+        .await?;
+        Ok(Probe {
+            site: self.site.clone(),
+            container_id,
+            // Meta discards unpublished containers after 24h; postkit
+            // never publishes one from a probe, so the expiry is the
+            // probe's only cleanup.
+            expires_in_hours: 24,
+        })
     }
 
     async fn whoami(&self, _app: &AppConfig, creds: &AccountCreds) -> Result<WhoAmI, Error> {
@@ -271,6 +320,32 @@ pub fn reply_to_id(params: &Value) -> Result<Option<String>, Error> {
     }
 }
 
+/// One container-creation attempt (`POST /{user}/threads`), shared by the
+/// publish path (which then publishes the container) and the probe (which
+/// stops here). Never sends `auto_publish_text`: that shortcut is only
+/// valid for standalone text posts — replies must go container-then-
+/// publish, and a probe must never publish at all.
+async fn create_text_container(
+    http: &Http,
+    base: &str,
+    access_token: &str,
+    user_id: &str,
+    text: &str,
+    reply_to: Option<&str>,
+    deadline: Deadline,
+) -> Result<String, Error> {
+    let site = Site::new(SITE);
+    let url = format!("{}/{}/threads", base.trim_end_matches('/'), user_id);
+    let pairs = text_form_pairs(text, reply_to, access_token);
+    let req = http
+        .post(&url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(form(&pairs));
+    let resp = http.send(req, deadline, &site).await?;
+    let body = read_json(resp, &site).await?;
+    json_id(&body, &site, "Graph create")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn post_text(
     http: &Http,
@@ -283,19 +358,19 @@ pub async fn post_text(
     reply_retry_delay: Duration,
 ) -> Result<Outcome, Error> {
     let site = Site::new(SITE);
-    let url = format!("{}/{}/threads", base.trim_end_matches('/'), user_id);
-    let pairs = text_form_pairs(text, reply_to, access_token);
     // Reply containers race Meta's propagation: the parent is readable
     // (permalink GET green) seconds before the write path accepts replies
     // to it, answering `code 24` ("resource does not exist") in the
-    // meantime — issue 020. The reply attempt itself is the only readiness
-    // signal that flips in lockstep with acceptance, so retry the creation,
-    // gated on the code and the deadline. Retrying is safe: a 24 is an
-    // application-level rejection (parent lookup failed server-side), not
-    // a lost response — a retried creation cannot double-post. Root posts
-    // never retry: a 24 there means a genuinely bad target id.
+    // meantime — issue 020, which measured acceptance anywhere from ~30s
+    // to 12–15 min after the parent published, night by night. The reply
+    // attempt itself is the only readiness signal that flips in lockstep
+    // with acceptance, so retry the creation, gated on the code and the
+    // deadline. Retrying is safe: a 24 is an application-level rejection
+    // (parent lookup failed server-side), not a lost response — a retried
+    // creation cannot double-post. Root posts never retry: a 24 there
+    // means a genuinely bad target id.
     let mut last_24: Option<Error> = None;
-    let created = loop {
+    let created_id = loop {
         // Out of time mid-retry: the propagation 24 explains the stall
         // better than a bare timeout, so it is the error we surface.
         if deadline.check(&site).is_err() {
@@ -303,22 +378,16 @@ pub async fn post_text(
                 return Err(e);
             }
         }
-        let req = http
-            .post(&url)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(form(&pairs));
-        let resp = match http.send(req, deadline, &site).await {
-            Ok(r) => r,
+        match create_text_container(http, base, access_token, user_id, text, reply_to, deadline)
+            .await
+        {
+            Ok(id) => break id,
             // the same race one layer down: send's own expiry check can
             // fire between retries — still surface the 24, not the timeout
             Err(e @ Error::DeadlineExceeded { .. }) => match last_24.take() {
                 Some(twenty_four) => return Err(twenty_four),
                 None => return Err(e),
             },
-            Err(e) => return Err(e),
-        };
-        match read_json(resp, &site).await {
-            Ok(body) => break body,
             Err(e)
                 if reply_to.is_some()
                     && matches!(&e, Error::Platform { ref code, .. } if code.as_str() == "24") =>
@@ -329,15 +398,6 @@ pub async fn post_text(
             Err(e) => return Err(e),
         }
     };
-    let created_id = created
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| Error::Platform {
-            site: site.clone(),
-            code: "missing_id".into(),
-            message: "Graph create returned no id".into(),
-        })?
-        .to_string();
     let id = if reply_to.is_some() {
         publish_container(http, base, user_id, &created_id, access_token, deadline).await?
     } else {
@@ -1147,6 +1207,87 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::Platform { ref code, .. } if code == "24"));
         assert_eq!(m.hits(), 1);
+    }
+
+    // --- 027: create-only probe -------------------------------------
+
+    #[tokio::test]
+    async fn probe_creates_container_and_never_publishes() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads");
+            then.status(200).json_body(json!({ "id": "C" }));
+        });
+        // the mock exists only to prove it is never touched: a probe that
+        // publishes is not a probe
+        let publish = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads_publish");
+            then.status(200).json_body(json!({ "id": "B" }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
+        let mut intent = text_intent("probe me");
+        intent.params = json!({ "reply_to_id": "A" });
+        let p = t
+            .probe(
+                &empty_app(),
+                &token_creds(),
+                intent,
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        create.assert();
+        publish.assert_hits(0);
+        assert_eq!(p.container_id, "C");
+        assert_eq!(p.expires_in_hours, 24);
+    }
+
+    #[tokio::test]
+    async fn probe_answers_code_24_once_without_retrying() {
+        // The publish path samples the 24 until Meta's write path catches
+        // up (020); a probe's product is the *current* answer, so exactly
+        // one attempt — a probe that retried would be a slow publish.
+        let server = MockServer::start();
+        let m = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads");
+            then.status(400).json_body(json!({
+                "error": { "code": 24, "message": "The requested resource does not exist" }
+            }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url()))
+            .unwrap()
+            // a 1ms pacing makes an accidental retry loop finish fast —
+            // and still fail the hits() assertion below
+            .with_reply_retry_delay(Duration::from_millis(1));
+        let mut intent = text_intent("reply");
+        intent.params = json!({ "reply_to_id": "1790" });
+        let err = t
+            .probe(&empty_app(), &token_creds(), intent, Deadline::from_secs(5))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Platform { ref code, .. } if code == "24"));
+        assert_eq!(m.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn probe_rejects_invalid_text_before_http() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads");
+            then.status(200).json_body(json!({ "id": "x" }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
+        let err = t
+            .probe(
+                &empty_app(),
+                &token_creds(),
+                text_intent(&"a".repeat(501)),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidPost { ref reason, .. } if reason == "text_too_long"));
+        create.assert_hits(0);
     }
 
     #[test]

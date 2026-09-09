@@ -28,12 +28,14 @@ postkit post --stdin
 | `--param k=v` | `Intent.params` (repeatable). `--param reply_to_id=` = one reply to an existing post (**threads**; Bluesky rejects unknown params with `unsupported_param:<k>` before HTTP) |
 | `--idempotency` | Root segment only on a chain. Client-side dedupe: a retry with the same key returns the stored `Outcome` without HTTP (`~/.postkit/idempotency/…`). Only **completed** publishes are remembered — an attempt that timed out after the platform created the post was never learned and will post again |
 | `--stdin` | Raw request JSON. One body. Exclusive with `--text` |
+| `--dry-run` | **threads** only. Create-only probe: one container creation, no publish, nothing visible ever — the container expires in 24h. Refused with `dry_run_unsupported` on sites with no create/publish split (Bluesky), and rejected with `dry_run_idempotency` / `dry_run_chain` when combined with `--idempotency` or a reply chain |
 
 Details that bite:
 
 - No `--token` on `post`. Auth writes the vault; `post` reads it.
 - `--to` uses **one** `--account` for every site. Threads is usually `default`; Bluesky is the handle — two commands, or the same alias in both vaults.
-- Reply chains are not atomic: if a later segment fails, earlier posts stay live (delete them in the app). Reply creation retries Graph `code 24` (parent propagation, ~30s on Meta's side) every 2s until the deadline — give chains `--deadline 120` as margin.
+- Reply chains are not atomic: if a later segment fails, earlier posts stay live (delete them in the app). Reply creation retries Graph `code 24` (parent propagation) every 2s until the deadline — the window has measured ~30s on one night and 12–15 min on the next, so `--deadline 120` is not always enough: give chains with fresh parents `--deadline 1500`.
+- `--dry-run` answers in exactly one attempt — no `code 24` retry, because a probe's product is the write path's *current* state. `{"site":"threads","container_id":"…","expires_in_hours":24}` = ready (a publish would succeed now); Graph `24` = valid id the reply path cannot see yet (the propagation window above — wait, then probe again); Graph `100` = not a valid media id, fix the input. A dry-run never reads or writes the `--idempotency` ledger.
 
 ## `auth`
 

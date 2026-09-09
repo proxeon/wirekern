@@ -205,7 +205,14 @@ pk post threads --text 'hello' --json
 
 Text limit: **500 characters**, emoji counting as their UTF-8 bytes (Meta's rule; CJK/Arabic are 1 each). Empty text is rejected.
 
-Reply chain (not a carousel). Repeat `--text`; each line is one Graph post. Segment 2+ send `reply_to_id` of the previous id (create container, then `threads_publish` — not `auto_publish_text`). Meta's write path lags its read path: replying to a seconds-old post returns Graph `code 24` until the parent propagates (~30s measured, varies with load). postkit retries reply creation every 2s until the deadline — give chains `--deadline 120` as margin on slow nights. Not atomic: if a later segment fails, earlier posts stay live (delete in the Threads app). `--to` + two `--text` is refused (`thread_unsupported`).
+Reply chain (not a carousel). Repeat `--text`; each line is one Graph post. Segment 2+ send `reply_to_id` of the previous id (create container, then `threads_publish` — not `auto_publish_text`). Meta's write path lags its read path: replying to a seconds-old post returns Graph `code 24` until the parent propagates — the window varies by night and load, measured ~30s on 2026-09-08 and 12–15 min on 2026-09-09. postkit retries reply creation every 2s until the deadline — give chains with fresh parents `--deadline 1500`; replying to an old post needs nothing special. Not atomic: if a later segment fails, earlier posts stay live (delete in the Threads app). `--to` + two `--text` is refused (`thread_unsupported`).
+
+Dry-run probe. `--dry-run` stops after container creation: no `threads_publish`, nothing visible, the container expires unpublished after 24h. One attempt, no retry — the probe reports the write path's current answer, so an operator (or agent) can ask "would this reply go through *right now?*" before committing a chain to the `code 24` window, or smoke-test credentials without a visible post. Branch on the response: `container_id` → ready; `code 24` → valid id, not yet visible (propagation window — wait and re-probe); `code 100` → not a valid media id, fix the input. Never combined with `--idempotency` or reply chains (`dry_run_idempotency` / `dry_run_chain`), and the id it returns is a *container* id — do not feed it to `reply_to_id`, which references published posts.
+
+```bash
+pk post threads --text 'reply' --param reply_to_id=1790… --dry-run --json
+# { "site": "threads", "container_id": "1798…", "expires_in_hours": 24 }
+```
 
 ```bash
 pk post threads --json --text 'root' --text '1/' --text '2/'

@@ -53,6 +53,10 @@ enum Commands {
         /// Raw request JSON on stdin.
         #[arg(long)]
         stdin: bool,
+        /// Create-only probe (threads): validate everything a publish
+        /// would, publish nothing. The container expires in 24h.
+        #[arg(long)]
+        dry_run: bool,
     },
     Auth {
         site: String,
@@ -393,7 +397,11 @@ async fn dispatch(
             param,
             idempotency,
             stdin,
+            dry_run,
         } => {
+            if let Some(e) = dry_run_conflict(dry_run, idempotency.as_deref(), text.len()) {
+                return Err(fail(&e, json));
+            }
             if stdin {
                 let mut buf = String::new();
                 io::stdin().read_to_string(&mut buf).map_err(|_| 5)?;
@@ -409,6 +417,11 @@ async fn dispatch(
                 })?;
                 let (key, mut intent) = req.into_key_intent().map_err(|e| fail(&e, json))?;
                 intent.idempotency_key = idempotency;
+                // --stdin has no dry_run field of its own; the CLI flag is
+                // the single switch, so both input paths stay in parity.
+                if dry_run {
+                    return one_probe(&client, &key, intent, deadline, json).await;
+                }
                 return one_post(&client, &key, intent, deadline, json).await;
             }
             let texts = resolve_texts(text)?;
@@ -455,8 +468,19 @@ async fn dispatch(
                         body: Body::Text { text: text.clone() },
                         idempotency_key: idempotency.clone(),
                     };
-                    match client.publish(&key, intent, deadline).await {
-                        Ok(o) => results.push(serde_json::to_value(&o).unwrap()),
+                    let attempt = if dry_run {
+                        client
+                            .probe(&key, intent, deadline)
+                            .await
+                            .map(|p| serde_json::to_value(&p).unwrap())
+                    } else {
+                        client
+                            .publish(&key, intent, deadline)
+                            .await
+                            .map(|o| serde_json::to_value(&o).unwrap())
+                    };
+                    match attempt {
+                        Ok(v) => results.push(v),
                         Err(e) => {
                             if code == 0 {
                                 code = e.exit_code();
@@ -481,11 +505,43 @@ async fn dispatch(
                     body: Body::Text { text },
                     idempotency_key: idempotency,
                 };
-                one_post(&client, &key, intent, deadline, json).await
+                if dry_run {
+                    one_probe(&client, &key, intent, deadline, json).await
+                } else {
+                    one_post(&client, &key, intent, deadline, json).await
+                }
             }
         }
         _ => unreachable!(),
     }
+}
+
+/// 027: `--dry-run` contradicts two other flags, and each contradiction
+/// is refused loudly rather than half-honored — silently dropping part of
+/// the operator's request is exactly the 022 failure mode. With
+/// `--idempotency`: a probe neither consults nor records the ledger (see
+/// `Client::probe`), so the pairing cannot mean anything. With a chain:
+/// segment N+1 replies to segment N's *published* id, and a probe
+/// publishes nothing — there is no parent to chain onto.
+fn dry_run_conflict(dry_run: bool, idempotency: Option<&str>, texts: usize) -> Option<Error> {
+    if !dry_run {
+        return None;
+    }
+    if idempotency.is_some() {
+        return Some(Error::InvalidPost {
+            site: Site::new(""),
+            reason: "dry_run_idempotency".into(),
+            limit: None,
+        });
+    }
+    if texts > 1 {
+        return Some(Error::InvalidPost {
+            site: Site::new("threads"),
+            reason: "dry_run_chain".into(),
+            limit: None,
+        });
+    }
+    None
 }
 
 fn resolve_texts(text: Vec<String>) -> Result<Vec<String>, i32> {
@@ -603,6 +659,30 @@ async fn chain_threads(
     Ok(())
 }
 
+/// Probe twin of `one_post`. The human line states the contract in plain
+/// words — nothing was published — because a bare `site id` here would
+/// read exactly like a successful post.
+async fn one_probe(
+    client: &Client,
+    key: &AccountKey,
+    intent: Intent,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.probe(key, intent, deadline).await {
+        Ok(p) => {
+            emit_ok(&p, json, || {
+                format!(
+                    "{} {} dry-run (nothing published, expires in {}h)",
+                    p.site, p.container_id, p.expires_in_hours
+                )
+            });
+            Ok(())
+        }
+        Err(e) => Err(fail(&e, json)),
+    }
+}
+
 async fn one_post(
     client: &Client,
     key: &AccountKey,
@@ -644,6 +724,10 @@ fn result_line(v: &serde_json::Value) -> String {
         return format!("{err} {site} {reason}").trim_end().into();
     }
     let site = v.get("site").and_then(|s| s.as_str()).unwrap_or("-");
+    // probe rows carry container_id, not id — never render them like posts
+    if let Some(c) = v.get("container_id").and_then(|i| i.as_str()) {
+        return format!("{site} {c} dry-run");
+    }
     let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("-");
     let url = v.get("url").and_then(|u| u.as_str()).unwrap_or("");
     format!("{site} {id} {url}").trim_end().into()
@@ -795,5 +879,34 @@ mod tests {
         assert_eq!(result_line(&err), "invalid_post threads text_too_long");
         let terse = serde_json::json!({ "error": "rate_limited", "site": "threads" });
         assert_eq!(result_line(&terse), "rate_limited threads");
+        // 027: probe rows must never render like posts — the id is an
+        // unpublished container, and a bare "threads C" would read as one
+        let probe =
+            serde_json::json!({ "site": "threads", "container_id": "C", "expires_in_hours": 24 });
+        assert_eq!(result_line(&probe), "threads C dry-run");
+    }
+
+    #[test]
+    fn dry_run_flag_parses() {
+        let cli = Cli::try_parse_from(["postkit", "post", "threads", "--text", "hi", "--dry-run"])
+            .unwrap();
+        match cli.command {
+            Commands::Post { dry_run, .. } => assert!(dry_run),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn dry_run_conflicts_are_refused_loudly() {
+        // no dry-run: no opinion, whatever the other flags say
+        assert!(dry_run_conflict(false, Some("k"), 3).is_none());
+        // dry-run + idempotency: a probe never touches the ledger
+        let e = dry_run_conflict(true, Some("k"), 1).unwrap();
+        assert!(matches!(&e, Error::InvalidPost { reason, .. } if reason == "dry_run_idempotency"));
+        // dry-run + chain: no published parent to reply to
+        let e = dry_run_conflict(true, None, 2).unwrap();
+        assert!(matches!(&e, Error::InvalidPost { reason, .. } if reason == "dry_run_chain"));
+        // dry-run alone with one text is exactly the intended shape
+        assert!(dry_run_conflict(true, None, 1).is_none());
     }
 }

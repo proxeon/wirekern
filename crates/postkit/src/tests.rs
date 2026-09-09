@@ -4,7 +4,8 @@ use crate::error::Error;
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
 use crate::types::{
-    AccountCreds, AccountKey, AppConfig, Body, Capability, Deadline, Intent, Outcome, Site, WhoAmI,
+    AccountCreds, AccountKey, AppConfig, Body, Capability, Deadline, Intent, Outcome, Probe, Site,
+    WhoAmI,
 };
 use crate::vault::{MemoryVault, Vault};
 use async_trait::async_trait;
@@ -21,6 +22,7 @@ struct MockPub {
     refresh_network_err: bool,
     refresh_dead_session: bool,
     publishes: AtomicUsize,
+    probes: AtomicUsize,
 }
 
 impl MockPub {
@@ -35,6 +37,7 @@ impl MockPub {
             refresh_network_err: false,
             refresh_dead_session: false,
             publishes: AtomicUsize::new(0),
+            probes: AtomicUsize::new(0),
         }
     }
 }
@@ -78,6 +81,30 @@ impl Publisher for MockPub {
             id: Some(format!("id-{text}")),
             url: Some(format!("https://example.test/{text}")),
             limits: None,
+        })
+    }
+
+    async fn probe(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        intent: Intent,
+        _deadline: Deadline,
+    ) -> Result<Probe, Error> {
+        let n = self.probes.fetch_add(1, Ordering::SeqCst);
+        // same reactive-expiry behavior as publish, so Client::probe's
+        // refresh mapping is exercised by the same fail_auth_once switch
+        if self.fail_auth_once && n == 0 {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "token_expired".into(),
+            });
+        }
+        let Body::Text { text } = intent.body;
+        Ok(Probe {
+            site: intent.site,
+            container_id: format!("container-{text}"),
+            expires_in_hours: 24,
         })
     }
 
@@ -336,6 +363,157 @@ async fn auth_finish_without_app_config() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+/// Implements `Publisher` without overriding `probe` — the shape every
+/// connector that has no create/publish split (Bluesky's createRecord is
+/// atomic) keeps forever. Exercises the trait's *default* refusal.
+struct Bare {
+    caps: Vec<Capability>,
+}
+
+#[async_trait]
+impl Publisher for Bare {
+    fn site(&self) -> &Site {
+        static SITE: std::sync::OnceLock<Site> = std::sync::OnceLock::new();
+        SITE.get_or_init(|| Site::new("bluesky"))
+    }
+    fn capabilities(&self) -> &[Capability] {
+        &self.caps
+    }
+    fn auth_kind(&self) -> AuthKind {
+        AuthKind::AppPassword
+    }
+    async fn publish(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _intent: Intent,
+        _deadline: Deadline,
+    ) -> Result<Outcome, Error> {
+        unreachable!("not under test")
+    }
+    async fn whoami(&self, _app: &AppConfig, _creds: &AccountCreds) -> Result<WhoAmI, Error> {
+        Ok(WhoAmI {
+            site: Site::new("bluesky"),
+            id: "user-1".into(),
+            handle: Some("tester".into()),
+        })
+    }
+}
+
+/// 027: the default `probe` must refuse — never fall through to a real
+/// publish — on sites with no creation/publication split.
+#[tokio::test]
+async fn default_probe_refuses_instead_of_publishing() {
+    let mut reg = Registry::new();
+    reg.register(Arc::new(Bare {
+        caps: vec![Capability::PublishText],
+    }));
+    let vault = Arc::new(MemoryVault::new());
+    let key = AccountKey::new("bluesky", "default");
+    vault
+        .put(
+            &key,
+            &AccountCreds::AppPassword {
+                identifier: "you.bsky.social".into(),
+                secret: "xxxx".into(),
+                pds: None,
+            },
+        )
+        .unwrap();
+    let c = Client::new(reg, vault, Arc::new(MemoryAppStore::new()));
+    let err = c
+        .probe(&key, intent("bluesky", "hi"), Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidPost { ref reason, .. } if reason == "dry_run_unsupported")
+    );
+}
+
+/// 027: a probe runs the capability gate exactly like a publish.
+#[tokio::test]
+async fn probe_checks_capability() {
+    let mut reg = Registry::new();
+    reg.register(Arc::new(Bare { caps: vec![] }));
+    let key = AccountKey::new("bluesky", "default");
+    let c = Client::new(
+        reg,
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let err = c
+        .probe(&key, intent("bluesky", "hi"), Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::UnsupportedCapability { .. }));
+}
+
+/// 027: probes never read or write the idempotency ledger. A stored
+/// publish outcome must not silence a probe, and a probe must not make a
+/// later publish "succeed" by replaying the probe's result.
+#[tokio::test]
+async fn probe_neither_reads_nor_writes_the_idempotency_ledger() {
+    let mut reg = Registry::new();
+    reg.register(Arc::new(MockPub::text("threads")));
+    let vault = Arc::new(MemoryVault::new());
+    let key = AccountKey::new("threads", "default");
+    vault
+        .put(
+            &key,
+            &AccountCreds::OAuth2 {
+                access_token: "tok".into(),
+                refresh_token: None,
+                extra: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    // an old completed publish under the same idempotency key
+    let seeded = Outcome {
+        site: Site::new("threads"),
+        id: Some("old-post".into()),
+        url: Some("https://example.test/old".into()),
+        limits: None,
+    };
+    vault.put_outcome(&key, "k", &seeded).unwrap();
+    let c = Client::new(reg, vault.clone(), Arc::new(MemoryAppStore::new()));
+
+    // read side: the probe ignores the ledger and answers from the platform
+    let probe = c
+        .probe(
+            &key,
+            intent_with_idem("threads", "hi", "k"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(probe.container_id, "container-hi");
+
+    // write side: the ledger still replays the *old publish*, not the probe
+    let replay = c
+        .publish(
+            &key,
+            intent_with_idem("threads", "hi", "k"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.id.as_deref(), Some("old-post"));
+}
+
+/// 027: the reactive token_expired → refresh → retry mapping applies to
+/// probes too — a refreshable token must not read as "broken".
+#[tokio::test]
+async fn probe_retries_once_on_token_expired() {
+    let mut p = MockPub::text("threads");
+    p.fail_auth_once = true;
+    let (c, key) = setup(p);
+    let probe = c
+        .probe(&key, intent("threads", "hi"), Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(probe.container_id, "container-hi");
 }
 
 #[tokio::test]

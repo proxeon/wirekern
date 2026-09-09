@@ -1,5 +1,7 @@
 use crate::error::Error;
-use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
+use crate::types::{
+    AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
+};
 use async_trait::async_trait;
 
 // 012 wants native async fn; `dyn Publisher` in Registry is not object-safe
@@ -52,6 +54,28 @@ pub trait Publisher: Send + Sync {
         intent: Intent,
         deadline: Deadline,
     ) -> Result<Outcome, Error>;
+
+    /// Create-only publish probe (027): run every step of a publish except
+    /// the one that makes it visible. The default refusal keeps connectors
+    /// honest — only a site whose API genuinely splits creation from
+    /// publication can offer a probe, and a connector that forgets to
+    /// implement it cannot silently publish for real on a dry-run the way
+    /// it could if dry-run were a flag inside `publish`. Same error shape
+    /// as `thread_unsupported`: a flag the site cannot honor is a usage
+    /// error, surfaced before any HTTP.
+    async fn probe(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _intent: Intent,
+        _deadline: Deadline,
+    ) -> Result<Probe, Error> {
+        Err(Error::InvalidPost {
+            site: self.site().clone(),
+            reason: "dry_run_unsupported".into(),
+            limit: None,
+        })
+    }
 
     async fn whoami(&self, app: &AppConfig, creds: &AccountCreds) -> Result<WhoAmI, Error>;
 
