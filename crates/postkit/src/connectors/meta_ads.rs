@@ -150,6 +150,7 @@ impl Publisher for MetaAds {
         let long = long_lived(
             &self.http,
             &self.graph_origin,
+            &oauth.client_id,
             &oauth.client_secret,
             &short.access_token,
             deadline,
@@ -183,6 +184,7 @@ impl Publisher for MetaAds {
         let long = long_lived(
             &self.http,
             &self.graph_origin,
+            &oauth.client_id,
             &oauth.client_secret,
             token,
             deadline,
@@ -368,9 +370,12 @@ fn unix_now() -> u64 {
 }
 
 /// Meta's long-lived exchange: `fb_exchange_token` grant, ~60-day token.
+/// The grant requires both `client_id` and `client_secret` — Graph answers
+/// `101: Missing client_id parameter` otherwise.
 async fn long_lived(
     http: &Http,
     graph_origin: &str,
+    client_id: &str,
     client_secret: &str,
     token: &str,
     deadline: Deadline,
@@ -378,6 +383,7 @@ async fn long_lived(
     let site = Site::new(SITE);
     let q = form(&[
         ("grant_type", "fb_exchange_token"),
+        ("client_id", client_id),
         ("client_secret", client_secret),
         ("fb_exchange_token", token),
     ]);
@@ -725,7 +731,9 @@ mod tests {
         server.mock(|when, then| {
             when.method(GET)
                 .path("/oauth/access_token")
-                .query_param("grant_type", "fb_exchange_token");
+                .query_param("grant_type", "fb_exchange_token")
+                .query_param("client_id", "id")
+                .query_param("client_secret", "sec");
             then.status(200).json_body(json!({
                 "access_token": "LONG",
                 "token_type": "bearer",
@@ -782,7 +790,9 @@ mod tests {
         server.mock(|when, then| {
             when.method(GET)
                 .path("/oauth/access_token")
-                .query_param("grant_type", "fb_exchange_token");
+                .query_param("grant_type", "fb_exchange_token")
+                .query_param("client_id", "id")
+                .query_param("client_secret", "sec");
             then.status(200)
                 .json_body(json!({ "access_token": "L", "expires_in": 100 }));
         });
@@ -1052,6 +1062,8 @@ mod tests {
             when.method(GET)
                 .path("/oauth/access_token")
                 .query_param("grant_type", "fb_exchange_token")
+                .query_param("client_id", "id")
+                .query_param("client_secret", "sec")
                 .query_param("fb_exchange_token", "tok");
             then.status(200).json_body(json!({
                 "access_token": "NEW", "expires_in": 5_184_000
