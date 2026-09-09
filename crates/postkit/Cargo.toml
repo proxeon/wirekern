@@ -18,6 +18,7 @@ client = ["dep:reqwest"]
 oauth = ["client", "dep:getrandom"]
 threads = ["client", "oauth", "dep:tokio", "dep:emojis"]
 bluesky = ["client", "dep:unicode-segmentation", "dep:time"]
+meta-ads = ["client", "oauth"]
 
 [dependencies]
 serde = { workspace = true }

@@ -5,6 +5,7 @@
 mod apps;
 mod client;
 mod error;
+mod insights;
 mod publisher;
 mod registry;
 mod types;
@@ -30,12 +31,16 @@ pub use oauth::{
     authorize_url, exchange_code, extract_code, query_param, verify_state, TokenResponse,
 };
 
-#[cfg(any(feature = "threads", feature = "bluesky"))]
+#[cfg(any(feature = "threads", feature = "bluesky", feature = "meta-ads"))]
 pub mod connectors;
 
 pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
 pub use client::{refresh_is_due, Client};
 pub use error::{Error, WireError};
+pub use insights::{
+    AttributionWindow, DateRange, InsightRow, InsightsLevel, InsightsQuery, InsightsReply, Metric,
+    MAX_RANGE_DAYS,
+};
 pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 pub use registry::Registry;
 pub use types::{

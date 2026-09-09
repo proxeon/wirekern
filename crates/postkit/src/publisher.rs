@@ -1,4 +1,5 @@
 use crate::error::Error;
+use crate::insights::{InsightsQuery, InsightsReply};
 use crate::types::{
     AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
 };
@@ -78,6 +79,23 @@ pub trait Publisher: Send + Sync {
     }
 
     async fn whoami(&self, app: &AppConfig, creds: &AccountCreds) -> Result<WhoAmI, Error>;
+
+    /// Read metrics for a bounded range (026 §3 flag 1: the read seam).
+    /// The default refusal keeps the capability honest — a connector that
+    /// has not implemented insights cannot let a read slip through as
+    /// something else, and the error lands before any HTTP.
+    async fn insights(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _query: &InsightsQuery,
+        _deadline: Deadline,
+    ) -> Result<InsightsReply, Error> {
+        Err(Error::UnsupportedCapability {
+            site: self.site().clone(),
+            need: Capability::ReadMetrics,
+        })
+    }
 
     async fn refresh(
         &self,

@@ -14,6 +14,24 @@ same detail by subject.
 
 ### Added
 
+- Meta Ads insights (read-only, design 026 Tier A): `meta_ads` connector
+  with the `read.metrics` capability — spend/performance metrics from the
+  Marketing API (Graph `v26.0`, pinned) as daily rows by
+  account/campaign/adset/ad. Paste-code OAuth on the Facebook dialog
+  (`ads_read` scope), long-lived token via `fb_exchange_token`, ad
+  account resolved and stored at auth; cursor paging deadline-checked and
+  capped. No verb in the connector can spend; management/activation stay
+  gated per 026 §5.
+- Read seam (kernel): `Capability::ReadMetrics`, `InsightsQuery` /
+  `InsightsReply` types (`src/insights.rs`), `Publisher::insights` with a
+  default refusal, and `Client::insights` (range ≤ 90 days enforced in
+  the kernel, `invalid_query` exit 2; proactive + reactive refresh like
+  publish). The same query shape serves the future IG/TikTok/Google
+  insights connectors (design 028's grammar).
+- `postkit insights <site>` CLI subcommand: `--from/--to` (inclusive,
+  `YYYY-MM-DD`), `--level`, `--metrics`, required `--attribution`
+  (no silent window default), `--ad-account` override. Deterministic
+  JSON rows (entity+date order, alphabetical metric keys).
 - Threads publisher: text posts through the Graph API's
   `auto_publish_text`, with the `postkit` binary registering the
   connector.

@@ -44,6 +44,7 @@ postkit auth threads                         # TTY: print URL, paste redirect or
 postkit auth threads --code 'AQBx-…'         # raw code or full callback URL (#_ stripped)
 postkit auth threads --token 'THQVJ…'        # bootstrap; no app file
 postkit auth bluesky --account you.bsky.social --password 'xxxx-xxxx-xxxx-xxxx'
+postkit auth meta_ads                        # same paste-code flow as Threads, scope ads_read
 ```
 
 - `--token` and `--code` are exclusive. `--password` cannot mix with either. `--listen` is a stub (paste-code is the path).
@@ -52,6 +53,7 @@ postkit auth bluesky --account you.bsky.social --password 'xxxx-xxxx-xxxx-xxxx'
 - Threads paste-code needs `apps set` first (or `POSTKIT_THREADS_CLIENT_ID` / `_CLIENT_SECRET` / `_REDIRECT_URI` in the **process** env). Redirect URI must match the Meta dashboard chip **byte-for-byte**.
 - The pasted redirect URL must echo the `state` the CLI generated: mismatched or missing `state` is rejected (`state_mismatch` / `missing_state`). The two-invocation `--code` path cannot verify `state` — paste the redirected URL unedited.
 - Bluesky does not need an app file.
+- `meta_ads` uses the same paste-code flow (Facebook dialog, `ads_read` scope) and needs `apps set meta_ads …` first — it may be the **same Meta app** as Threads. The short code is exchanged, then extended via `fb_exchange_token` (~60 days; auto re-issued by refresh while the app file exists). Auth also resolves and stores the token's **first ad account**; none → `no_ad_account`. Runbook: [docs/meta-ads](./meta-ads/README.md).
 
 ## `whoami` / `capabilities`
 
@@ -59,8 +61,24 @@ postkit auth bluesky --account you.bsky.social --password 'xxxx-xxxx-xxxx-xxxx'
 postkit whoami threads --json
 postkit whoami bluesky --account you.bsky.social --json
 postkit capabilities --json
-# {"bluesky":["publish.text"],"threads":["publish.text"]}
+# {"bluesky":["publish.text"],"meta_ads":["read.metrics"],"threads":["publish.text"]}
 ```
+
+## `insights` (meta_ads)
+
+```text
+postkit insights meta_ads --from 2026-06-01 --to 2026-06-30 --attribution 7d_click_1d_view
+postkit insights meta_ads --from … --to … --attribution 1d_click --level campaign --metrics spend,clicks,purchases
+postkit insights meta_ads --from … --to … --attribution 7d_click_1d_view --ad-account act_999
+```
+
+Read-only spend/performance metrics (the `read.metrics` capability). Daily rows (`time_increment=1`) grouped by `--level account|campaign|adset|ad`; `purchases` sums the purchase-ish rows of Graph's `actions` breakdown under the window you name.
+
+- `--from`/`--to` are inclusive `YYYY-MM-DD`, **≤ 90 days** — the range is also the reply size, so reads stay token-bounded by construction. Longer ranges fail `invalid_query` exit 2 before any HTTP.
+- `--attribution` is **required, no default**: `7d_click_1d_view | 1d_click | 1d_view`. ROAS answers change with the window; a caller who cannot say which window they meant cannot interpret the number.
+- `--ad-account` overrides the account resolved at auth (accepts `123` or `act_123`).
+- `--json` prints `InsightsReply`: `{ "site", "account_id", "currency", "rows": [ { "entity_id", "level", "date_start", "metrics": { … } } ] }` — rows ordered by `(entity_id, date_start)`, metric keys alphabetical: same query → same bytes.
+- Auth resolves the **first** ad account the token can see and stores it in the vault (`extra.ad_account_id`); a token with no ad account fails at the door (`no_ad_account`).
 
 ## `apps` / `accounts`
 
@@ -83,7 +101,7 @@ Success is `Outcome`: `{ "site", "id", "url" }`. Fan-out is `{ "results": [ Outc
 
 | `error` | Exit |
 |---------|------|
-| `unknown_site`, `unknown_account`, `unsupported`, `invalid_post` | 2 |
+| `unknown_site`, `unknown_account`, `unsupported`, `invalid_post`, `invalid_query` | 2 |
 | `auth` | 3 |
 | `rate_limited` | 4 |
 | `platform`, `network`, `timeout` | 5 |

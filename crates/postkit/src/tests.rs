@@ -1,6 +1,9 @@
 use crate::apps::{AppStore, MemoryAppStore};
 use crate::client::Client;
 use crate::error::Error;
+use crate::insights::{
+    AttributionWindow, InsightRow, InsightsLevel, InsightsQuery, InsightsReply, Metric,
+};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
 use crate::types::{
@@ -38,6 +41,13 @@ impl MockPub {
             refresh_dead_session: false,
             publishes: AtomicUsize::new(0),
             probes: AtomicUsize::new(0),
+        }
+    }
+
+    fn metrics(site: &str) -> Self {
+        Self {
+            caps: vec![Capability::ReadMetrics],
+            ..Self::text(site)
         }
     }
 }
@@ -119,6 +129,28 @@ impl Publisher for MockPub {
             site: self.site.clone(),
             id: "user-1".into(),
             handle: Some("tester".into()),
+        })
+    }
+
+    async fn insights(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        query: &InsightsQuery,
+        _deadline: Deadline,
+    ) -> Result<InsightsReply, Error> {
+        let mut metrics = serde_json::Map::new();
+        metrics.insert("spend".into(), serde_json::json!(10.0));
+        Ok(InsightsReply {
+            site: self.site.clone(),
+            account_id: "act_1".into(),
+            currency: Some("MYR".into()),
+            rows: vec![InsightRow {
+                entity_id: "1".into(),
+                level: query.level,
+                date_start: query.range.from.clone(),
+                metrics,
+            }],
         })
     }
 
@@ -714,4 +746,100 @@ async fn secrets_debug_redacted() {
     let d = format!("{creds:?}");
     assert!(!d.contains("secret-token"));
     assert!(d.contains("[redacted]"));
+}
+
+fn insights_query(from: &str, to: &str) -> InsightsQuery {
+    InsightsQuery {
+        level: InsightsLevel::Campaign,
+        metrics: vec![Metric::Spend],
+        range: crate::insights::DateRange {
+            from: from.into(),
+            to: to.into(),
+        },
+        attribution: AttributionWindow::SevenDayClickOneDayView,
+        account: None,
+    }
+}
+
+/// 026 read seam: Client routes the query to the connector, and the
+/// capability gate turns a publish-only site away before any HTTP.
+#[tokio::test]
+async fn client_insights_routes_and_checks_capability() {
+    let (c, key) = setup(MockPub::metrics("meta_ads"));
+    let reply = c
+        .insights(
+            &key,
+            insights_query("2026-06-01", "2026-06-02"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.account_id, "act_1");
+    assert_eq!(reply.rows.len(), 1);
+
+    // a site without read.metrics is refused before reaching the connector
+    let (text_only, key) = setup(MockPub::text("meta_ads"));
+    let err = text_only
+        .insights(
+            &key,
+            insights_query("2026-06-01", "2026-06-02"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadMetrics)
+    );
+}
+
+/// The trait's default `insights` must refuse — the same honesty the
+/// default `probe` keeps: a connector that never implemented reads cannot
+/// let one slip through as something else.
+#[tokio::test]
+async fn default_insights_refuses() {
+    let mut reg = Registry::new();
+    reg.register(Arc::new(Bare {
+        caps: vec![Capability::PublishText],
+    }));
+    let vault = Arc::new(MemoryVault::new());
+    let apps = Arc::new(MemoryAppStore::new());
+    let key = AccountKey::new("bluesky", "default");
+    vault
+        .put(
+            &key,
+            &AccountCreds::AppPassword {
+                identifier: "you".into(),
+                secret: "x".into(),
+                pds: None,
+            },
+        )
+        .unwrap();
+    let c = Client::new(reg, vault, apps);
+    let err = c
+        .insights(
+            &key,
+            insights_query("2026-06-01", "2026-06-02"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadMetrics)
+    );
+}
+
+/// Range bounds are enforced in the kernel, not just the CLI: a 91-day
+/// query is invalid no matter which caller built it.
+#[tokio::test]
+async fn insights_range_validated_before_any_routing() {
+    let (c, key) = setup(MockPub::metrics("meta_ads"));
+    let err = c
+        .insights(
+            &key,
+            insights_query("2026-01-01", "2026-04-01"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidQuery { reason, .. } if reason == "range_too_long:91"));
 }

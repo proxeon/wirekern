@@ -15,6 +15,8 @@ pub enum Error {
         reason: String,
         limit: Option<u32>,
     },
+    #[error("invalid query: {reason}")]
+    InvalidQuery { site: Site, reason: String },
     #[error("auth: {reason}")]
     Auth { site: Site, reason: String },
     #[error("rate limited")]
@@ -62,6 +64,10 @@ pub enum WireError {
         reason: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         limit: Option<u32>,
+    },
+    InvalidQuery {
+        site: Site,
+        reason: String,
     },
     Auth {
         site: Site,
@@ -133,6 +139,10 @@ impl From<&Error> for WireError {
                 reason: format!("invalid_name:{name}"),
                 limit: None,
             },
+            Error::InvalidQuery { site, reason } => Self::InvalidQuery {
+                site: site.clone(),
+                reason: reason.clone(),
+            },
         }
     }
 }
@@ -144,7 +154,8 @@ impl WireError {
             Self::UnknownSite { .. }
             | Self::UnknownAccount { .. }
             | Self::Unsupported { .. }
-            | Self::InvalidPost { .. } => 2,
+            | Self::InvalidPost { .. }
+            | Self::InvalidQuery { .. } => 2,
             Self::Auth { .. } => 3,
             Self::RateLimited { .. } => 4,
             Self::Platform { .. } | Self::Network { .. } | Self::Timeout { .. } => 5,

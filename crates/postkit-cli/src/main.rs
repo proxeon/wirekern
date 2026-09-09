@@ -4,12 +4,14 @@ use clap::{Parser, Subcommand};
 use output::{emit_err, emit_ok, emit_raw, human_line};
 use postkit::connectors::threads::validate_text;
 use postkit::{
-    app_source, extract_code, valid_name, verify_state, AccountKey, AppConfig, AppStore, AuthReply,
-    Body, Client, Deadline, Error, FileAppStore, FileVault, Intent, OAuthApp, PostRequest,
+    app_source, extract_code, valid_name, verify_state, AccountKey, AppConfig, AppStore,
+    AttributionWindow, AuthReply, Body, Client, DateRange, Deadline, Error, FileAppStore,
+    FileVault, InsightRow, InsightsLevel, InsightsQuery, Intent, Metric, OAuthApp, PostRequest,
     Registry, Site, Vault,
 };
 use std::io::{self, BufRead, IsTerminal, Read};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
@@ -72,6 +74,29 @@ enum Commands {
     },
     Whoami {
         site: String,
+    },
+    /// Read spend/performance metrics (meta_ads). Range ≤ 90 days.
+    Insights {
+        site: String,
+        /// Range start, YYYY-MM-DD.
+        #[arg(long)]
+        from: String,
+        /// Range end, YYYY-MM-DD (inclusive).
+        #[arg(long)]
+        to: String,
+        /// account | campaign | adset | ad.
+        #[arg(long, default_value = "account")]
+        level: String,
+        /// Comma-separated: spend,impressions,clicks,reach,ctr,cpc,cpm,purchases.
+        #[arg(long, default_value = "spend,impressions,clicks,purchases")]
+        metrics: String,
+        /// 7d_click_1d_view | 1d_click | 1d_view. Explicit — ROAS answers
+        /// change with the window, so there is no default.
+        #[arg(long)]
+        attribution: String,
+        /// Override the stored ad account (123 or act_123).
+        #[arg(long)]
+        ad_account: Option<String>,
     },
     Capabilities {
         site: Option<String>,
@@ -272,6 +297,46 @@ async fn dispatch(
                     emit_ok(&w, json, || {
                         format!("{} {} {}", w.site, w.id, w.handle.as_deref().unwrap_or(""))
                     });
+                    Ok(())
+                }
+                Err(e) => Err(fail(&e, json)),
+            }
+        }
+        Commands::Insights {
+            site,
+            from,
+            to,
+            level,
+            metrics,
+            attribution,
+            ad_account,
+        } => {
+            let query = build_insights_query(
+                &site,
+                &from,
+                &to,
+                &level,
+                &metrics,
+                &attribution,
+                ad_account,
+            )
+            .map_err(|e| fail(&e, json))?;
+            let key = AccountKey::new(&site, &account);
+            match client.insights(&key, query, deadline).await {
+                Ok(reply) => {
+                    if json {
+                        emit_raw(&serde_json::to_value(&reply).expect("json"));
+                    } else {
+                        human_line(format!(
+                            "{} {} {}",
+                            reply.site,
+                            reply.account_id,
+                            reply.currency.as_deref().unwrap_or("-")
+                        ));
+                        for row in &reply.rows {
+                            human_line(insight_line(row));
+                        }
+                    }
                     Ok(())
                 }
                 Err(e) => Err(fail(&e, json)),
@@ -755,9 +820,65 @@ fn make_client(home: &std::path::Path) -> Result<Client, Error> {
     let mut registry = Registry::new();
     registry.register(Arc::new(postkit::connectors::threads::Threads::new()?));
     registry.register(Arc::new(postkit::connectors::bluesky::Bluesky::new()?));
+    registry.register(Arc::new(postkit::connectors::meta_ads::MetaAds::new()?));
     let vault = Arc::new(FileVault::new(home)?);
     let apps = Arc::new(FileAppStore::new(home)?);
     Ok(Client::new(registry, vault, apps))
+}
+
+/// CLI flags → `InsightsQuery`. Pure over its inputs so the parse errors
+/// (`unknown_*`, date and range problems) are unit-testable without HTTP.
+fn build_insights_query(
+    site: &str,
+    from: &str,
+    to: &str,
+    level: &str,
+    metrics: &str,
+    attribution: &str,
+    ad_account: Option<String>,
+) -> Result<InsightsQuery, Error> {
+    let bad = |reason: String| Error::InvalidQuery {
+        site: Site::new(site),
+        reason,
+    };
+    let level = InsightsLevel::from_str(level).map_err(bad)?;
+    let attribution = AttributionWindow::from_str(attribution).map_err(bad)?;
+    let mut parsed = Vec::new();
+    for m in metrics.split(',') {
+        let m = m.trim();
+        if m.is_empty() {
+            continue;
+        }
+        parsed.push(Metric::from_str(m).map_err(bad)?);
+    }
+    if parsed.is_empty() {
+        return Err(bad("no_metrics".into()));
+    }
+    let range = DateRange {
+        from: from.into(),
+        to: to.into(),
+    };
+    Ok(InsightsQuery {
+        level,
+        metrics: parsed,
+        attribution,
+        range,
+        account: ad_account,
+    })
+}
+
+/// One human-mode row: `date level entity k=v …`, alphabetically-ordered
+/// metric keys matching the JSON object's serialization.
+fn insight_line(row: &InsightRow) -> String {
+    let mut parts = vec![
+        row.date_start.clone(),
+        row.level.as_str().to_string(),
+        row.entity_id.clone(),
+    ];
+    for (k, v) in &row.metrics {
+        parts.push(format!("{k}={v}"));
+    }
+    parts.join(" ")
 }
 
 /// Vault home: `--home`/`POSTKIT_HOME` (clap folds the env var into the
@@ -795,6 +916,79 @@ fn fail(e: &Error, json: bool) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_insights_query_parses_and_defaults() {
+        let q = build_insights_query(
+            "meta_ads",
+            "2026-06-01",
+            "2026-06-30",
+            "campaign",
+            "spend, purchases",
+            "7d_click_1d_view",
+            Some("act_9".into()),
+        )
+        .unwrap();
+        assert_eq!(q.level.as_str(), "campaign");
+        assert_eq!(q.metrics, vec![Metric::Spend, Metric::Purchases]);
+        assert_eq!(q.account.as_deref(), Some("act_9"));
+    }
+
+    #[test]
+    fn build_insights_query_rejects_bad_inputs() {
+        // range errors surface via Client's validate(); parse errors here
+        let cases: [(&str, &str, &str, &str); 4] = [
+            (
+                "campaigns",
+                "spend",
+                "7d_click_1d_view",
+                "unknown_level:campaigns",
+            ),
+            (
+                "campaign",
+                "roas",
+                "7d_click_1d_view",
+                "unknown_metric:roas",
+            ),
+            (
+                "campaign",
+                "spend",
+                "default",
+                "unknown_attribution:default",
+            ),
+            ("campaign", " , ", "7d_click_1d_view", "no_metrics"),
+        ];
+        for (level, metrics, attribution, reason) in cases {
+            let err = build_insights_query(
+                "meta_ads",
+                "2026-06-01",
+                "2026-06-02",
+                level,
+                metrics,
+                attribution,
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidQuery { reason: r, .. } if r == reason),
+                "{level}/{metrics}/{attribution}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn insight_line_renders_row() {
+        let mut metrics = serde_json::Map::new();
+        metrics.insert("spend".into(), serde_json::json!(12.5));
+        metrics.insert("impressions".into(), serde_json::json!(4567));
+        let line = insight_line(&InsightRow {
+            entity_id: "238".into(),
+            level: InsightsLevel::Campaign,
+            date_start: "2026-06-01".into(),
+            metrics,
+        });
+        assert_eq!(line, "2026-06-01 campaign 238 impressions=4567 spend=12.5");
+    }
 
     #[test]
     fn home_precedence_and_no_cwd_fallback() {

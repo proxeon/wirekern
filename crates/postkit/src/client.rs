@@ -1,9 +1,10 @@
 use crate::apps::AppStore;
 use crate::error::Error;
+use crate::insights::{InsightsQuery, InsightsReply};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
 use crate::types::{
-    AccountCreds, AccountKey, AppConfig, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
+    AccountCreds, AccountKey, AppConfig, Capability, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
 };
 use crate::vault::Vault;
 use std::sync::Arc;
@@ -100,6 +101,47 @@ impl Client {
             .unwrap_or_else(|_| empty_app(&key.site));
         let creds = self.vault.get(key)?;
         publisher.whoami(&app, &creds).await
+    }
+
+    /// Read metrics (026 read seam). Same orchestration as [`publish`](Self::publish)
+    /// minus everything only a publication is entitled to: no idempotency
+    /// (a read has no side effect to dedupe) and no ledger. The range is
+    /// re-validated here even though the CLI checks it — the library cannot
+    /// trust its callers to have done so.
+    pub async fn insights(
+        &self,
+        key: &AccountKey,
+        query: InsightsQuery,
+        deadline: Deadline,
+    ) -> Result<InsightsReply, Error> {
+        query
+            .range
+            .validate()
+            .map_err(|reason| Error::InvalidQuery {
+                site: key.site.clone(),
+                reason,
+            })?;
+        let publisher = self.publisher(&key.site)?;
+        if !publisher.capabilities().contains(&Capability::ReadMetrics) {
+            return Err(Error::UnsupportedCapability {
+                site: key.site.clone(),
+                need: Capability::ReadMetrics,
+            });
+        }
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let mut creds = self.vault.get(key)?;
+        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        match publisher.insights(&app, &creds, &query, deadline).await {
+            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
+                let new = publisher.refresh(&app, &creds).await?;
+                self.vault.put(key, &new)?;
+                publisher.insights(&app, &new, &query, deadline).await
+            }
+            other => other,
+        }
     }
 
     /// Create-only probe (027): same routing, capability check and
