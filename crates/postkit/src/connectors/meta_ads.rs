@@ -686,6 +686,33 @@ mod tests {
     }
 
     #[test]
+    fn attribution_param_maps_every_preset_to_the_wire_array() {
+        // regression (fcba1bd): Graph code-100 rejects the combined display
+        // name; every preset must serialize as an array of atomic windows
+        assert_eq!(
+            attribution_param(AttributionWindow::SevenDayClickOneDayView),
+            r#"["7d_click","1d_view"]"#
+        );
+        assert_eq!(
+            attribution_param(AttributionWindow::OneDayClick),
+            r#"["1d_click"]"#
+        );
+        assert_eq!(
+            attribution_param(AttributionWindow::OneDayView),
+            r#"["1d_view"]"#
+        );
+        for a in [
+            AttributionWindow::SevenDayClickOneDayView,
+            AttributionWindow::OneDayClick,
+            AttributionWindow::OneDayView,
+        ] {
+            let p = attribution_param(a);
+            assert!(p.starts_with('['), "not an array: {p}");
+            assert!(!p.contains("7d_click_1d_view"), "display name leaked: {p}");
+        }
+    }
+
+    #[test]
     fn graph_error_codes_classify() {
         // code-first: copy containing "expired"/"quota" cannot hijack code 100
         let err = map_graph_error(
