@@ -167,6 +167,7 @@ impl Error {
     /// Reqwest often renders the complete request URL in transport errors.
     /// OAuth connectors may place access tokens or client secrets in those
     /// URLs, so public errors deliberately retain none of that diagnostic.
+    #[cfg(feature = "client")]
     pub(crate) fn request_failed(site: &Site) -> Self {
         Self::Network {
             site: site.clone(),

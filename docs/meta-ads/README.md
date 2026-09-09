@@ -24,7 +24,7 @@ Read-only spend/performance insights from the Meta Marketing API (Graph `v26.0`,
    # (page looks broken/404 — that is expected) paste the full address bar back
    ```
 
-   The code is exchanged for a short token, extended via `fb_exchange_token` (~60 days), and the token's **first ad account** is resolved and stored. A token with no ad account fails immediately (`no_ad_account`).
+   The code is exchanged for a short token, extended via `fb_exchange_token` (~60 days), and the token's **first ad account** is resolved and stored for backwards-compatible defaults. A token with no ad account fails immediately (`no_ad_account`). When more than one account is visible, discover the IDs first and pass the desired account explicitly on each insights call.
 
 ## Dev mode is enough to start
 
@@ -32,15 +32,29 @@ A development-mode app can call the Marketing API for **accounts owned by the ap
 
 ## Reading metrics
 
+First, list the **remote Meta accounts** visible to this credential. This is
+not the same as `postkit accounts list`, which only lists local vault aliases.
+
 ```bash
-postkit insights meta_ads --from 2026-06-01 --to 2026-06-30 \
-  --attribution 7d_click_1d_view --level campaign --json
+postkit ads accounts meta_ads --json
+# copy an `act_<id>` value into --ad-account
 ```
 
-- `--level account|campaign|adset|ad`; default metrics `spend,impressions,clicks,purchases` (`reach,ctr,cpc,cpm` available).
+```bash
+postkit insights meta_ads --from 2026-06-01 --to 2026-06-30 \
+  --attribution 7d_click_1d_view --ad-account act_123 \
+  --level campaign --entity-id 238001 \
+  --breakdown country,publisher_platform \
+  --metrics spend,purchases,purchase_value,roas --json
+```
+
+- `--level account|campaign|adset|ad`; default metrics `spend,impressions,clicks,purchases` (`reach,ctr,cpc,cpm,purchase_value,roas` available).
 - Range ≤ 90 days inclusive; longer → `invalid_query` exit 2 before any HTTP.
-- `--ad-account act_999` overrides the stored account.
-- Output is deterministic: rows by `(entity_id, date_start)`, alphabetical metric keys.
+- `--ad-account act_999` overrides the stored account. The account list command returns canonical `act_<id>` values plus name, currency, timezone, and status.
+- Repeat `--entity-id <id>` to filter campaign, ad set, or ad reports. Account-level filtering is rejected because the account is already selected by `--ad-account` / the stored default.
+- `--breakdown country,publisher_platform,age` adds labels under each JSON row's `dimensions` object; do not sum rows with different dimensions as though they were one unbroken-down result.
+- `purchase_value` is the matching purchase `action_values` total. `roas` is `purchase_value / spend` per row and is `null` when Meta omits action values or spend is zero.
+- Output is deterministic: rows by `(entity_id, date_start, dimensions)`, alphabetical metric and dimension keys.
 
 ## Token lifetime
 

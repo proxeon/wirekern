@@ -56,6 +56,8 @@ pub enum Capability {
     PublishVideo,
     #[serde(rename = "read.metrics")]
     ReadMetrics,
+    #[serde(rename = "read.ad_accounts")]
+    ReadAdAccounts,
 }
 
 impl Capability {
@@ -65,6 +67,7 @@ impl Capability {
             Self::PublishImage => "publish.image",
             Self::PublishVideo => "publish.video",
             Self::ReadMetrics => "read.metrics",
+            Self::ReadAdAccounts => "read.ad_accounts",
         }
     }
 }

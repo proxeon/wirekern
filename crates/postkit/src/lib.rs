@@ -38,8 +38,8 @@ pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
 pub use client::{refresh_is_due, Client};
 pub use error::{Error, WireError};
 pub use insights::{
-    AttributionWindow, DateRange, InsightRow, InsightsLevel, InsightsQuery, InsightsReply, Metric,
-    MAX_RANGE_DAYS,
+    AdAccount, AdAccountsReply, AttributionWindow, Breakdown, DateRange, InsightRow, InsightsLevel,
+    InsightsQuery, InsightsReply, Metric, MAX_RANGE_DAYS,
 };
 pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 pub use registry::Registry;

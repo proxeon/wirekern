@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::insights::{InsightsQuery, InsightsReply};
+use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
 use crate::types::{
     AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
 };
@@ -94,6 +94,21 @@ pub trait Publisher: Send + Sync {
         Err(Error::UnsupportedCapability {
             site: self.site().clone(),
             need: Capability::ReadMetrics,
+        })
+    }
+
+    /// List credential-visible advertising accounts. It has its own
+    /// capability because local vault aliases and remote ad accounts answer
+    /// different operator questions; a metrics-only connector must refuse it.
+    async fn ad_accounts(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _deadline: Deadline,
+    ) -> Result<AdAccountsReply, Error> {
+        Err(Error::UnsupportedCapability {
+            site: self.site().clone(),
+            need: Capability::ReadAdAccounts,
         })
     }
 

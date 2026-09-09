@@ -4,10 +4,10 @@ use clap::{Parser, Subcommand};
 use output::{emit_err, emit_ok, emit_raw, human_line};
 use postkit::connectors::threads::validate_text;
 use postkit::{
-    app_source, extract_code, valid_name, verify_state, AccountKey, AppConfig, AppStore,
-    AttributionWindow, AuthReply, Body, Client, DateRange, Deadline, Error, FileAppStore,
-    FileVault, InsightRow, InsightsLevel, InsightsQuery, Intent, Metric, OAuthApp, PostRequest,
-    Registry, Site, Vault,
+    app_source, extract_code, valid_name, verify_state, AccountKey, AdAccount, AppConfig, AppStore,
+    AttributionWindow, AuthReply, Body, Breakdown, Client, DateRange, Deadline, Error,
+    FileAppStore, FileVault, InsightRow, InsightsLevel, InsightsQuery, Intent, Metric, OAuthApp,
+    PostRequest, Registry, Site, Vault,
 };
 use std::io::{self, BufRead, IsTerminal, Read};
 use std::path::PathBuf;
@@ -97,7 +97,16 @@ enum Commands {
         /// Override the stored ad account (123 or act_123).
         #[arg(long)]
         ad_account: Option<String>,
+        /// Repeatable campaign, ad set, or ad ID filter. Not valid at account level.
+        #[arg(long = "entity-id")]
+        entity_ids: Vec<String>,
+        /// Comma-separated: country,publisher_platform,age.
+        #[arg(long, default_value = "")]
+        breakdowns: String,
     },
+    /// Read-only advertising-account discovery (not local vault aliases).
+    #[command(subcommand)]
+    Ads(AdsCmd),
     Capabilities {
         site: Option<String>,
     },
@@ -118,6 +127,12 @@ enum AccountsCmd {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum AdsCmd {
+    /// List Meta ad accounts visible to the selected credential.
+    Accounts { site: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -267,6 +282,22 @@ async fn dispatch(
     deadline: Deadline,
 ) -> Result<(), i32> {
     match cmd {
+        Commands::Ads(AdsCmd::Accounts { site }) => {
+            let key = AccountKey::new(&site, &account);
+            match client.ad_accounts(&key, deadline).await {
+                Ok(reply) => {
+                    if json {
+                        emit_raw(&serde_json::to_value(&reply).expect("json"));
+                    } else {
+                        for ad_account in &reply.accounts {
+                            human_line(ad_account_line(ad_account));
+                        }
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(fail(&e, json)),
+            }
+        }
         Commands::Capabilities { site } => {
             if let Some(s) = site {
                 let site = Site::new(s);
@@ -310,6 +341,8 @@ async fn dispatch(
             metrics,
             attribution,
             ad_account,
+            entity_ids,
+            breakdowns,
         } => {
             let query = build_insights_query(
                 &site,
@@ -318,7 +351,11 @@ async fn dispatch(
                 &level,
                 &metrics,
                 &attribution,
-                ad_account,
+                InsightsOptions {
+                    ad_account,
+                    entity_ids,
+                    breakdowns,
+                },
             )
             .map_err(|e| fail(&e, json))?;
             let key = AccountKey::new(&site, &account);
@@ -826,6 +863,15 @@ fn make_client(home: &std::path::Path) -> Result<Client, Error> {
     Ok(Client::new(registry, vault, apps))
 }
 
+/// The optional, additive parts of an insights query. Keeping them together
+/// prevents a growing CLI surface from turning the parser into a brittle,
+/// positional argument list.
+struct InsightsOptions {
+    ad_account: Option<String>,
+    entity_ids: Vec<String>,
+    breakdowns: String,
+}
+
 /// CLI flags → `InsightsQuery`. Pure over its inputs so the parse errors
 /// (`unknown_*`, date and range problems) are unit-testable without HTTP.
 fn build_insights_query(
@@ -835,7 +881,7 @@ fn build_insights_query(
     level: &str,
     metrics: &str,
     attribution: &str,
-    ad_account: Option<String>,
+    options: InsightsOptions,
 ) -> Result<InsightsQuery, Error> {
     let bad = |reason: String| Error::InvalidQuery {
         site: Site::new(site),
@@ -854,6 +900,14 @@ fn build_insights_query(
     if parsed.is_empty() {
         return Err(bad("no_metrics".into()));
     }
+    let mut parsed_breakdowns = Vec::new();
+    for breakdown in options.breakdowns.split(',') {
+        let breakdown = breakdown.trim();
+        if breakdown.is_empty() {
+            continue;
+        }
+        parsed_breakdowns.push(Breakdown::from_str(breakdown).map_err(bad)?);
+    }
     let range = DateRange {
         from: from.into(),
         to: to.into(),
@@ -863,22 +917,41 @@ fn build_insights_query(
         metrics: parsed,
         attribution,
         range,
-        account: ad_account,
+        account: options.ad_account,
+        entity_ids: options.entity_ids,
+        breakdowns: parsed_breakdowns,
     })
 }
 
-/// One human-mode row: `date level entity k=v …`, alphabetically-ordered
-/// metric keys matching the JSON object's serialization.
+/// One human-mode row: `date level entity dimension=v metric=v …`. Keeping
+/// dimensions before metrics prevents a country/platform label from looking
+/// like a number that callers may sum across rows.
 fn insight_line(row: &InsightRow) -> String {
     let mut parts = vec![
         row.date_start.clone(),
         row.level.as_str().to_string(),
         row.entity_id.clone(),
     ];
+    for (k, v) in &row.dimensions {
+        parts.push(format!("{k}={v}"));
+    }
     for (k, v) in &row.metrics {
         parts.push(format!("{k}={v}"));
     }
     parts.join(" ")
+}
+
+/// Human output keeps the canonical `act_<id>` first so it can be copied
+/// directly into `insights --ad-account`; names and metadata remain labels.
+fn ad_account_line(account: &AdAccount) -> String {
+    format!(
+        "{} name={} currency={} timezone={} status={}",
+        account.id,
+        account.name.as_deref().unwrap_or("-"),
+        account.currency.as_deref().unwrap_or("-"),
+        account.timezone.as_deref().unwrap_or("-"),
+        account.status.as_deref().unwrap_or("-")
+    )
 }
 
 /// Vault home: `--home`/`POSTKIT_HOME` (clap folds the env var into the
@@ -926,12 +999,18 @@ mod tests {
             "campaign",
             "spend, purchases",
             "7d_click_1d_view",
-            Some("act_9".into()),
+            InsightsOptions {
+                ad_account: Some("act_9".into()),
+                entity_ids: vec!["238".into(), "239".into()],
+                breakdowns: "country,age".into(),
+            },
         )
         .unwrap();
         assert_eq!(q.level.as_str(), "campaign");
         assert_eq!(q.metrics, vec![Metric::Spend, Metric::Purchases]);
         assert_eq!(q.account.as_deref(), Some("act_9"));
+        assert_eq!(q.entity_ids, vec!["238", "239"]);
+        assert_eq!(q.breakdowns, vec![Breakdown::Country, Breakdown::Age]);
     }
 
     #[test]
@@ -946,9 +1025,9 @@ mod tests {
             ),
             (
                 "campaign",
-                "roas",
+                "not_a_metric",
                 "7d_click_1d_view",
-                "unknown_metric:roas",
+                "unknown_metric:not_a_metric",
             ),
             (
                 "campaign",
@@ -966,7 +1045,11 @@ mod tests {
                 level,
                 metrics,
                 attribution,
-                None,
+                InsightsOptions {
+                    ad_account: None,
+                    entity_ids: vec![],
+                    breakdowns: String::new(),
+                },
             )
             .unwrap_err();
             assert!(
@@ -974,6 +1057,24 @@ mod tests {
                 "{level}/{metrics}/{attribution}: {err:?}"
             );
         }
+
+        let err = build_insights_query(
+            "meta_ads",
+            "2026-06-01",
+            "2026-06-02",
+            "campaign",
+            "roas",
+            "7d_click_1d_view",
+            InsightsOptions {
+                ad_account: None,
+                entity_ids: vec![],
+                breakdowns: "country,unknown".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidQuery { reason, .. } if reason == "unknown_breakdown:unknown")
+        );
     }
 
     #[test]
@@ -985,9 +1086,33 @@ mod tests {
             entity_id: "238".into(),
             level: InsightsLevel::Campaign,
             date_start: "2026-06-01".into(),
+            dimensions: serde_json::Map::new(),
             metrics,
         });
         assert_eq!(line, "2026-06-01 campaign 238 impressions=4567 spend=12.5");
+    }
+
+    #[test]
+    fn ad_account_line_is_copyable_and_labels_metadata() {
+        let line = ad_account_line(&AdAccount {
+            id: "act_123".into(),
+            name: Some("Main".into()),
+            currency: Some("ILS".into()),
+            timezone: Some("Asia/Jerusalem".into()),
+            status: Some("1".into()),
+        });
+        assert_eq!(
+            line,
+            "act_123 name=Main currency=ILS timezone=Asia/Jerusalem status=1"
+        );
+    }
+
+    #[test]
+    fn ads_accounts_command_parses() {
+        let cli = Cli::try_parse_from(["postkit", "ads", "accounts", "meta_ads"]).unwrap();
+        assert!(
+            matches!(cli.command, Commands::Ads(AdsCmd::Accounts { site }) if site == "meta_ads")
+        );
     }
 
     #[test]

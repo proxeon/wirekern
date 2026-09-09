@@ -1,6 +1,6 @@
 use crate::apps::AppStore;
 use crate::error::Error;
-use crate::insights::{InsightsQuery, InsightsReply};
+use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
 use crate::types::{
@@ -139,6 +139,40 @@ impl Client {
                 let new = publisher.refresh(&app, &creds).await?;
                 self.vault.put(key, &new)?;
                 publisher.insights(&app, &new, &query, deadline).await
+            }
+            other => other,
+        }
+    }
+
+    /// Discover remote advertising accounts for the credential. This is a
+    /// read-only sibling of `insights`, not `Vault::list`: the latter returns
+    /// local aliases while this call returns the platform's `act_<id>`s.
+    pub async fn ad_accounts(
+        &self,
+        key: &AccountKey,
+        deadline: Deadline,
+    ) -> Result<AdAccountsReply, Error> {
+        let publisher = self.publisher(&key.site)?;
+        if !publisher
+            .capabilities()
+            .contains(&Capability::ReadAdAccounts)
+        {
+            return Err(Error::UnsupportedCapability {
+                site: key.site.clone(),
+                need: Capability::ReadAdAccounts,
+            });
+        }
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let mut creds = self.vault.get(key)?;
+        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        match publisher.ad_accounts(&app, &creds, deadline).await {
+            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
+                let new = publisher.refresh(&app, &creds).await?;
+                self.vault.put(key, &new)?;
+                publisher.ad_accounts(&app, &new, deadline).await
             }
             other => other,
         }

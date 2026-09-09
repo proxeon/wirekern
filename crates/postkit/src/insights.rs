@@ -73,6 +73,8 @@ pub enum Metric {
     Cpc,
     Cpm,
     Purchases,
+    PurchaseValue,
+    Roas,
 }
 
 impl Metric {
@@ -86,6 +88,8 @@ impl Metric {
             Self::Cpc => "cpc",
             Self::Cpm => "cpm",
             Self::Purchases => "purchases",
+            Self::PurchaseValue => "purchase_value",
+            Self::Roas => "roas",
         }
     }
 }
@@ -103,7 +107,43 @@ impl FromStr for Metric {
             "cpc" => Ok(Self::Cpc),
             "cpm" => Ok(Self::Cpm),
             "purchases" => Ok(Self::Purchases),
+            "purchase_value" => Ok(Self::PurchaseValue),
+            "roas" => Ok(Self::Roas),
             other => Err(format!("unknown_metric:{other}")),
+        }
+    }
+}
+
+/// Dimensions that Meta can split an insights row by in Tier A+. They are a
+/// query argument, not metrics: a country or placement must never be summed
+/// into a spend field by an unaware caller.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Breakdown {
+    Country,
+    PublisherPlatform,
+    Age,
+}
+
+impl Breakdown {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Country => "country",
+            Self::PublisherPlatform => "publisher_platform",
+            Self::Age => "age",
+        }
+    }
+}
+
+impl FromStr for Breakdown {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "country" => Ok(Self::Country),
+            "publisher_platform" => Ok(Self::PublisherPlatform),
+            "age" => Ok(Self::Age),
+            other => Err(format!("unknown_breakdown:{other}")),
         }
     }
 }
@@ -237,6 +277,14 @@ pub struct InsightsQuery {
     /// Per-override of the stored ad account (accepts `123` or `act_123`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// Repeatable, level-specific entity IDs. Connectors serialize these as
+    /// their safe structured filter format instead of interpolating IDs into
+    /// a path or query expression.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entity_ids: Vec<String>,
+    /// Requested row dimensions, deliberately separate from [`Metric`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breakdowns: Vec<Breakdown>,
 }
 
 /// One daily row. Metrics serialize as a JSON object (alphabetically keyed
@@ -247,7 +295,34 @@ pub struct InsightRow {
     pub entity_id: String,
     pub level: InsightsLevel,
     pub date_start: String,
+    /// Values for the query's requested [`Breakdown`]s. The map is omitted
+    /// for an unbroken-down report so Tier A's output remains compact.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub dimensions: serde_json::Map<String, serde_json::Value>,
     pub metrics: serde_json::Map<String, serde_json::Value>,
+}
+
+/// A credential-visible advertising account. `id` is always the canonical
+/// `act_<digits>` form accepted by `InsightsQuery.account` and the CLI.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AdAccount {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// Read-only account inventory, deliberately distinct from local vault
+/// account aliases. This is how an operator discovers a Meta `act_<id>`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AdAccountsReply {
+    pub site: crate::types::Site,
+    pub accounts: Vec<AdAccount>,
 }
 
 /// The read-side analogue of `Outcome`.
@@ -279,6 +354,8 @@ mod tests {
             "cpc",
             "cpm",
             "purchases",
+            "purchase_value",
+            "roas",
         ] {
             assert_eq!(Metric::from_str(s).unwrap().as_str(), s);
         }
@@ -286,7 +363,21 @@ mod tests {
             InsightsLevel::from_str("nope").unwrap_err(),
             "unknown_level:nope"
         );
-        assert_eq!(Metric::from_str("roas").unwrap_err(), "unknown_metric:roas");
+        assert_eq!(
+            Metric::from_str("not_a_metric").unwrap_err(),
+            "unknown_metric:not_a_metric"
+        );
+    }
+
+    #[test]
+    fn breakdown_round_trip_and_unknown_value() {
+        for s in ["country", "publisher_platform", "age"] {
+            assert_eq!(Breakdown::from_str(s).unwrap().as_str(), s);
+        }
+        assert_eq!(
+            Breakdown::from_str("device_platform").unwrap_err(),
+            "unknown_breakdown:device_platform"
+        );
     }
 
     #[test]

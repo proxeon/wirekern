@@ -2,7 +2,8 @@ use crate::apps::{AppStore, MemoryAppStore};
 use crate::client::Client;
 use crate::error::Error;
 use crate::insights::{
-    AttributionWindow, InsightRow, InsightsLevel, InsightsQuery, InsightsReply, Metric,
+    AdAccount, AdAccountsReply, AttributionWindow, InsightRow, InsightsLevel, InsightsQuery,
+    InsightsReply, Metric,
 };
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
@@ -47,6 +48,13 @@ impl MockPub {
     fn metrics(site: &str) -> Self {
         Self {
             caps: vec![Capability::ReadMetrics],
+            ..Self::text(site)
+        }
+    }
+
+    fn ad_accounts(site: &str) -> Self {
+        Self {
+            caps: vec![Capability::ReadAdAccounts],
             ..Self::text(site)
         }
     }
@@ -149,7 +157,26 @@ impl Publisher for MockPub {
                 entity_id: "1".into(),
                 level: query.level,
                 date_start: query.range.from.clone(),
+                dimensions: serde_json::Map::new(),
                 metrics,
+            }],
+        })
+    }
+
+    async fn ad_accounts(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _deadline: Deadline,
+    ) -> Result<AdAccountsReply, Error> {
+        Ok(AdAccountsReply {
+            site: self.site.clone(),
+            accounts: vec![AdAccount {
+                id: "act_1".into(),
+                name: Some("Main".into()),
+                currency: Some("MYR".into()),
+                timezone: None,
+                status: Some("1".into()),
             }],
         })
     }
@@ -758,6 +785,8 @@ fn insights_query(from: &str, to: &str) -> InsightsQuery {
         },
         attribution: AttributionWindow::SevenDayClickOneDayView,
         account: None,
+        entity_ids: vec![],
+        breakdowns: vec![],
     }
 }
 
@@ -789,6 +818,25 @@ async fn client_insights_routes_and_checks_capability() {
         .unwrap_err();
     assert!(
         matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadMetrics)
+    );
+}
+
+/// Remote ad-account discovery is a separately gated read. This prevents a
+/// connector from accidentally treating local vault aliases as account IDs.
+#[tokio::test]
+async fn client_ad_accounts_routes_and_checks_capability() {
+    let (c, key) = setup(MockPub::ad_accounts("meta_ads"));
+    let reply = c.ad_accounts(&key, Deadline::from_secs(30)).await.unwrap();
+    assert_eq!(reply.accounts[0].id, "act_1");
+    assert_eq!(reply.accounts[0].name.as_deref(), Some("Main"));
+
+    let (text_only, key) = setup(MockPub::text("meta_ads"));
+    let err = text_only
+        .ad_accounts(&key, Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadAdAccounts)
     );
 }
 
