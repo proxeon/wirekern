@@ -311,10 +311,9 @@ fn public_url(handle: &str, at_uri: &str) -> Option<String> {
 
 async fn read_json(resp: reqwest::Response, site: &Site) -> Result<Value, Error> {
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| Error::Network {
-        site: site.clone(),
-        message: e.to_string(),
-    })?;
+    // Keep this shared response-read pattern URL-safe. The PDS host is
+    // caller supplied and future connectors may use URL credentials.
+    let text = resp.text().await.map_err(|_| Error::request_failed(site))?;
     if !status.is_success() {
         return Err(map_xrpc_error(status.as_u16(), &text));
     }

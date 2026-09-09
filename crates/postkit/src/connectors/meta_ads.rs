@@ -545,10 +545,9 @@ fn account_id(creds: &AccountCreds, override_: Option<&str>) -> Result<String, E
 
 async fn read_json(resp: reqwest::Response, site: &Site) -> Result<Value, Error> {
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| Error::Network {
-        site: site.clone(),
-        message: e.to_string(),
-    })?;
+    // Meta Ads uses token-bearing query URLs. Redact a response-read failure
+    // for the same reason that Http::send redacts transport failures.
+    let text = resp.text().await.map_err(|_| Error::request_failed(site))?;
     if !status.is_success() {
         return Err(map_graph_error(status.as_u16(), &text));
     }

@@ -40,6 +40,7 @@ fn default_base() -> String {
 #[derive(Debug, Default, Deserialize)]
 pub struct ThreadsParams {
     pub user_id: Option<String>,
+    pub reply_to_id: Option<String>,
 }
 
 pub struct Threads {
@@ -107,16 +108,16 @@ impl Publisher for Threads {
     ) -> Result<Outcome, Error> {
         let Body::Text { text } = &intent.body;
         validate_text(text)?;
+        let params = parse_params(&intent.params)?;
         let token = access_token(creds)?;
-        let user_id = path_user_id(&intent, creds);
-        let reply_to = reply_to_id(&intent.params)?;
+        let user_id = path_user_id(&params, creds);
         post_text(
             &self.http,
             &self.base,
             token,
             &user_id,
             text,
-            reply_to.as_deref(),
+            params.reply_to_id.as_deref(),
             deadline,
             self.reply_retry_delay,
         )
@@ -146,16 +147,16 @@ impl Publisher for Threads {
     ) -> Result<Probe, Error> {
         let Body::Text { text } = &intent.body;
         validate_text(text)?;
+        let params = parse_params(&intent.params)?;
         let token = access_token(creds)?;
-        let user_id = path_user_id(&intent, creds);
-        let reply_to = reply_to_id(&intent.params)?;
+        let user_id = path_user_id(&params, creds);
         let container_id = create_text_container(
             &self.http,
             &self.base,
             token,
             &user_id,
             text,
-            reply_to.as_deref(),
+            params.reply_to_id.as_deref(),
             deadline,
         )
         .await?;
@@ -318,6 +319,45 @@ pub fn reply_to_id(params: &Value) -> Result<Option<String>, Error> {
             limit: None,
         }),
     }
+}
+
+/// Parse connector-owned target parameters before credentials are used or a
+/// request is built. Serde normally ignores unknown fields; doing that here
+/// would turn `reply_to=123` into a successful root post rather than the
+/// requested reply. Unknown keys are therefore invalid before any HTTP.
+fn parse_params(params: &Value) -> Result<ThreadsParams, Error> {
+    if params.is_null() {
+        return Ok(ThreadsParams::default());
+    }
+    let object = params.as_object().ok_or_else(|| Error::InvalidPost {
+        site: Site::new(SITE),
+        reason: "params_not_object".into(),
+        limit: None,
+    })?;
+    for key in object.keys() {
+        if key != "user_id" && key != "reply_to_id" {
+            return Err(Error::InvalidPost {
+                site: Site::new(SITE),
+                reason: format!("unsupported_param:{key}"),
+                limit: None,
+            });
+        }
+    }
+    let user_id = match object.get("user_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()),
+        Some(_) => {
+            return Err(Error::InvalidPost {
+                site: Site::new(SITE),
+                reason: "user_id".into(),
+                limit: None,
+            });
+        }
+    };
+    Ok(ThreadsParams {
+        user_id,
+        reply_to_id: reply_to_id(params)?,
+    })
 }
 
 /// One container-creation attempt (`POST /{user}/threads`), shared by the
@@ -615,10 +655,9 @@ fn access_token(creds: &AccountCreds) -> Result<&str, Error> {
     }
 }
 
-fn path_user_id(intent: &Intent, creds: &AccountCreds) -> String {
-    let params: ThreadsParams = serde_json::from_value(intent.params.clone()).unwrap_or_default();
-    if let Some(id) = params.user_id.filter(|s| !s.is_empty()) {
-        return id;
+fn path_user_id(params: &ThreadsParams, creds: &AccountCreds) -> String {
+    if let Some(id) = params.user_id.as_ref().filter(|s| !s.is_empty()) {
+        return id.clone();
     }
     extra_user_id(creds).unwrap_or_else(|| "me".into())
 }
@@ -636,10 +675,9 @@ fn extra_user_id(creds: &AccountCreds) -> Option<String> {
 
 async fn read_json(resp: reqwest::Response, site: &Site) -> Result<Value, Error> {
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| Error::Network {
-        site: site.clone(),
-        message: e.to_string(),
-    })?;
+    // Graph request URLs sometimes contain OAuth credentials. A body-read
+    // error can include that URL too, so retain no reqwest diagnostic text.
+    let text = resp.text().await.map_err(|_| Error::request_failed(site))?;
     if !status.is_success() {
         return Err(map_graph_error(status.as_u16(), &text));
     }
@@ -907,6 +945,53 @@ mod tests {
         );
         let err = reply_to_id(&json!({ "reply_to_id": 17900 })).unwrap_err();
         assert!(matches!(err, Error::InvalidPost { reason, .. } if reason == "reply_to_id"));
+    }
+
+    #[test]
+    fn params_accept_only_the_documented_target_keys() {
+        let parsed = parse_params(&json!({
+            "user_id": "42",
+            "reply_to_id": "17900"
+        }))
+        .unwrap();
+        assert_eq!(parsed.user_id.as_deref(), Some("42"));
+        assert_eq!(parsed.reply_to_id.as_deref(), Some("17900"));
+
+        let err = parse_params(&json!({ "reply_to": "17900" })).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidPost { reason, .. } if reason == "unsupported_param:reply_to")
+        );
+        let err = parse_params(&json!({ "user_id": 42 })).unwrap_err();
+        assert!(matches!(err, Error::InvalidPost { reason, .. } if reason == "user_id"));
+    }
+
+    #[tokio::test]
+    async fn misspelled_reply_param_is_refused_before_http() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads");
+            then.status(200)
+                .json_body(json!({ "id": "should-not-exist" }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
+        let mut intent = text_intent("reply");
+        // `reply_to` is a plausible CLI typo. Before this guard it silently
+        // became a root post, so the zero-hit assertion is the regression.
+        intent.params = json!({ "reply_to": "17900" });
+        let err = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                intent,
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, Error::InvalidPost { reason, .. } if reason == "unsupported_param:reply_to")
+        );
+        create.assert_hits(0);
     }
 
     #[tokio::test]

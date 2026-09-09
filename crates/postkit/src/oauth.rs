@@ -133,10 +133,9 @@ pub async fn exchange_code(
         ]));
     let resp = http.send(req, deadline, site).await?;
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| Error::Network {
-        site: site.clone(),
-        message: e.to_string(),
-    })?;
+    // A response-read failure may also contain reqwest's credential-bearing
+    // request URL, so it uses the same redacted error as Http::send.
+    let text = resp.text().await.map_err(|_| Error::request_failed(site))?;
     let raw: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     if !status.is_success() || raw.get("error").is_some() {
         let msg = raw

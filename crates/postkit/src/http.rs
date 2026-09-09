@@ -21,9 +21,11 @@ impl Http {
             // error instead.
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|e| Error::Network {
+            .map_err(|_| Error::Network {
                 site: Site::new(""),
-                message: e.to_string(),
+                // This error does not carry a request URL, but keeping every
+                // public network error generic avoids future regressions.
+                message: "client initialization failed".into(),
             })?;
         Ok(Self { inner })
     }
@@ -50,10 +52,10 @@ impl Http {
             if e.is_timeout() {
                 Error::DeadlineExceeded { site: site.clone() }
             } else {
-                Error::Network {
-                    site: site.clone(),
-                    message: e.to_string(),
-                }
+                // A reqwest transport error can include the complete URL.
+                // That URL may contain OAuth credentials, so never preserve
+                // its diagnostic text in a user-visible Error.
+                Error::request_failed(site)
             }
         })
     }
@@ -63,6 +65,8 @@ impl Http {
 mod tests {
     use super::*;
     use httpmock::prelude::*;
+    use std::net::TcpListener;
+    use std::thread;
 
     #[tokio::test]
     async fn cross_host_redirect_is_returned_not_followed() {
@@ -95,5 +99,33 @@ mod tests {
         assert_eq!(resp.status().as_u16(), 302);
         // …and the other host never saw the request.
         assert_eq!(sink.hits(), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_request_never_exposes_query_credentials() {
+        // Accept then close one connection. This creates a real reqwest
+        // failure without DNS or public-network dependence, using a URL that
+        // deliberately contains secrets which must never reach Error::Display.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let _ = listener.accept();
+        });
+
+        let token = "access-token-must-not-leak";
+        let secret = "client-secret-must-not-leak";
+        let url = format!("http://{address}/oauth?access_token={token}&client_secret={secret}");
+        let http = Http::new().unwrap();
+        let err = http
+            .send(http.get(&url), Deadline::from_secs(2), &Site::new("test"))
+            .await
+            .unwrap_err();
+        let rendered = err.to_string();
+
+        assert!(matches!(err, Error::Network { ref message, .. } if message == "request failed"));
+        assert!(!rendered.contains(token));
+        assert!(!rendered.contains(secret));
+        assert!(!rendered.contains("access_token"));
+        assert!(!rendered.contains("client_secret"));
     }
 }

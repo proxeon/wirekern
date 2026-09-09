@@ -164,6 +164,16 @@ impl WireError {
 }
 
 impl Error {
+    /// Reqwest often renders the complete request URL in transport errors.
+    /// OAuth connectors may place access tokens or client secrets in those
+    /// URLs, so public errors deliberately retain none of that diagnostic.
+    pub(crate) fn request_failed(site: &Site) -> Self {
+        Self::Network {
+            site: site.clone(),
+            message: "request failed".into(),
+        }
+    }
+
     pub fn exit_code(&self) -> i32 {
         WireError::from(self).exit_code()
     }
