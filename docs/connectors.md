@@ -8,7 +8,7 @@ A site is a **`Publisher` module**, not a new `Client`. A checklist written afte
 
 Official publish API, BYO credentials, publish only. If the website can do it and the API cannot, it stays out. No calendar, inbox, Chrome, or Meta-dashboard scrape.
 
-Operator runbooks for shipped sites: [threads/](./threads/), [bluesky/](./bluesky/). Plan for what is gated next: [plans/001/004-after-kernel.md](../plans/001/004-after-kernel.md).
+Operator runbooks for shipped sites: [threads/](./threads/), [bluesky/](./bluesky/).
 
 ---
 

@@ -102,7 +102,7 @@ Roadmap, in order: images/video, then HTTP `serve` mode with `pk_live_` keys.
 
 ## Not in this version
 
-`serve` / `pk_live_`, `--listen`, `--image` / video, schedule, inbox, LinkedIn, Telegram, Mastodon. Add a site: [docs/connectors.md](./docs/connectors.md). Gates: [plans/001/004-after-kernel.md](./plans/001/004-after-kernel.md).
+`serve` / `pk_live_`, `--listen`, `--image` / video, schedule, inbox, LinkedIn, Telegram, Mastodon. Add a site: [docs/connectors.md](./docs/connectors.md).
 
 Notable changes, release by release: [CHANGELOG.md](./CHANGELOG.md).
 

@@ -1,6 +1,6 @@
 # Operator references
 
-Human steps to make postkit actually publish. Design notes stay in `design/` (gitignored). Plans stay in `plans/`.
+Human steps to make postkit actually publish. Design notes stay in `design/` (gitignored). Plans stay in `plans/` (gitignored, local).
 
 Credentials: copy [`.env.example`](../.env.example) to `.env` (gitignored). The CLI does not auto-load it; `set -a && . ./.env && set +a` then `apps set` / `auth`.
 
