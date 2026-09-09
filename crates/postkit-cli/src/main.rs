@@ -5,7 +5,7 @@ use output::{emit_err, emit_ok, emit_raw, human_line};
 use postkit::connectors::threads::validate_text;
 use postkit::{
     app_source, extract_code, valid_name, verify_state, AccountKey, AdAccount, AppConfig, AppStore,
-    AttributionWindow, AuthReply, Body, Breakdown, CampaignObjective, Client,
+    AttributionWindow, AuthReply, BidStrategy, Body, Breakdown, CampaignObjective, Client,
     CreatePausedAdRequest, CreatedAd, DateRange, Deadline, Error, FileAppStore, FileVault,
     InsightRow, InsightsLevel, InsightsQuery, Intent, Metric, OAuthApp, PausedAd, PausedAdCreate,
     PausedAdset, PausedCampaign, PostRequest, Registry, Site, Vault,
@@ -161,6 +161,10 @@ enum AdsCmd {
         /// Daily budget in the ad account's minor currency unit.
         #[arg(long)]
         daily_budget: u64,
+        /// `lowest_cost_without_cap`; required so Meta cannot inherit a
+        /// bid-cap or ROAS strategy whose constraint is absent.
+        #[arg(long)]
+        bid_strategy: String,
         #[arg(long)]
         billing_event: String,
         #[arg(long)]
@@ -377,6 +381,7 @@ async fn dispatch(
             name,
             campaign_id,
             daily_budget,
+            bid_strategy,
             billing_event,
             optimization_goal,
             targeting_file,
@@ -401,6 +406,7 @@ async fn dispatch(
                     name,
                     campaign_id,
                     daily_budget,
+                    bid_strategy,
                     billing_event,
                     optimization_goal,
                     targeting,
@@ -1069,6 +1075,8 @@ fn build_paused_adset_request(
     site: &str,
     options: PausedAdsetOptions,
 ) -> Result<CreatePausedAdRequest, Error> {
+    let bid_strategy = BidStrategy::from_str(&options.bid_strategy)
+        .map_err(|reason| ads_input_error(site, reason))?;
     let targeting = serde_json::from_str(&options.targeting)
         .map_err(|_| ads_input_error(site, "bad_targeting_json"))?;
     let request = CreatePausedAdRequest {
@@ -1077,6 +1085,7 @@ fn build_paused_adset_request(
             name: options.name,
             campaign_id: options.campaign_id,
             daily_budget: options.daily_budget,
+            bid_strategy,
             billing_event: options.billing_event,
             optimization_goal: options.optimization_goal,
             targeting,
@@ -1096,6 +1105,7 @@ struct PausedAdsetOptions {
     name: String,
     campaign_id: String,
     daily_budget: u64,
+    bid_strategy: String,
     billing_event: String,
     optimization_goal: String,
     targeting: String,
@@ -1399,6 +1409,56 @@ mod tests {
                 if site == "meta_ads" && account == "act_123"
         ));
 
+        // A missing strategy is a parser error rather than a Meta code 100:
+        // strategies such as cost cap need additional constraint fields that
+        // Tier B deliberately does not infer.
+        let missing_bid_strategy = Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "create-adset",
+            "meta_ads",
+            "--name",
+            "Paused ad set",
+            "--campaign-id",
+            "100",
+            "--daily-budget",
+            "2500",
+            "--billing-event",
+            "IMPRESSIONS",
+            "--optimization-goal",
+            "REACH",
+            "--targeting-file",
+            "targeting.json",
+        ]);
+        assert!(missing_bid_strategy.is_err());
+
+        let adset_cli = Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "create-adset",
+            "meta_ads",
+            "--name",
+            "Paused ad set",
+            "--campaign-id",
+            "100",
+            "--daily-budget",
+            "2500",
+            "--bid-strategy",
+            "lowest_cost_without_cap",
+            "--billing-event",
+            "IMPRESSIONS",
+            "--optimization-goal",
+            "REACH",
+            "--targeting-file",
+            "targeting.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            adset_cli.command,
+            Commands::Ads(AdsCmd::CreateAdset { bid_strategy, .. })
+                if bid_strategy == "lowest_cost_without_cap"
+        ));
+
         let campaign = build_paused_campaign_request(
             "meta_ads",
             Some("act_123".into()),
@@ -1420,6 +1480,7 @@ mod tests {
                 name: "Paused ad set".into(),
                 campaign_id: "100".into(),
                 daily_budget: 2500,
+                bid_strategy: "lowest_cost_without_cap".into(),
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 targeting: r#"{"geo_locations":{"countries":["MY"]}}"#.into(),
@@ -1427,6 +1488,23 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(adset.create, PausedAdCreate::Adset(_)));
+
+        let bad_bid_strategy = build_paused_adset_request(
+            "meta_ads",
+            PausedAdsetOptions {
+                ad_account: None,
+                name: "x".into(),
+                campaign_id: "100".into(),
+                daily_budget: 1,
+                bid_strategy: "cost_cap".into(),
+                billing_event: "IMPRESSIONS".into(),
+                optimization_goal: "REACH".into(),
+                targeting: "{}".into(),
+            },
+        );
+        assert!(
+            matches!(bad_bid_strategy, Err(Error::InvalidQuery { reason, .. }) if reason == "unknown_bid_strategy:cost_cap")
+        );
 
         for (objective, targeting, reason) in [
             ("clicks", "{}", "unknown_objective:clicks"),
@@ -1443,6 +1521,7 @@ mod tests {
                         name: "x".into(),
                         campaign_id: "100".into(),
                         daily_budget: 1,
+                        bid_strategy: "lowest_cost_without_cap".into(),
                         billing_event: "IMPRESSIONS".into(),
                         optimization_goal: "REACH".into(),
                         targeting: targeting.into(),

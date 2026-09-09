@@ -72,6 +72,35 @@ impl FromStr for CampaignObjective {
     }
 }
 
+/// The one bid strategy Tier B can safely express without a bid cap or a
+/// ROAS-floor constraint. Other Meta strategies need additional money-shaped
+/// inputs, so accepting their names before modelling those inputs would turn
+/// a local validation error into an opaque platform rejection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BidStrategy {
+    LowestCostWithoutCap,
+}
+
+impl BidStrategy {
+    pub fn meta_value(self) -> &'static str {
+        match self {
+            Self::LowestCostWithoutCap => "LOWEST_COST_WITHOUT_CAP",
+        }
+    }
+}
+
+impl FromStr for BidStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "lowest_cost_without_cap" => Ok(Self::LowestCostWithoutCap),
+            other => Err(format!("unknown_bid_strategy:{other}")),
+        }
+    }
+}
+
 /// A campaign draft. Status is intentionally absent: the connector adds the
 /// only allowed value, `PAUSED`, rather than trusting a caller-provided flag.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -89,6 +118,7 @@ pub struct PausedAdset {
     pub name: String,
     pub campaign_id: String,
     pub daily_budget: u64,
+    pub bid_strategy: BidStrategy,
     pub billing_event: String,
     pub optimization_goal: String,
     pub targeting: Value,
@@ -233,6 +263,20 @@ mod tests {
     }
 
     #[test]
+    fn bid_strategy_is_closed_and_maps_to_meta_wire_value() {
+        assert_eq!(
+            BidStrategy::from_str("lowest_cost_without_cap")
+                .unwrap()
+                .meta_value(),
+            "LOWEST_COST_WITHOUT_CAP"
+        );
+        assert_eq!(
+            BidStrategy::from_str("cost_cap").unwrap_err(),
+            "unknown_bid_strategy:cost_cap"
+        );
+    }
+
+    #[test]
     fn paused_create_validation_rejects_invalid_shapes() {
         let bad_budget = CreatePausedAdRequest {
             account: Some("123".into()),
@@ -240,6 +284,7 @@ mod tests {
                 name: "Test".into(),
                 campaign_id: "12".into(),
                 daily_budget: 0,
+                bid_strategy: BidStrategy::LowestCostWithoutCap,
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 targeting: json!({}),
@@ -256,6 +301,7 @@ mod tests {
                 name: "Test".into(),
                 campaign_id: "12".into(),
                 daily_budget: 100,
+                bid_strategy: BidStrategy::LowestCostWithoutCap,
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 targeting: json!([]),

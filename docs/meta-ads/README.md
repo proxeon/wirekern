@@ -87,7 +87,8 @@ postkit ads create-campaign meta_ads --ad-account act_123 \
 # daily_budget is in the account currency's minor unit (ILS: agorot).
 postkit ads create-adset meta_ads --ad-account act_123 \
   --name 'Postkit validation ad set — do not activate' --campaign-id <CAMPAIGN_ID> \
-  --daily-budget 2500 --billing-event IMPRESSIONS --optimization-goal REACH \
+  --daily-budget 2500 --bid-strategy lowest_cost_without_cap \
+  --billing-event IMPRESSIONS --optimization-goal REACH \
   --targeting-file targeting.json --json
 
 # A creative is an intentional external prerequisite; its content, identity,
@@ -103,6 +104,10 @@ postkit ads create-ad meta_ads --ad-account act_123 \
 - `--daily-budget` must be a positive integer in account minor units. It does
   not spend while the ad set is paused, but it is still reviewed policy input
   for a future activation workflow.
+- `--bid-strategy lowest_cost_without_cap` is required. It leaves the ad set's
+  explicit daily budget as its only bid limit; cost-cap, bid-cap, and ROAS
+  strategies are intentionally unsupported until their constraint fields are
+  modelled as explicit inputs.
 - `--targeting-file` must contain a JSON object. Meta performs the final
   platform-specific targeting validation; postkit refuses malformed local
   data before any HTTP request.

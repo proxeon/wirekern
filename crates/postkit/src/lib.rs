@@ -37,8 +37,8 @@ pub use oauth::{
 pub mod connectors;
 
 pub use ads::{
-    AdEntity, CampaignObjective, CreatePausedAdRequest, CreatedAd, PausedAd, PausedAdCreate,
-    PausedAdset, PausedCampaign,
+    AdEntity, BidStrategy, CampaignObjective, CreatePausedAdRequest, CreatedAd, PausedAd,
+    PausedAdCreate, PausedAdset, PausedCampaign,
 };
 pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
 pub use client::{refresh_is_due, Client};

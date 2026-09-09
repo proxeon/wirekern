@@ -385,6 +385,11 @@ async fn create_paused_ad(
                     serde_json::to_string(&campaign.special_ad_categories)
                         .expect("Vec<String> serializes"),
                 ),
+                // Tier B always puts the daily budget on the ad set. Meta now
+                // requires this campaign-level choice to be explicit; `false`
+                // keeps each paused ad set's budget independent rather than
+                // enabling Meta's campaign-level budget sharing behaviour.
+                ("is_adset_budget_sharing_enabled", "false".into()),
             ],
         ),
         PausedAdCreate::Adset(adset) => (
@@ -394,6 +399,11 @@ async fn create_paused_ad(
                 ("name", adset.name.clone()),
                 ("campaign_id", adset.campaign_id.clone()),
                 ("daily_budget", adset.daily_budget.to_string()),
+                // Bid strategy is explicit because Meta rejects an ad set
+                // that inherits a cap/ROAS strategy without its required
+                // constraint. The closed model only permits the strategy
+                // whose sole spend limit remains `daily_budget`.
+                ("bid_strategy", adset.bid_strategy.meta_value().into()),
                 ("billing_event", adset.billing_event.clone()),
                 ("optimization_goal", adset.optimization_goal.clone()),
                 (
@@ -1099,7 +1109,11 @@ mod tests {
                 .path("/v26.0/act_123/campaigns")
                 .body_contains("objective=OUTCOME_SALES")
                 .body_contains("status=PAUSED")
-                .body_contains("special_ad_categories=%5B%5D");
+                .body_contains("special_ad_categories=%5B%5D")
+                // Mirrors Meta's required campaign choice for an ad-set
+                // budget. A missing flag reaches the API as code 100 rather
+                // than a locally actionable error.
+                .body_contains("is_adset_budget_sharing_enabled=false");
             then.status(200).json_body(json!({ "id": "100" }));
         });
         let adset = server.mock(|when, then| {
@@ -1107,6 +1121,7 @@ mod tests {
                 .path("/v26.0/act_123/adsets")
                 .body_contains("campaign_id=100")
                 .body_contains("daily_budget=2500")
+                .body_contains("bid_strategy=LOWEST_COST_WITHOUT_CAP")
                 .body_contains("targeting=%7B")
                 .body_contains("status=PAUSED");
             then.status(200).json_body(json!({ "id": "200" }));
@@ -1148,6 +1163,7 @@ mod tests {
                         name: "paused ad set".into(),
                         campaign_id: "100".into(),
                         daily_budget: 2500,
+                        bid_strategy: crate::ads::BidStrategy::LowestCostWithoutCap,
                         billing_event: "IMPRESSIONS".into(),
                         optimization_goal: "REACH".into(),
                         targeting: json!({ "geo_locations": { "countries": ["MY"] } }),

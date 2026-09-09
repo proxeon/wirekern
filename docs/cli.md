@@ -86,7 +86,7 @@ Read-only spend/performance metrics (the `read.metrics` capability). Daily rows 
 ```text
 postkit ads accounts meta_ads
 postkit ads create-campaign meta_ads --name <name> --objective sales [--ad-account act_123]
-postkit ads create-adset meta_ads --name <name> --campaign-id <id> --daily-budget <minor-units> --billing-event <event> --optimization-goal <goal> --targeting-file targeting.json
+postkit ads create-adset meta_ads --name <name> --campaign-id <id> --daily-budget <minor-units> --bid-strategy lowest_cost_without_cap --billing-event <event> --optimization-goal <goal> --targeting-file targeting.json
 postkit ads create-ad meta_ads --name <name> --adset-id <id> --creative-id <id>
 ```
 
