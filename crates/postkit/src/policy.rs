@@ -17,6 +17,8 @@ pub enum AdsAction {
     CreatePausedCampaign,
     CreatePausedAdset,
     CreatePausedAd,
+    UploadAdImage,
+    CreateLinkAdCreative,
     Activate,
     UpdateBudget,
 }
@@ -35,6 +37,8 @@ impl AdsAction {
             Self::CreatePausedCampaign => "create_paused_campaign",
             Self::CreatePausedAdset => "create_paused_adset",
             Self::CreatePausedAd => "create_paused_ad",
+            Self::UploadAdImage => "upload_ad_image",
+            Self::CreateLinkAdCreative => "create_link_ad_creative",
             Self::Activate => "activate",
             Self::UpdateBudget => "update_budget",
         }
@@ -58,7 +62,11 @@ impl AdsPolicy for PausedOnlyAdsPolicy {
         match action {
             AdsAction::CreatePausedCampaign
             | AdsAction::CreatePausedAdset
-            | AdsAction::CreatePausedAd => Ok(()),
+            | AdsAction::CreatePausedAd
+            // Images and creatives are account assets, not delivery objects.
+            // Their later use is still gated by the structurally paused ad.
+            | AdsAction::UploadAdImage
+            | AdsAction::CreateLinkAdCreative => Ok(()),
             AdsAction::Activate | AdsAction::UpdateBudget => Err(Error::PolicyDenied {
                 site: site.clone(),
                 action: action.as_str().into(),
@@ -73,11 +81,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_policy_allows_only_structurally_paused_creates() {
+    fn default_policy_allows_non_delivering_assets_and_paused_creates() {
         let policy = PausedOnlyAdsPolicy;
         let site = Site::new("meta_ads");
         assert!(policy
             .authorize(&site, AdsAction::CreatePausedCampaign)
+            .is_ok());
+        assert!(policy.authorize(&site, AdsAction::UploadAdImage).is_ok());
+        assert!(policy
+            .authorize(&site, AdsAction::CreateLinkAdCreative)
             .is_ok());
         let err = policy.authorize(&site, AdsAction::Activate).unwrap_err();
         assert!(

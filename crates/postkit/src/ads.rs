@@ -101,6 +101,34 @@ impl FromStr for BidStrategy {
     }
 }
 
+/// The CTA supported by the first image-link creative format. More CTA kinds
+/// are not aliases: Meta gives some of them additional value requirements, so
+/// each must be modelled deliberately rather than accepted as a raw string.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkCallToAction {
+    LearnMore,
+}
+
+impl LinkCallToAction {
+    pub fn meta_value(self) -> &'static str {
+        match self {
+            Self::LearnMore => "LEARN_MORE",
+        }
+    }
+}
+
+impl FromStr for LinkCallToAction {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "learn_more" => Ok(Self::LearnMore),
+            other => Err(format!("unknown_link_call_to_action:{other}")),
+        }
+    }
+}
+
 /// A campaign draft. Status is intentionally absent: the connector adds the
 /// only allowed value, `PAUSED`, rather than trusting a caller-provided flag.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -132,6 +160,70 @@ pub struct PausedAd {
     pub name: String,
     pub adset_id: String,
     pub creative_id: String,
+}
+
+/// The bytes for one account-scoped ad image. The library takes bytes rather
+/// than a filesystem path so its core remains usable by non-CLI callers; the
+/// CLI reads the operator-selected file and deliberately never reports its
+/// local path in an error.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UploadAdImageRequest {
+    pub account: Option<String>,
+    pub filename: String,
+    pub bytes: Vec<u8>,
+}
+
+impl UploadAdImageRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_account(self.account.as_deref())?;
+        if self.filename.trim().is_empty()
+            || self.filename.contains('/')
+            || self.filename.contains('\\')
+        {
+            return Err("invalid_image_filename".into());
+        }
+        if self.bytes.is_empty() {
+            return Err("image_file_empty".into());
+        }
+        Ok(())
+    }
+}
+
+/// The exact input for a static image website creative. It purposefully has
+/// no implicit Page, media, copy, destination, or CTA: these determine the
+/// future ad even though the creative alone cannot deliver.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LinkAdCreative {
+    pub name: String,
+    pub page_id: String,
+    pub image_hash: String,
+    pub message: String,
+    pub headline: String,
+    pub destination_url: String,
+    pub call_to_action: LinkCallToAction,
+}
+
+/// Account override plus one image-link creative. Unlike a campaign/ad set/ad
+/// this object has no status because Meta creatives cannot independently
+/// deliver; only the later ad object is structurally forced to `PAUSED`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CreateLinkAdCreativeRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    pub creative: LinkAdCreative,
+}
+
+impl CreateLinkAdCreativeRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_account(self.account.as_deref())?;
+        require_name(&self.creative.name)?;
+        require_numeric_id("page_id", &self.creative.page_id)?;
+        require_text("image_hash", &self.creative.image_hash)?;
+        require_text("message", &self.creative.message)?;
+        require_text("headline", &self.creative.headline)?;
+        require_https_url("destination_url", &self.creative.destination_url)?;
+        Ok(())
+    }
 }
 
 /// A management request is structurally paused: no enum variant represents
@@ -205,14 +297,7 @@ pub struct CreatePausedAdRequest {
 
 impl CreatePausedAdRequest {
     pub fn validate(&self) -> Result<(), String> {
-        if let Some(account) = &self.account {
-            // Operators copy `act_<id>` from account discovery; accept that
-            // canonical spelling as well as a bare numeric API ID.
-            require_numeric_id(
-                "ad_account",
-                account.strip_prefix("act_").unwrap_or(account),
-            )?;
-        }
+        validate_account(self.account.as_deref())?;
         self.create.validate()
     }
 }
@@ -229,6 +314,25 @@ pub struct CreatedAd {
     pub status: String,
 }
 
+/// The stable hash Meta assigned to a successfully uploaded account image.
+/// This is the only media handle the first link-creative format accepts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UploadedAdImage {
+    pub site: Site,
+    pub account_id: String,
+    pub hash: String,
+}
+
+/// Confirmation that Meta created an ad creative. It is deliberately not a
+/// `CreatedAd`: no creative ID can start delivery until a separately-paused
+/// ad references it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CreatedAdCreative {
+    pub site: Site,
+    pub account_id: String,
+    pub id: String,
+}
+
 fn require_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
         Err("missing_name".into())
@@ -243,6 +347,42 @@ fn require_numeric_id(field: &str, id: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+fn validate_account(account: Option<&str>) -> Result<(), String> {
+    if let Some(account) = account {
+        // Operators copy `act_<id>` from account discovery; accept that
+        // canonical spelling as well as a bare numeric API ID.
+        require_numeric_id(
+            "ad_account",
+            account.strip_prefix("act_").unwrap_or(account),
+        )?;
+    }
+    Ok(())
+}
+
+fn require_text(field: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("missing_{field}"));
+    }
+    Ok(())
+}
+
+fn require_https_url(field: &str, value: &str) -> Result<(), String> {
+    let Some(authority_and_path) = value.strip_prefix("https://") else {
+        return Err(format!("{field}_must_be_https"));
+    };
+    // Split at the first path/query/fragment separator. This rejects values
+    // such as `https:///offer`: they have the required scheme text but no
+    // authority, so Meta would only return a less actionable form error.
+    let authority = authority_and_path
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    if authority.is_empty() || value.chars().any(char::is_whitespace) {
+        return Err(format!("{field}_must_be_https"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -274,6 +414,84 @@ mod tests {
             BidStrategy::from_str("cost_cap").unwrap_err(),
             "unknown_bid_strategy:cost_cap"
         );
+    }
+
+    #[test]
+    fn image_link_creative_contract_is_closed_and_validates_every_input() {
+        assert_eq!(
+            LinkCallToAction::from_str("learn_more")
+                .unwrap()
+                .meta_value(),
+            "LEARN_MORE"
+        );
+        assert_eq!(
+            LinkCallToAction::from_str("shop_now").unwrap_err(),
+            "unknown_link_call_to_action:shop_now"
+        );
+
+        let valid_image = UploadAdImageRequest {
+            account: Some("act_123".into()),
+            filename: "hero.png".into(),
+            bytes: b"image bytes".to_vec(),
+        };
+        assert!(valid_image.validate().is_ok());
+        let invalid_filename = UploadAdImageRequest {
+            filename: "private/hero.png".into(),
+            ..valid_image.clone()
+        };
+        assert_eq!(
+            invalid_filename.validate().unwrap_err(),
+            "invalid_image_filename"
+        );
+        let empty_image = UploadAdImageRequest {
+            bytes: vec![],
+            ..valid_image
+        };
+        assert_eq!(empty_image.validate().unwrap_err(), "image_file_empty");
+
+        let valid_creative = CreateLinkAdCreativeRequest {
+            account: Some("123".into()),
+            creative: LinkAdCreative {
+                name: "Hero link".into(),
+                page_id: "456".into(),
+                image_hash: "hash-1".into(),
+                message: "A clear benefit".into(),
+                headline: "Learn more".into(),
+                destination_url: "https://example.com/offer".into(),
+                call_to_action: LinkCallToAction::LearnMore,
+            },
+        };
+        assert!(valid_creative.validate().is_ok());
+        let insecure_url = CreateLinkAdCreativeRequest {
+            creative: LinkAdCreative {
+                destination_url: "http://example.com".into(),
+                ..valid_creative.creative.clone()
+            },
+            ..valid_creative.clone()
+        };
+        assert_eq!(
+            insecure_url.validate().unwrap_err(),
+            "destination_url_must_be_https"
+        );
+        let missing_host = CreateLinkAdCreativeRequest {
+            creative: LinkAdCreative {
+                destination_url: "https:///offer".into(),
+                ..valid_creative.creative.clone()
+            },
+            ..valid_creative.clone()
+        };
+        assert_eq!(
+            missing_host.validate().unwrap_err(),
+            "destination_url_must_be_https"
+        );
+        let bad_page = CreateLinkAdCreativeRequest {
+            creative: LinkAdCreative {
+                page_id: "page-456".into(),
+                ..valid_creative.creative
+            },
+            ..valid_creative
+        };
+        assert_eq!(bad_page.validate().unwrap_err(), "bad_page_id:page-456");
     }
 
     #[test]

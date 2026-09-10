@@ -60,6 +60,8 @@ pub enum Capability {
     ReadAdAccounts,
     #[serde(rename = "create.paused_ads")]
     CreatePausedAds,
+    #[serde(rename = "create.ad_creative")]
+    CreateAdCreative,
 }
 
 impl Capability {
@@ -71,6 +73,7 @@ impl Capability {
             Self::ReadMetrics => "read.metrics",
             Self::ReadAdAccounts => "read.ad_accounts",
             Self::CreatePausedAds => "create.paused_ads",
+            Self::CreateAdCreative => "create.ad_creative",
         }
     }
 }

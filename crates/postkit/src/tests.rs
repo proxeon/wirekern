@@ -1,5 +1,6 @@
 use crate::ads::{
-    CampaignObjective, CreatePausedAdRequest, CreatedAd, PausedAdCreate, PausedCampaign,
+    CampaignObjective, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
+    CreatedAdCreative, PausedAdCreate, PausedCampaign, UploadAdImageRequest, UploadedAdImage,
 };
 use crate::apps::{AppStore, MemoryAppStore};
 use crate::client::Client;
@@ -32,6 +33,8 @@ struct MockPub {
     publishes: AtomicUsize,
     probes: AtomicUsize,
     paused_creates: AtomicUsize,
+    image_uploads: AtomicUsize,
+    creative_creates: AtomicUsize,
 }
 
 impl MockPub {
@@ -48,6 +51,8 @@ impl MockPub {
             publishes: AtomicUsize::new(0),
             probes: AtomicUsize::new(0),
             paused_creates: AtomicUsize::new(0),
+            image_uploads: AtomicUsize::new(0),
+            creative_creates: AtomicUsize::new(0),
         }
     }
 
@@ -68,6 +73,13 @@ impl MockPub {
     fn paused_ads(site: &str) -> Self {
         Self {
             caps: vec![Capability::CreatePausedAds],
+            ..Self::text(site)
+        }
+    }
+
+    fn creative_assets(site: &str) -> Self {
+        Self {
+            caps: vec![Capability::CreateAdCreative],
             ..Self::text(site)
         }
     }
@@ -208,6 +220,36 @@ impl Publisher for MockPub {
             entity: request.create.entity(),
             id: format!("draft-{n}"),
             status: "PAUSED".into(),
+        })
+    }
+
+    async fn upload_ad_image(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &UploadAdImageRequest,
+        _deadline: Deadline,
+    ) -> Result<UploadedAdImage, Error> {
+        let n = self.image_uploads.fetch_add(1, Ordering::SeqCst);
+        Ok(UploadedAdImage {
+            site: self.site.clone(),
+            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
+            hash: format!("image-{n}"),
+        })
+    }
+
+    async fn create_link_ad_creative(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &CreateLinkAdCreativeRequest,
+        _deadline: Deadline,
+    ) -> Result<CreatedAdCreative, Error> {
+        let n = self.creative_creates.fetch_add(1, Ordering::SeqCst);
+        Ok(CreatedAdCreative {
+            site: self.site.clone(),
+            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
+            id: format!("creative-{n}"),
         })
     }
 
@@ -961,6 +1003,120 @@ async fn client_paused_create_routes_and_refuses_before_vault_access() {
         .await
         .unwrap_err();
     assert!(matches!(err, Error::InvalidQuery { reason, .. } if reason == "missing_name"));
+}
+
+/// Creative assets use their own capability and policy labels, while keeping
+/// the same "validate and authorize before vault" invariant as paused ads.
+#[tokio::test]
+async fn client_creative_assets_route_and_refuse_before_vault_access() {
+    let (client, key) = setup(MockPub::creative_assets("meta_ads"));
+    let uploaded = client
+        .upload_ad_image(
+            &key,
+            UploadAdImageRequest {
+                account: None,
+                filename: "hero.png".into(),
+                bytes: b"image bytes".to_vec(),
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(uploaded.hash, "image-0");
+
+    let created = client
+        .create_link_ad_creative(
+            &key,
+            CreateLinkAdCreativeRequest {
+                account: None,
+                creative: crate::ads::LinkAdCreative {
+                    name: "Hero".into(),
+                    page_id: "456".into(),
+                    image_hash: uploaded.hash,
+                    message: "A clear benefit".into(),
+                    headline: "Learn more".into(),
+                    destination_url: "https://example.com/offer".into(),
+                    call_to_action: crate::ads::LinkCallToAction::LearnMore,
+                },
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.id, "creative-0");
+
+    let (no_creative_capability, key) = setup(MockPub::text("meta_ads"));
+    let err = no_creative_capability
+        .upload_ad_image(
+            &key,
+            UploadAdImageRequest {
+                account: None,
+                filename: "hero.png".into(),
+                bytes: b"image bytes".to_vec(),
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::CreateAdCreative)
+    );
+
+    // The vault is empty on purpose. A stricter policy must reject before
+    // token lookup, proving an asset write cannot cause a credential side
+    // effect when an embedding application disallows it.
+    let mut registry = Registry::new();
+    registry.register(Arc::new(MockPub::creative_assets("meta_ads")));
+    let denied = Client::with_ads_policy(
+        registry,
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+        Arc::new(DenyAds),
+    )
+    .upload_ad_image(
+        &AccountKey::new("meta_ads", "default"),
+        UploadAdImageRequest {
+            account: None,
+            filename: "hero.png".into(),
+            bytes: b"image bytes".to_vec(),
+        },
+        Deadline::from_secs(30),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(denied, Error::PolicyDenied { action, reason, .. } if action == "upload_ad_image" && reason == "test_denied")
+    );
+
+    // Validation also wins before registry/vault lookup, which avoids local
+    // filesystem details and network behavior hiding a bad destination URL.
+    let empty_vault = Client::new(
+        Registry::new(),
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let err = empty_vault
+        .create_link_ad_creative(
+            &AccountKey::new("meta_ads", "default"),
+            CreateLinkAdCreativeRequest {
+                account: None,
+                creative: crate::ads::LinkAdCreative {
+                    name: "Hero".into(),
+                    page_id: "456".into(),
+                    image_hash: "hash".into(),
+                    message: "Copy".into(),
+                    headline: "Headline".into(),
+                    destination_url: "http://example.com".into(),
+                    call_to_action: crate::ads::LinkCallToAction::LearnMore,
+                },
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidQuery { reason, .. } if reason == "destination_url_must_be_https")
+    );
 }
 
 /// The trait's default `insights` must refuse — the same honesty the

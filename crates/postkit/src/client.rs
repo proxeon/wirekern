@@ -1,4 +1,7 @@
-use crate::ads::{CreatePausedAdRequest, CreatedAd};
+use crate::ads::{
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    UploadAdImageRequest, UploadedAdImage,
+};
 use crate::apps::AppStore;
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
@@ -234,6 +237,98 @@ impl Client {
                 self.vault.put(key, &new)?;
                 publisher
                     .create_paused_ad(&app, &new, &request, deadline)
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    /// Upload an image only after local validation and policy approval. An
+    /// upload has no delivery status, but it is still a remote asset write and
+    /// must not reach credentials or HTTP when a stricter policy refuses it.
+    pub async fn upload_ad_image(
+        &self,
+        key: &AccountKey,
+        request: UploadAdImageRequest,
+        deadline: Deadline,
+    ) -> Result<UploadedAdImage, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy
+            .authorize(&key.site, AdsAction::UploadAdImage)?;
+        let publisher = self.publisher(&key.site)?;
+        if !publisher
+            .capabilities()
+            .contains(&Capability::CreateAdCreative)
+        {
+            return Err(Error::UnsupportedCapability {
+                site: key.site.clone(),
+                need: Capability::CreateAdCreative,
+            });
+        }
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let mut creds = self.vault.get(key)?;
+        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        match publisher
+            .upload_ad_image(&app, &creds, &request, deadline)
+            .await
+        {
+            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
+                let new = publisher.refresh(&app, &creds).await?;
+                self.vault.put(key, &new)?;
+                publisher
+                    .upload_ad_image(&app, &new, &request, deadline)
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    /// Create a Page-backed image-link creative behind the same validation,
+    /// policy, capability, and refresh ordering as every other Tier B write.
+    /// The returned creative cannot deliver until a separate paused ad uses it.
+    pub async fn create_link_ad_creative(
+        &self,
+        key: &AccountKey,
+        request: CreateLinkAdCreativeRequest,
+        deadline: Deadline,
+    ) -> Result<CreatedAdCreative, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy
+            .authorize(&key.site, AdsAction::CreateLinkAdCreative)?;
+        let publisher = self.publisher(&key.site)?;
+        if !publisher
+            .capabilities()
+            .contains(&Capability::CreateAdCreative)
+        {
+            return Err(Error::UnsupportedCapability {
+                site: key.site.clone(),
+                need: Capability::CreateAdCreative,
+            });
+        }
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let mut creds = self.vault.get(key)?;
+        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        match publisher
+            .create_link_ad_creative(&app, &creds, &request, deadline)
+            .await
+        {
+            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
+                let new = publisher.refresh(&app, &creds).await?;
+                self.vault.put(key, &new)?;
+                publisher
+                    .create_link_ad_creative(&app, &new, &request, deadline)
                     .await
             }
             other => other,

@@ -1,6 +1,6 @@
 # meta_ads runbook
 
-Spend/performance insights plus paused-first drafts through the Meta Marketing API (Graph `v26.0`, pinned). Scope: `ads_read,ads_management`. Tier B can create campaigns, ad sets, and ads, but every form hard-codes `status=PAUSED`. There is no activation, budget-update, or delete command; policy refuses those future spend-shaped actions by default.
+Spend/performance insights plus paused-first management through the Meta Marketing API (Graph `v26.0`, pinned). Scope: `ads_read,ads_management`. Tier B can upload an account image, create a Page image-link creative, and create campaigns, ad sets, and ads; every delivery object form hard-codes `status=PAUSED`. There is no activation, budget-update, or delete command; policy refuses those future spend-shaped actions by default.
 
 ## One-time setup (operator)
 
@@ -91,8 +91,20 @@ postkit ads create-adset meta_ads --ad-account act_123 \
   --billing-event IMPRESSIONS --optimization-goal REACH \
   --targeting-file targeting.json --json
 
-# A creative is an intentional external prerequisite; its content, identity,
-# destination, and tracking must not be guessed by a management connector.
+# Uploading is an account-asset write, not an ad create: it has no delivery
+# status and cannot spend. Copy the returned hash into the explicit creative.
+postkit ads upload-image meta_ads --ad-account act_123 --file hero.png --json
+
+# A Page image-link creative is also non-delivering. Page identity, copy,
+# destination, and CTA are all explicit; `learn_more` is the only supported
+# CTA until its alternatives have their own typed value requirements.
+postkit ads create-link-creative meta_ads --ad-account act_123 \
+  --name 'Postkit validation creative' --page-id <PAGE_ID> \
+  --image-hash <IMAGE_HASH> --message 'A clear benefit' \
+  --headline 'Learn more' --destination-url https://example.com/offer \
+  --call-to-action learn_more --json
+
+# The final dependency is still a structurally paused ad.
 postkit ads create-ad meta_ads --ad-account act_123 \
   --name 'Postkit validation ad — do not activate' --adset-id <ADSET_ID> \
   --creative-id <CREATIVE_ID> --json
@@ -111,8 +123,15 @@ postkit ads create-ad meta_ads --ad-account act_123 \
 - `--targeting-file` must contain a JSON object. Meta performs the final
   platform-specific targeting validation; postkit refuses malformed local
   data before any HTTP request.
-- `--creative-id` is an existing Meta creative ID. Creative creation and
-  activation are deliberately later capabilities.
+- Image uploads and link creatives are account assets, never delivery objects.
+  They still pass through the policy gate before credentials or HTTP, but they
+  cannot spend until a separately created (and still `PAUSED`) ad references
+  the creative.
+- `--file` is read locally only by the CLI. Its filesystem path is never sent
+  to Meta or included in a postkit error; only its basename and bytes upload.
+- `--page-id`, `--image-hash`, `--message`, `--headline`, destination HTTPS
+  URL, and `--call-to-action learn_more` are all required. Postkit intentionally
+  has no Page, copy, tracking, or CTA defaults.
 
 ### Live validation without spend
 

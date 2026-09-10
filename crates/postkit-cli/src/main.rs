@@ -6,9 +6,10 @@ use postkit::connectors::threads::validate_text;
 use postkit::{
     app_source, extract_code, valid_name, verify_state, AccountKey, AdAccount, AppConfig, AppStore,
     AttributionWindow, AuthReply, BidStrategy, Body, Breakdown, CampaignObjective, Client,
-    CreatePausedAdRequest, CreatedAd, DateRange, Deadline, Error, FileAppStore, FileVault,
-    InsightRow, InsightsLevel, InsightsQuery, Intent, Metric, OAuthApp, PausedAd, PausedAdCreate,
-    PausedAdset, PausedCampaign, PostRequest, Registry, Site, Vault,
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative, DateRange,
+    Deadline, Error, FileAppStore, FileVault, InsightRow, InsightsLevel, InsightsQuery, Intent,
+    LinkAdCreative, LinkCallToAction, Metric, OAuthApp, PausedAd, PausedAdCreate, PausedAdset,
+    PausedCampaign, PostRequest, Registry, Site, UploadAdImageRequest, UploadedAdImage, Vault,
 };
 use std::io::{self, BufRead, IsTerminal, Read};
 use std::path::PathBuf;
@@ -134,6 +135,38 @@ enum AccountsCmd {
 enum AdsCmd {
     /// List Meta ad accounts visible to the selected credential.
     Accounts { site: String },
+    /// Upload a local image for use by a later Meta link creative. Uploading
+    /// media creates no ad and cannot start delivery.
+    UploadImage {
+        site: String,
+        #[arg(long)]
+        ad_account: Option<String>,
+        /// Local image file. Its path is never included in CLI errors.
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Create a Page-backed image-link creative. The creative itself cannot
+    /// deliver; a later `create-ad` still creates an ad as PAUSED.
+    CreateLinkCreative {
+        site: String,
+        #[arg(long)]
+        ad_account: Option<String>,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        page_id: String,
+        #[arg(long)]
+        image_hash: String,
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        headline: String,
+        #[arg(long)]
+        destination_url: String,
+        /// `learn_more`; more CTA types need their own typed value fields.
+        #[arg(long)]
+        call_to_action: String,
+    },
     /// Create a Meta campaign with status hard-coded to PAUSED.
     CreateCampaign {
         site: String,
@@ -350,6 +383,67 @@ async fn dispatch(
                 }
                 Err(e) => Err(fail(&e, json)),
             }
+        }
+        Commands::Ads(AdsCmd::UploadImage {
+            site,
+            ad_account,
+            file,
+        }) => {
+            // The core library intentionally receives opaque bytes rather
+            // than a host path. This is the sole filesystem boundary, and it
+            // turns an unreadable local file into a stable field-level error
+            // without leaking user or CI directory names.
+            let filename = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+                .ok_or_else(|| fail(&ads_input_error(&site, "invalid_image_filename"), json))?;
+            let bytes = std::fs::read(file)
+                .map_err(|_| fail(&ads_input_error(&site, "image_file_unreadable"), json))?;
+            let request = build_upload_ad_image_request(&site, ad_account, filename, bytes)
+                .map_err(|e| fail(&e, json))?;
+            one_image_upload(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::CreateLinkCreative {
+            site,
+            ad_account,
+            name,
+            page_id,
+            image_hash,
+            message,
+            headline,
+            destination_url,
+            call_to_action,
+        }) => {
+            let request = build_link_ad_creative_request(
+                &site,
+                LinkCreativeOptions {
+                    ad_account,
+                    name,
+                    page_id,
+                    image_hash,
+                    message,
+                    headline,
+                    destination_url,
+                    call_to_action,
+                },
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_link_creative(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
         }
         Commands::Ads(AdsCmd::CreateCampaign {
             site,
@@ -969,6 +1063,43 @@ async fn one_paused_create(
     }
 }
 
+/// Image upload is a remote asset write but has no delivery status. State it
+/// plainly so the successful result cannot be mistaken for a running ad.
+async fn one_image_upload(
+    client: &Client,
+    key: &AccountKey,
+    request: UploadAdImageRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.upload_ad_image(key, request, deadline).await {
+        Ok(uploaded) => {
+            emit_ok(&uploaded, json, || uploaded_image_line(&uploaded));
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+/// A creative is reusable account metadata, not a delivery object. Showing
+/// that distinction in human output helps an operator take the still-paused
+/// `create-ad` step consciously rather than assuming an ad has started.
+async fn one_link_creative(
+    client: &Client,
+    key: &AccountKey,
+    request: CreateLinkAdCreativeRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.create_link_ad_creative(key, request, deadline).await {
+        Ok(created) => {
+            emit_ok(&created, json, || created_creative_line(&created));
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
 /// `--json` prints `{ "results": [...] }`; human mode one line per result,
 /// on stderr per the output-stream contract.
 fn print_results(results: &[serde_json::Value], json: bool) {
@@ -1064,6 +1195,64 @@ fn build_paused_campaign_request(
                 .map(str::to_owned)
                 .collect(),
         }),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+/// Convert the CLI's selected file into the library's path-free request.
+/// Keeping this pure makes filename and empty-byte checks testable without a
+/// temporary file and preserves the no-local-path error contract.
+fn build_upload_ad_image_request(
+    site: &str,
+    ad_account: Option<String>,
+    filename: String,
+    bytes: Vec<u8>,
+) -> Result<UploadAdImageRequest, Error> {
+    let request = UploadAdImageRequest {
+        account: ad_account,
+        filename,
+        bytes,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+/// Required fields for the one supported creative shape travel together so
+/// future image, video, and carousel types cannot silently inherit fields
+/// intended only for this Page image-link contract.
+struct LinkCreativeOptions {
+    ad_account: Option<String>,
+    name: String,
+    page_id: String,
+    image_hash: String,
+    message: String,
+    headline: String,
+    destination_url: String,
+    call_to_action: String,
+}
+
+fn build_link_ad_creative_request(
+    site: &str,
+    options: LinkCreativeOptions,
+) -> Result<CreateLinkAdCreativeRequest, Error> {
+    let call_to_action = LinkCallToAction::from_str(&options.call_to_action)
+        .map_err(|reason| ads_input_error(site, reason))?;
+    let request = CreateLinkAdCreativeRequest {
+        account: options.ad_account,
+        creative: LinkAdCreative {
+            name: options.name,
+            page_id: options.page_id,
+            image_hash: options.image_hash,
+            message: options.message,
+            headline: options.headline,
+            destination_url: options.destination_url,
+            call_to_action,
+        },
     };
     request
         .validate()
@@ -1226,6 +1415,24 @@ fn created_ad_line(created: &CreatedAd) -> String {
     )
 }
 
+/// The hash is the only value the next creative command needs. It is safe to
+/// copy, whereas the source image's local path deliberately never appears.
+fn uploaded_image_line(uploaded: &UploadedAdImage) -> String {
+    format!(
+        "image hash={} account={}",
+        uploaded.hash, uploaded.account_id
+    )
+}
+
+/// Make the non-delivery property visible in text output as it is in the
+/// type contract: a creative alone cannot spend or enter an auction.
+fn created_creative_line(created: &CreatedAdCreative) -> String {
+    format!(
+        "creative {} not-delivering account={}",
+        created.id, created.account_id
+    )
+}
+
 /// Vault home: `--home`/`POSTKIT_HOME` (clap folds the env var into the
 /// flag) > `$HOME/.postkit`. Never falls back to the current directory:
 /// with HOME unset (cron, systemd units, `env -i` shells) a CWD fallback
@@ -1385,6 +1592,105 @@ mod tests {
         let cli = Cli::try_parse_from(["postkit", "ads", "accounts", "meta_ads"]).unwrap();
         assert!(
             matches!(cli.command, Commands::Ads(AdsCmd::Accounts { site }) if site == "meta_ads")
+        );
+    }
+
+    #[test]
+    fn image_link_creative_commands_require_explicit_non_delivery_inputs() {
+        let upload = Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "upload-image",
+            "meta_ads",
+            "--file",
+            "hero.png",
+        ])
+        .unwrap();
+        assert!(matches!(
+            upload.command,
+            Commands::Ads(AdsCmd::UploadImage { site, file, .. })
+                if site == "meta_ads" && file.file_name().and_then(|name| name.to_str()) == Some("hero.png")
+        ));
+
+        let missing_cta = Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "create-link-creative",
+            "meta_ads",
+            "--name",
+            "Hero",
+            "--page-id",
+            "456",
+            "--image-hash",
+            "hash-1",
+            "--message",
+            "A clear benefit",
+            "--headline",
+            "Learn more",
+            "--destination-url",
+            "https://example.com/offer",
+        ]);
+        assert!(missing_cta.is_err());
+
+        let request = build_link_ad_creative_request(
+            "meta_ads",
+            LinkCreativeOptions {
+                ad_account: Some("act_123".into()),
+                name: "Hero".into(),
+                page_id: "456".into(),
+                image_hash: "hash-1".into(),
+                message: "A clear benefit".into(),
+                headline: "Learn more".into(),
+                destination_url: "https://example.com/offer".into(),
+                call_to_action: "learn_more".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(request.creative.call_to_action, LinkCallToAction::LearnMore);
+
+        let invalid = build_link_ad_creative_request(
+            "meta_ads",
+            LinkCreativeOptions {
+                ad_account: None,
+                name: "Hero".into(),
+                page_id: "456".into(),
+                image_hash: "hash-1".into(),
+                message: "A clear benefit".into(),
+                headline: "Learn more".into(),
+                destination_url: "http://example.com/offer".into(),
+                call_to_action: "shop_now".into(),
+            },
+        )
+        .unwrap_err();
+        // CTA parsing happens before URL validation, so a caller gets one
+        // precise, local field correction at a time rather than Graph's
+        // combined form error after a remote write.
+        assert!(
+            matches!(invalid, Error::InvalidQuery { reason, .. } if reason == "unknown_link_call_to_action:shop_now")
+        );
+
+        let upload = build_upload_ad_image_request(
+            "meta_ads",
+            None,
+            "hero.png".into(),
+            b"image bytes".to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            uploaded_image_line(&UploadedAdImage {
+                site: Site::new("meta_ads"),
+                account_id: "act_123".into(),
+                hash: upload.filename,
+            }),
+            "image hash=hero.png account=act_123"
+        );
+        assert_eq!(
+            created_creative_line(&CreatedAdCreative {
+                site: Site::new("meta_ads"),
+                account_id: "act_123".into(),
+                id: "500".into(),
+            }),
+            "creative 500 not-delivering account=act_123"
         );
     }
 

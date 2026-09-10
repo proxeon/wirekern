@@ -6,7 +6,10 @@
 //! against the Facebook OAuth host; the long-lived exchange is Meta's
 //! `fb_exchange_token` grant (~60 days).
 
-use crate::ads::{CreatePausedAdRequest, CreatedAd, PausedAdCreate};
+use crate::ads::{
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    PausedAdCreate, UploadAdImageRequest, UploadedAdImage,
+};
 use crate::error::Error;
 use crate::form::form;
 use crate::http::Http;
@@ -84,6 +87,7 @@ impl Publisher for MetaAds {
             Capability::ReadMetrics,
             Capability::ReadAdAccounts,
             Capability::CreatePausedAds,
+            Capability::CreateAdCreative,
         ]
     }
 
@@ -359,6 +363,36 @@ impl Publisher for MetaAds {
         )
         .await
     }
+
+    async fn upload_ad_image(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &UploadAdImageRequest,
+        deadline: Deadline,
+    ) -> Result<UploadedAdImage, Error> {
+        let token = access_token(creds)?;
+        let account = account_id(creds, request.account.as_deref())?;
+        upload_ad_image(
+            &self.http, &self.base, &self.site, &account, token, request, deadline,
+        )
+        .await
+    }
+
+    async fn create_link_ad_creative(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &CreateLinkAdCreativeRequest,
+        deadline: Deadline,
+    ) -> Result<CreatedAdCreative, Error> {
+        let token = access_token(creds)?;
+        let account = account_id(creds, request.account.as_deref())?;
+        create_link_ad_creative(
+            &self.http, &self.base, &self.site, &account, token, request, deadline,
+        )
+        .await
+    }
 }
 
 /// Submit the one intentionally narrow Tier B form. `status=PAUSED` lives in
@@ -456,6 +490,109 @@ async fn create_paused_ad(
         entity,
         id,
         status: "PAUSED".into(),
+    })
+}
+
+/// Upload an account image using Meta's multipart `filename` part. The
+/// operator-supplied filename is validated as a basename before this point;
+/// keeping it as multipart metadata lets Meta preserve media type inference
+/// without leaking a local filesystem path into a request or error.
+async fn upload_ad_image(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    account: &str,
+    token: &str,
+    request: &UploadAdImageRequest,
+    deadline: Deadline,
+) -> Result<UploadedAdImage, Error> {
+    let form = reqwest::multipart::Form::new()
+        .part(
+            "filename",
+            reqwest::multipart::Part::bytes(request.bytes.clone())
+                .file_name(request.filename.clone()),
+        )
+        // Put the bearer in the multipart body for the same log-safety reason
+        // as paused create forms: never place credentials in a request URL.
+        .text("access_token", token.to_string());
+    let url = format!("{base}/act_{account}/adimages");
+    let response = http
+        .send(http.post(&url).multipart(form), deadline, site)
+        .await?;
+    let response = read_json(response, site).await?;
+    let hash = response
+        .get("images")
+        .and_then(Value::as_object)
+        .and_then(|images| {
+            images
+                .values()
+                .find_map(|image| value_string(image.get("hash")))
+        })
+        .or_else(|| value_string(response.get("hash")))
+        .ok_or_else(|| Error::Platform {
+            site: site.clone(),
+            code: "missing_image_hash".into(),
+            message: "image upload returned no hash".into(),
+        })?;
+    Ok(UploadedAdImage {
+        site: site.clone(),
+        account_id: format!("act_{account}"),
+        hash,
+    })
+}
+
+/// Create an unpublished Page-backed image-link creative. It intentionally
+/// sends only the narrow, reviewable `object_story_spec` V1 supports; video,
+/// carousel, and Instagram creative shapes need their own typed contracts.
+async fn create_link_ad_creative(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    account: &str,
+    token: &str,
+    request: &CreateLinkAdCreativeRequest,
+    deadline: Deadline,
+) -> Result<CreatedAdCreative, Error> {
+    let creative = &request.creative;
+    let object_story_spec = serde_json::json!({
+        "page_id": creative.page_id,
+        "link_data": {
+            "image_hash": creative.image_hash,
+            "link": creative.destination_url,
+            "message": creative.message,
+            "name": creative.headline,
+            "call_to_action": {
+                "type": creative.call_to_action.meta_value(),
+                "value": { "link": creative.destination_url },
+            },
+        },
+    })
+    .to_string();
+    let body = form(&[
+        ("name", creative.name.as_str()),
+        ("object_story_spec", object_story_spec.as_str()),
+        ("access_token", token),
+    ]);
+    let url = format!("{base}/act_{account}/adcreatives");
+    let response = http
+        .send(
+            http.post(&url)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(body),
+            deadline,
+            site,
+        )
+        .await?;
+    let response = read_json(response, site).await?;
+    let id = value_string(response.get("id")).ok_or_else(|| Error::Platform {
+        site: site.clone(),
+        code: "missing_creative_id".into(),
+        message: "creative create returned no id".into(),
+    })?;
+    Ok(CreatedAdCreative {
+        site: site.clone(),
+        account_id: format!("act_{account}"),
+        id,
     })
 }
 
@@ -965,7 +1102,10 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ads::{CampaignObjective, PausedAd, PausedAdset, PausedCampaign};
+    use crate::ads::{
+        CampaignObjective, CreateLinkAdCreativeRequest, LinkAdCreative, LinkCallToAction, PausedAd,
+        PausedAdset, PausedCampaign, UploadAdImageRequest,
+    };
     use crate::insights::{AttributionWindow, InsightsLevel};
     use httpmock::prelude::*;
     use serde_json::json;
@@ -1196,6 +1336,74 @@ mod tests {
         assert_eq!(campaign_out.id, "100");
         assert_eq!(adset_out.entity, crate::ads::AdEntity::Adset);
         assert_eq!(ad_out.status, "PAUSED");
+    }
+
+    #[tokio::test]
+    async fn image_link_creative_uploads_media_then_posts_reviewable_story_spec() {
+        let server = MockServer::start();
+        let image = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/adimages")
+                // `filename` is a multipart field containing raw selected
+                // bytes; an account image upload never creates an ad.
+                .body_contains("name=\"filename\"; filename=\"hero.png\"")
+                .body_contains("not-a-real-png");
+            then.status(200).json_body(json!({
+                "images": { "hero.png": { "hash": "hash-1" } }
+            }));
+        });
+        let creative = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/adcreatives")
+                .body_contains("name=Hero+link")
+                .body_contains("object_story_spec=%7B")
+                .body_contains("%22page_id%22%3A%22456%22")
+                .body_contains("%22image_hash%22%3A%22hash-1%22")
+                .body_contains("https%3A%2F%2Fexample.com%2Foffer")
+                .body_contains("LEARN_MORE");
+            then.status(200).json_body(json!({ "id": "500" }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let creds = token_creds("123");
+
+        let uploaded = connector
+            .upload_ad_image(
+                &empty_app(),
+                &creds,
+                &UploadAdImageRequest {
+                    account: None,
+                    filename: "hero.png".into(),
+                    bytes: b"not-a-real-png".to_vec(),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        let created = connector
+            .create_link_ad_creative(
+                &empty_app(),
+                &creds,
+                &CreateLinkAdCreativeRequest {
+                    account: None,
+                    creative: LinkAdCreative {
+                        name: "Hero link".into(),
+                        page_id: "456".into(),
+                        image_hash: uploaded.hash,
+                        message: "A clear benefit".into(),
+                        headline: "Learn more".into(),
+                        destination_url: "https://example.com/offer".into(),
+                        call_to_action: LinkCallToAction::LearnMore,
+                    },
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        image.assert();
+        creative.assert();
+        assert_eq!(created.id, "500");
+        assert_eq!(created.account_id, "act_123");
     }
 
     #[tokio::test]

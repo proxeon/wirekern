@@ -61,7 +61,7 @@ postkit auth meta_ads                        # same paste-code flow, ads_read + 
 postkit whoami threads --json
 postkit whoami bluesky --account you.bsky.social --json
 postkit capabilities --json
-# {"bluesky":["publish.text"],"meta_ads":["read.metrics","read.ad_accounts","create.paused_ads"],"threads":["publish.text"]}
+# {"bluesky":["publish.text"],"meta_ads":["read.metrics","read.ad_accounts","create.paused_ads","create.ad_creative"],"threads":["publish.text"]}
 ```
 
 ## `insights` (meta_ads)
@@ -85,12 +85,14 @@ Read-only spend/performance metrics (the `read.metrics` capability). Daily rows 
 
 ```text
 postkit ads accounts meta_ads
+postkit ads upload-image meta_ads --file hero.png [--ad-account act_123]
+postkit ads create-link-creative meta_ads --name <name> --page-id <id> --image-hash <hash> --message <copy> --headline <headline> --destination-url https://example.com --call-to-action learn_more [--ad-account act_123]
 postkit ads create-campaign meta_ads --name <name> --objective sales [--ad-account act_123]
 postkit ads create-adset meta_ads --name <name> --campaign-id <id> --daily-budget <minor-units> --bid-strategy lowest_cost_without_cap --billing-event <event> --optimization-goal <goal> --targeting-file targeting.json
 postkit ads create-ad meta_ads --name <name> --adset-id <id> --creative-id <id>
 ```
 
-`ads accounts` discovers remote Marketing API accounts; it is not `accounts list`, which shows local vault aliases. The three create commands require an `ads_management` token and always return `status: "PAUSED"`. They do not accept a `--status` flag, and postkit has no activation, budget-update, or delete command. `--targeting-file` must contain a JSON object; the ad command references an existing Meta creative ID. See [the Meta Ads runbook](./meta-ads/README.md) for the minor-unit budget rule and a no-spend validation sequence.
+`ads accounts` discovers remote Marketing API accounts; it is not `accounts list`, which shows local vault aliases. `upload-image` returns a Meta image hash and `create-link-creative` returns a creative ID; both are non-delivering account assets, not ads. The three delivery-object creates always return `status: "PAUSED"`; they do not accept `--status`, and postkit has no activation, budget-update, or delete command. `--targeting-file` must contain a JSON object; the ad command references the returned creative ID. See [the Meta Ads runbook](./meta-ads/README.md) for the minor-unit budget rule and a no-spend validation sequence.
 
 ## `apps` / `accounts`
 

@@ -1,4 +1,7 @@
-use crate::ads::{CreatePausedAdRequest, CreatedAd};
+use crate::ads::{
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    UploadAdImageRequest, UploadedAdImage,
+};
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
 use crate::types::{
@@ -127,6 +130,37 @@ pub trait Publisher: Send + Sync {
         Err(Error::UnsupportedCapability {
             site: self.site().clone(),
             need: Capability::CreatePausedAds,
+        })
+    }
+
+    /// Upload one account-scoped image for later creative construction. The
+    /// default refusal prevents a generic connector from accepting local media
+    /// bytes merely because it can create some other advertising object.
+    async fn upload_ad_image(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _request: &UploadAdImageRequest,
+        _deadline: Deadline,
+    ) -> Result<UploadedAdImage, Error> {
+        Err(Error::UnsupportedCapability {
+            site: self.site().clone(),
+            need: Capability::CreateAdCreative,
+        })
+    }
+
+    /// Create one non-delivering image-link creative. A separate ad must
+    /// still reference its returned ID and is forced to `PAUSED` by Tier B.
+    async fn create_link_ad_creative(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _request: &CreateLinkAdCreativeRequest,
+        _deadline: Deadline,
+    ) -> Result<CreatedAdCreative, Error> {
+        Err(Error::UnsupportedCapability {
+            site: self.site().clone(),
+            need: Capability::CreateAdCreative,
         })
     }
 
