@@ -110,6 +110,17 @@ impl Client {
                     })
                 }
             }
+            // Re-check the ledger after winning the claim. The first check
+            // and the claim are not one atomic step: a concurrent holder
+            // can record its outcome and release between them, and this
+            // caller would then claim Free against an already-published
+            // key. Because the holder records *before* releasing, any
+            // claim we win here happens after that record — one recheck
+            // closes the last interleaving.
+            if let Some(out) = self.vault.get_outcome(key, idem)? {
+                self.release_claim(key, Some(idem));
+                return Ok(out);
+            }
         }
         // One confined attempt so the claim has exactly one release point:
         // every early `?` inside publish_once lands here, not in the caller.
