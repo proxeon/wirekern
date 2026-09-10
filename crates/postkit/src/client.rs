@@ -8,6 +8,7 @@ use crate::ads::{
 use crate::apps::AppStore;
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
+use crate::pages::PagesReply;
 use crate::policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
@@ -270,6 +271,35 @@ impl Client {
                 let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
                 publisher.ad_accounts(&app, &new, deadline).await
+            }
+            other => other,
+        }
+    }
+
+    /// Discover remote Pages visible to this credential. This follows the
+    /// read-only account-discovery shape: capability before vault access,
+    /// bounded refresh, then one retry only for a confirmed expired token.
+    pub async fn pages(&self, key: &AccountKey, deadline: Deadline) -> Result<PagesReply, Error> {
+        let publisher = self.publisher(&key.site)?;
+        if !publisher.capabilities().contains(&Capability::ReadPages) {
+            return Err(Error::UnsupportedCapability {
+                site: key.site.clone(),
+                need: Capability::ReadPages,
+            });
+        }
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let mut creds = self.vault.get(key)?;
+        creds = self
+            .maybe_refresh(&*publisher, &app, key, creds, deadline)
+            .await?;
+        match publisher.pages(&app, &creds, deadline).await {
+            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
+                let new = publisher.refresh(&app, &creds, deadline).await?;
+                self.vault.put(key, &new)?;
+                publisher.pages(&app, &new, deadline).await
             }
             other => other,
         }

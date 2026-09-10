@@ -12,6 +12,19 @@ same detail by subject.
 
 ## [Unreleased]
 
+### Added
+
+- Facebook Pages organic publishing: the new `facebook_pages` connector
+  discovers token-visible Pages with `postkit pages accounts facebook_pages`,
+  then posts text or one local image only when the operator provides an
+  explicit `--param page_id=<id>`. Its Page OAuth grant is narrowly scoped to
+  `pages_show_list,pages_manage_posts,pages_read_engagement`, stored long-lived
+  credentials are user tokens only, and transient Page tokens are never saved
+  or emitted in JSON. Image posts use multipart bytes with optional caption
+  and alt text; remote image URLs are refused before credential/network access.
+  Organic Page posts are immediately visible when Meta accepts them — this is
+  not a paused/no-spend advertising capability.
+
 ### Fixed
 
 - The dual license now ships its texts (issue 004): `LICENSE-APACHE` and

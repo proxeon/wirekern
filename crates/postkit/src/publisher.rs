@@ -5,6 +5,7 @@ use crate::ads::{
 };
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
+use crate::pages::PagesReply;
 use crate::types::{
     AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
 };
@@ -114,6 +115,22 @@ pub trait Publisher: Send + Sync {
         Err(Error::UnsupportedCapability {
             site: self.site().clone(),
             need: Capability::ReadAdAccounts,
+        })
+    }
+
+    /// List credential-visible Pages without ever exposing their access
+    /// tokens. It is separate from ad accounts because Page selection is the
+    /// target of an organic post, not a property of an advertising account.
+    /// The default refusal keeps every existing connector fail-closed.
+    async fn pages(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _deadline: Deadline,
+    ) -> Result<PagesReply, Error> {
+        Err(Error::UnsupportedCapability {
+            site: self.site().clone(),
+            need: Capability::ReadPages,
         })
     }
 

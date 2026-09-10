@@ -11,6 +11,7 @@ use crate::insights::{
     AdAccount, AdAccountsReply, AttributionWindow, InsightRow, InsightsLevel, InsightsQuery,
     InsightsReply, Metric,
 };
+use crate::pages::{PageAccount, PagesReply};
 use crate::policy::{AdsAction, AdsPolicy};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
@@ -49,6 +50,7 @@ struct MockPub {
     creative_creates: AtomicUsize,
     creative_previews: AtomicUsize,
     review_status_reads: AtomicUsize,
+    page_reads: AtomicUsize,
     review_status_pending_reads: usize,
 }
 
@@ -73,6 +75,7 @@ impl MockPub {
             creative_creates: AtomicUsize::new(0),
             creative_previews: AtomicUsize::new(0),
             review_status_reads: AtomicUsize::new(0),
+            page_reads: AtomicUsize::new(0),
             review_status_pending_reads: 0,
         }
     }
@@ -87,6 +90,13 @@ impl MockPub {
     fn ad_accounts(site: &str) -> Self {
         Self {
             caps: vec![Capability::ReadAdAccounts],
+            ..Self::text(site)
+        }
+    }
+
+    fn pages(site: &str) -> Self {
+        Self {
+            caps: vec![Capability::ReadPages],
             ..Self::text(site)
         }
     }
@@ -262,6 +272,29 @@ impl Publisher for MockPub {
                 currency: Some("MYR".into()),
                 timezone: None,
                 status: Some("1".into()),
+            }],
+        })
+    }
+
+    async fn pages(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _deadline: Deadline,
+    ) -> Result<PagesReply, Error> {
+        let read = self.page_reads.fetch_add(1, Ordering::SeqCst);
+        if self.fail_auth_once && read == 0 {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "token_expired".into(),
+            });
+        }
+        Ok(PagesReply {
+            site: self.site.clone(),
+            pages: vec![PageAccount {
+                id: "10".into(),
+                name: Some("Test Page".into()),
+                tasks: vec!["CREATE_CONTENT".into()],
             }],
         })
     }
@@ -775,6 +808,34 @@ async fn default_probe_refuses_instead_of_publishing() {
     );
 }
 
+/// Page discovery defaults to the same fail-closed posture as probes: a
+/// connector must implement the exact token-scrubbing contract before it can
+/// expose this remote list.
+#[tokio::test]
+async fn default_pages_refuses_without_an_explicit_connector_method() {
+    let publisher = Bare {
+        caps: vec![Capability::PublishText],
+    };
+    let error = publisher
+        .pages(
+            &AppConfig {
+                site: Site::new("bluesky"),
+                oauth: None,
+                extra: serde_json::json!({}),
+            },
+            &AccountCreds::BotToken {
+                token: "not-used".into(),
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::UnsupportedCapability { need, .. } if need == Capability::ReadPages
+    ));
+}
+
 /// 027: a probe runs the capability gate exactly like a publish.
 #[tokio::test]
 async fn probe_checks_capability() {
@@ -1257,6 +1318,40 @@ async fn client_ad_accounts_routes_and_checks_capability() {
     assert!(
         matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadAdAccounts)
     );
+}
+
+/// Page discovery is its own capability: a social publisher does not gain an
+/// account-listing read merely by supporting a text body. The mock expires on
+/// its first read so this also proves the Client's one refresh/retry rule.
+#[tokio::test]
+async fn client_pages_routes_retries_expired_token_and_checks_capability() {
+    let mut publisher = MockPub::pages("facebook_pages");
+    publisher.fail_auth_once = true;
+    let (client, key) = setup(publisher);
+    let reply = client.pages(&key, Deadline::from_secs(30)).await.unwrap();
+    assert_eq!(reply.pages[0].id, "10");
+    assert_eq!(reply.pages[0].tasks, vec!["CREATE_CONTENT"]);
+
+    // No credential is installed here. `ReadPages` must refuse at the
+    // capability gate first, rather than leaking an unrelated
+    // `unknown_account` and making the caller provision a token for a site
+    // that cannot list Pages anyway.
+    let mut registry = Registry::new();
+    registry.register(Arc::new(MockPub::text("facebook_pages")));
+    let client = Client::new(
+        registry,
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let key = AccountKey::new("facebook_pages", "default");
+    let error = client
+        .pages(&key, Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::UnsupportedCapability { need, .. } if need == Capability::ReadPages
+    ));
 }
 
 /// Tier B follows the same capability routing discipline as reads, with an

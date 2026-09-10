@@ -124,6 +124,11 @@ enum Commands {
     /// Read-only advertising-account discovery (not local vault aliases).
     #[command(subcommand)]
     Ads(AdsCmd),
+    /// Read-only Facebook Page discovery. This lists Page identities and
+    /// tasks, never Page access tokens; pass a returned ID as post
+    /// `--param page_id=<id>` for an explicit organic publish target.
+    #[command(subcommand)]
+    Pages(PagesCmd),
     Capabilities {
         site: Option<String>,
     },
@@ -316,6 +321,12 @@ enum AdsCmd {
 }
 
 #[derive(Subcommand, Debug)]
+enum PagesCmd {
+    /// List Pages visible to the selected Facebook Pages credential.
+    Accounts { site: String },
+}
+
+#[derive(Subcommand, Debug)]
 enum AppsCmd {
     Show {
         site: String,
@@ -462,6 +473,28 @@ async fn dispatch(
     deadline: Deadline,
 ) -> Result<(), i32> {
     match cmd {
+        Commands::Pages(PagesCmd::Accounts { site }) => {
+            let key = AccountKey::new(&site, &account);
+            match client.pages(&key, deadline).await {
+                Ok(reply) => {
+                    if json {
+                        emit_raw(&serde_json::to_value(&reply).expect("json"));
+                    } else {
+                        for page in &reply.pages {
+                            let name = page.name.as_deref().unwrap_or("-");
+                            let tasks = if page.tasks.is_empty() {
+                                "-".to_string()
+                            } else {
+                                page.tasks.join(",")
+                            };
+                            human_line(format!("{} {} tasks={tasks}", page.id, name));
+                        }
+                    }
+                    Ok(())
+                }
+                Err(error) => Err(fail(&error, json)),
+            }
+        }
         Commands::Ads(AdsCmd::Accounts { site }) => {
             let key = AccountKey::new(&site, &account);
             match client.ad_accounts(&key, deadline).await {
@@ -1673,6 +1706,9 @@ fn make_client(home: &std::path::Path) -> Result<Client, Error> {
     registry.register(Arc::new(postkit::connectors::threads::Threads::new()?));
     registry.register(Arc::new(postkit::connectors::bluesky::Bluesky::new()?));
     registry.register(Arc::new(postkit::connectors::meta_ads::MetaAds::new()?));
+    registry.register(Arc::new(
+        postkit::connectors::facebook_pages::FacebookPages::new()?,
+    ));
     let vault = Arc::new(FileVault::new(home)?);
     let apps = Arc::new(FileAppStore::new(home)?);
     Ok(Client::new(registry, vault, apps))
@@ -2299,6 +2335,14 @@ mod tests {
         let cli = Cli::try_parse_from(["postkit", "ads", "accounts", "meta_ads"]).unwrap();
         assert!(
             matches!(cli.command, Commands::Ads(AdsCmd::Accounts { site }) if site == "meta_ads")
+        );
+    }
+
+    #[test]
+    fn pages_accounts_command_parses_as_a_separate_read_surface() {
+        let cli = Cli::try_parse_from(["postkit", "pages", "accounts", "facebook_pages"]).unwrap();
+        assert!(
+            matches!(cli.command, Commands::Pages(PagesCmd::Accounts { site }) if site == "facebook_pages")
         );
     }
 

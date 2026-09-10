@@ -49,6 +49,7 @@ postkit auth threads --code 'AQBx-…'         # raw code or full callback URL (
 postkit auth threads --token 'THQVJ…'        # bootstrap; no app file
 postkit auth bluesky --account you.bsky.social --password 'xxxx-xxxx-xxxx-xxxx'
 postkit auth meta_ads                        # same paste-code flow, ads_read + ads_management
+postkit auth facebook_pages                  # Page scopes; re-authorize after adding this connector
 ```
 
 - `--token` and `--code` are exclusive. `--password` cannot mix with either. `--listen` is a stub (paste-code is the path).
@@ -58,6 +59,14 @@ postkit auth meta_ads                        # same paste-code flow, ads_read + 
 - The pasted redirect URL must echo the `state` the CLI generated: mismatched or missing `state` is rejected (`state_mismatch` / `missing_state`). The two-invocation `--code` path cannot verify `state` — paste the redirected URL unedited.
 - Bluesky does not need an app file.
 - `meta_ads` uses the same paste-code flow (Facebook dialog, `ads_read,ads_management` scopes) and needs `apps set meta_ads …` first — it may be the **same Meta app** as Threads. The short code is exchanged, then extended via `fb_exchange_token` (~60 days; auto re-issued by refresh while the app file exists). Auth also resolves and stores the token's **first ad account**; none → `no_ad_account`. Existing read-only tokens need re-authentication before paused creation. Runbook: [docs/meta-ads](./meta-ads/README.md).
+- `facebook_pages` uses the Facebook dialog too, but is a separate connector
+  with `pages_show_list,pages_manage_posts,pages_read_engagement` rather than
+  ad scopes. Configure `apps set facebook_pages …` (or
+  `POSTKIT_FACEBOOK_PAGES_CLIENT_ID` / `_CLIENT_SECRET` / `_REDIRECT_URI`) and
+  complete OAuth again; an older token cannot gain the new scopes silently.
+  The vault keeps the long-lived **user** token only. Page tokens are resolved
+  transiently during discovery/publish and never print or persist. See the
+  [Facebook Pages runbook](./facebook-pages/README.md).
 
 ## `whoami` / `capabilities`
 
@@ -67,6 +76,29 @@ postkit whoami bluesky --account you.bsky.social --json
 postkit capabilities --json
 # {"bluesky":["publish.text"],"meta_ads":["read.metrics","read.ad_accounts","create.paused_ads","create.ad_creative"],"threads":["publish.text"]}
 ```
+
+## `pages` (facebook_pages)
+
+```text
+postkit pages accounts facebook_pages --json
+postkit post facebook_pages --param page_id=<PAGE_ID> --text 'A Page post'
+postkit post facebook_pages --param page_id=<PAGE_ID> \
+  --image announcement.png --text 'Optional caption' --alt 'Image description'
+```
+
+`pages accounts` is remote discovery, not `accounts list`: it returns the
+authenticated user's Page IDs, names, and Meta task strings, never Page access
+tokens. Copy an ID into `--param page_id=…` for each publish; Postkit never
+chooses the first Page. `page_id` is the only v1 Page parameter, so unknown
+keys (including `reply_to_id`) fail before the vault or network.
+
+Text posts use `/{page-id}/feed`; image posts upload a local file as multipart
+bytes to `/{page-id}/photos` with optional caption and accessibility text.
+Remote image URLs are refused (`image_source_unsupported:url`)—the CLI does
+not fetch arbitrary URLs or host files to manufacture a Meta URL. A successful
+Page post is organic and visible immediately; it has no `--dry-run`, paused,
+budget, billing, scheduling, edit, delete, comment, or reply behaviour in this
+release.
 
 ## `insights` (meta_ads)
 
