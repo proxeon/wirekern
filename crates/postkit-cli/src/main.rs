@@ -9,10 +9,10 @@ use postkit::{
     AttributionWindow, AuthReply, BidStrategy, Body, Breakdown, CampaignObjective, Client,
     CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
     CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, DraftStep, Error,
-    FileAppStore, FileDraftStore, FileVault, InsightRow, InsightsLevel, InsightsQuery, Intent,
-    LinkAdCreative, LinkCallToAction, Metric, OAuthApp, PausedAd, PausedAdCreate, PausedAdset,
-    PausedCampaign, PausedDraftManifest, PausedDraftResult, PostRequest, Registry, RunPausedDraft,
-    Site, UploadAdImageRequest, UploadedAdImage, Vault,
+    FileAppStore, FileDraftStore, FileVault, Image, InsightRow, InsightsLevel, InsightsQuery,
+    Intent, LinkAdCreative, LinkCallToAction, Metric, OAuthApp, PausedAd, PausedAdCreate,
+    PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult, PostRequest, Registry,
+    RunPausedDraft, Site, UploadAdImageRequest, UploadedAdImage, Vault,
 };
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
@@ -67,6 +67,15 @@ enum Commands {
         /// would, publish nothing. The container expires in 24h.
         #[arg(long)]
         dry_run: bool,
+        /// One image per post: a local file (Bluesky uploads the bytes) or
+        /// a public https URL (Threads crawls it). The kernel never
+        /// converts between the two forms.
+        #[arg(long)]
+        image: Option<String>,
+        /// Accessibility text for --image (embedded where the platform
+        /// supports it; Threads has no alt field).
+        #[arg(long, default_value = "")]
+        alt: String,
     },
     Auth {
         site: String,
@@ -981,9 +990,32 @@ async fn dispatch(
             idempotency,
             stdin,
             dry_run,
+            image,
+            alt,
         } => {
             if let Some(e) = dry_run_conflict(dry_run, idempotency.as_deref(), text.len()) {
                 return Err(fail(&e, json));
+            }
+            // Image exclusions fire before any parsing or I/O: each
+            // combination names a wire contract postkit has not verified
+            // (015 D4), and half-honoring it is the 022 failure mode.
+            if let Some(image) = &image {
+                let err = if text.len() > 1 {
+                    "image_chain_unsupported"
+                } else if dry_run {
+                    "dry_run_image_unsupported"
+                } else if param
+                    .iter()
+                    .any(|p| p.split('=').next().unwrap_or("") == "reply_to_id")
+                {
+                    "image_reply_unsupported"
+                } else {
+                    ""
+                };
+                if !err.is_empty() {
+                    return Err(fail(&invalid_post(&site_or_to(&site, &to), err), json));
+                }
+                let _ = image; // resolved below, after the stdin branch
             }
             if stdin {
                 let mut buf = String::new();
@@ -1000,6 +1032,12 @@ async fn dispatch(
                 })?;
                 let (key, mut intent) = req.into_key_intent().map_err(|e| fail(&e, json))?;
                 intent.idempotency_key = idempotency;
+                if dry_run && matches!(intent.body, Body::Image { .. }) {
+                    return Err(fail(
+                        &invalid_post(key.site.as_str(), "dry_run_image_unsupported"),
+                        json,
+                    ));
+                }
                 // --stdin has no dry_run field of its own; the CLI flag is
                 // the single switch, so both input paths stay in parity.
                 if dry_run {
@@ -1007,7 +1045,19 @@ async fn dispatch(
                 }
                 return one_post(&client, &key, intent, deadline, json).await;
             }
-            let texts = resolve_texts(text)?;
+            // With --image the caption is optional (zero or one --text);
+            // without it the existing text rules apply unchanged.
+            let texts = if image.is_some() {
+                if text.iter().any(|t| t == "-") {
+                    return Err(fail(
+                        &invalid_post(&site_or_to(&site, &to), "image_chain_unsupported"),
+                        json,
+                    ));
+                }
+                text
+            } else {
+                resolve_texts(text)?
+            };
             let params = parse_params(&param, json)?;
             let sites = collect_post_sites(site.as_deref(), to.as_deref())?;
             if texts.len() > 1 {
@@ -1035,7 +1085,9 @@ async fn dispatch(
                 )
                 .await;
             }
-            let text = texts.into_iter().next().expect("resolve_texts");
+            // Option: Some = caption (image) or the post text; None is
+            // only possible with --image and zero --text flags.
+            let text = texts.into_iter().next();
             if let Some(to) = to {
                 let mut results = Vec::new();
                 let mut code = 0i32;
@@ -1045,10 +1097,23 @@ async fn dispatch(
                         continue;
                     }
                     let key = AccountKey::new(s, &account);
+                    // Bytes are cloned per target: each connector gets its
+                    // own copy and a per-target failure (e.g. a URL image
+                    // on Bluesky) is isolated in the fan-out results.
+                    let body = match &image {
+                        Some(raw) => Body::Image {
+                            text: text.clone(),
+                            image: resolve_image(raw, s).map_err(|e| fail(&e, json))?,
+                            alt: alt.clone(),
+                        },
+                        None => Body::Text {
+                            text: text.clone().expect("resolve_texts guarantees one"),
+                        },
+                    };
                     let intent = Intent {
                         site: Site::new(s),
                         params: params.clone(),
-                        body: Body::Text { text: text.clone() },
+                        body,
                         idempotency_key: idempotency.clone(),
                     };
                     let attempt = if dry_run {
@@ -1082,10 +1147,20 @@ async fn dispatch(
             } else {
                 let site = sites.into_iter().next().expect("collect_post_sites");
                 let key = AccountKey::new(&site, &account);
+                let body = match &image {
+                    Some(raw) => Body::Image {
+                        text,
+                        image: resolve_image(raw, &site).map_err(|e| fail(&e, json))?,
+                        alt,
+                    },
+                    None => Body::Text {
+                        text: text.expect("resolve_texts guarantees one"),
+                    },
+                };
                 let intent = Intent {
                     site: Site::new(&site),
                     params,
-                    body: Body::Text { text },
+                    body,
                     idempotency_key: idempotency,
                 };
                 if dry_run {
@@ -1125,6 +1200,48 @@ fn dry_run_conflict(dry_run: bool, idempotency: Option<&str>, texts: usize) -> O
         });
     }
     None
+}
+
+/// Site label for pre-parse refusals: the explicit site when given,
+/// otherwise the first --to target, otherwise a blank marker. The label is
+/// for the operator's eyes in the error, nothing more.
+fn site_or_to(site: &Option<String>, to: &Option<String>) -> String {
+    site.clone()
+        .or_else(|| {
+            to.as_ref()
+                .map(|t| t.split(',').next().unwrap_or("").trim().to_string())
+        })
+        .unwrap_or_default()
+}
+
+fn invalid_post(site: &str, reason: &str) -> Error {
+    Error::InvalidPost {
+        site: Site::new(site),
+        reason: reason.into(),
+        limit: None,
+    }
+}
+
+/// Resolve --image to the kernel's dual form: an https URL passes through
+/// (Threads crawls it), anything else is a local file read here — the sole
+/// filesystem boundary — into bytes + bare basename. Read errors never
+/// echo the operator's path.
+fn resolve_image(image: &str, site: &str) -> Result<Image, Error> {
+    // Anything scheme-shaped is a URL attempt, not a filename: `http://…`
+    // must die as "must be https", never as a confusing unreadable file.
+    if image.contains("://") {
+        let image = Image::Url(image.to_string());
+        image.validate().map_err(|r| invalid_post(site, &r))?;
+        return Ok(image);
+    }
+    let path = std::path::Path::new(image);
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_owned)
+        .ok_or_else(|| invalid_post(site, "invalid_image_filename"))?;
+    let bytes = std::fs::read(path).map_err(|_| invalid_post(site, "image_file_unreadable"))?;
+    Ok(Image::Bytes { filename, bytes })
 }
 
 fn resolve_texts(text: Vec<String>) -> Result<Vec<String>, i32> {
@@ -2718,5 +2835,65 @@ mod tests {
         std::fs::remove_file(&img).unwrap();
         assert!(read_draft_image("meta_ads", &manifest).unwrap().is_none());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_image_splits_url_from_local_file() {
+        let dir = std::env::temp_dir().join(format!("postkit-image-cli-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("hero.png");
+        std::fs::write(&img, b"bytes").unwrap();
+
+        let url = resolve_image("https://cdn.test/h.png", "threads").unwrap();
+        assert!(matches!(url, Image::Url(u) if u == "https://cdn.test/h.png"));
+        // http is not upgraded or silently accepted.
+        let err = resolve_image("http://cdn.test/h.png", "threads").unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidPost { reason, .. } if reason == "image_url_must_be_https")
+        );
+
+        let bytes = resolve_image(&img.display().to_string(), "bluesky").unwrap();
+        assert!(
+            matches!(bytes, Image::Bytes { ref filename, ref bytes } if filename == "hero.png" && bytes == b"bytes")
+        );
+        // Unreadable file: stable reason, no path echo.
+        std::fs::remove_file(&img).unwrap();
+        let err = resolve_image(&img.display().to_string(), "bluesky").unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidPost { reason, .. } if reason == "image_file_unreadable")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn image_flags_parse_and_document_the_split() {
+        use clap::Parser as _;
+        let cli = Cli::try_parse_from([
+            "postkit",
+            "post",
+            "bluesky",
+            "--image",
+            "./hero.png",
+            "--text",
+            "caption",
+            "--alt",
+            "chart",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Post { ref image, ref alt, .. }
+                if image.as_deref() == Some("./hero.png") && alt == "chart"
+        ));
+        // Image without any --text is a valid, caption-less post.
+        let cli = Cli::try_parse_from([
+            "postkit",
+            "post",
+            "threads",
+            "--image",
+            "https://cdn.test/h.png",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Commands::Post { ref text, .. } if text.is_empty()));
     }
 }

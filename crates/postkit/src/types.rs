@@ -169,15 +169,91 @@ impl std::fmt::Debug for AccountCreds {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Body {
-    Text { text: String },
+    Text {
+        text: String,
+    },
+    /// One image with an optional caption. The caption obeys the site's
+    /// text rule when present (Threads: 500 UTF-8 bytes; Bluesky: 300
+    /// graphemes) and is omitted from the wire entirely when `None`.
+    Image {
+        text: Option<String>,
+        image: Image,
+        /// Accessibility text for embed-capable sites. It is part of the
+        /// media, not a platform param: Bluesky embeds it (required by the
+        /// lexicon, empty string allowed); Threads has no field for it and
+        /// ignores it.
+        #[serde(default)]
+        alt: String,
+    },
 }
 
 impl Body {
     pub fn required_capability(&self) -> Capability {
         match self {
             Self::Text { .. } => Capability::PublishText,
+            Self::Image { .. } => Capability::PublishImage,
         }
     }
+}
+
+/// One image for a post, in the two forms platforms actually ingest
+/// (plans/001/015 D1). Bluesky uploads bytes (`uploadBlob`); Threads crawls
+/// a public https URL (`image_url`) and offers no organic upload. The
+/// kernel deliberately never bridges the two: fetching an operator URL is
+/// an SSRF-shaped power it has never had, and hosting bytes to synthesize
+/// a URL is a product decision (015 D5). Each connector refuses the form
+/// it cannot honor at the door, before credentials or HTTP.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Image {
+    /// Operator-selected bytes. `filename` is a bare basename — the CLI is
+    /// the only filesystem boundary (the `UploadAdImageRequest` rule:
+    /// local paths never reach errors or payloads).
+    Bytes { filename: String, bytes: Vec<u8> },
+    /// A publicly reachable https URL. Whether the target really is a
+    /// supported image of legal size is the platform's definitive call —
+    /// locally only the scheme is checkable.
+    Url(String),
+}
+
+impl Image {
+    /// Local, zero-I/O validation. Reasons are stable strings in the
+    /// `invalid_post` family (exit 2).
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Bytes { filename, bytes } => {
+                // A bare basename only: separators would smuggle path
+                // components into the multipart filename (or an error).
+                if filename.trim().is_empty() || filename.contains(['/', '\\']) {
+                    return Err("invalid_image_filename".into());
+                }
+                if bytes.is_empty() {
+                    return Err("image_file_empty".into());
+                }
+            }
+            Self::Url(url) => {
+                require_https_url("image_url", url)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// https-only URL rule shared by every surface that takes one (posts,
+/// creatives, draft manifests). A public authority is required; whitespace
+/// or a missing host means the platform would only echo a less actionable
+/// form error after the fact.
+pub(crate) fn require_https_url(field: &str, value: &str) -> Result<(), String> {
+    let Some(authority_and_rest) = value.strip_prefix("https://") else {
+        return Err(format!("{field}_must_be_https"));
+    };
+    let authority = authority_and_rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    if authority.is_empty() || value.chars().any(char::is_whitespace) {
+        return Err(format!("{field}_must_be_https"));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

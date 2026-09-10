@@ -64,8 +64,8 @@ pub use policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};
 pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 pub use registry::Registry;
 pub use types::{
-    valid_name, AccountCreds, AccountKey, AppConfig, Body, Capability, Deadline, Intent, Limits,
-    OAuthApp, Outcome, PostRequest, Probe, Site, WhoAmI, USER_AGENT,
+    valid_name, AccountCreds, AccountKey, AppConfig, Body, Capability, Deadline, Image, Intent,
+    Limits, OAuthApp, Outcome, PostRequest, Probe, Site, WhoAmI, USER_AGENT,
 };
 pub use vault::{MemoryVault, Vault};
 

@@ -12,6 +12,19 @@ same detail by subject.
 
 ## [Unreleased]
 
+### Added
+
+- Images on posts (plans/001/015, `publish.image`): `postkit post <site>
+  --image … [--text caption] [--alt …]`. The kernel seam carries both forms
+  platforms ingest — bytes (Bluesky `uploadBlob` → `app.bsky.embed.images`
+  embed with alt text, ≤ 2 MB, png/jpg/gif/webp) and a public https URL
+  (Threads `media_type=IMAGE` container, caption under the same 500-byte
+  rule) — and deliberately never bridges them: each connector refuses the
+  form it cannot honor (`image_source_unsupported:bytes|url`) before
+  credentials or HTTP. Image reply chains, `reply_to_id`, and `--dry-run`
+  combinations are refused with stable reasons until their wire contracts
+  are live-verified; fan-out isolates per-target failures as usual.
+
 ### Fixed
 
 - meta_ads OAuth now requests `pages_show_list` and `pages_manage_ads`

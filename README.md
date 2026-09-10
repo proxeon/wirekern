@@ -41,8 +41,8 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 
 | Site | Capability | Auth | Limit |
 |------|------------|------|--------|
-| `threads` | `publish.text` | OAuth paste-code, or `--token` long-lived `THQVJ…` | 500 chars; emoji as UTF-8 bytes |
-| `bluesky` | `publish.text` | App password (`--password`). `--account` **is** the handle (`default` rejected) | 300 graphemes |
+| `threads` | `publish.text`, `publish.image` | OAuth paste-code, or `--token` long-lived `THQVJ…` | 500 chars (caption incl.); emoji as UTF-8 bytes; images via public https URL |
+| `bluesky` | `publish.text`, `publish.image` | App password (`--password`). `--account` **is** the handle (`default` rejected) | 300 graphemes; images ≤ 2 MB (png/jpg/gif/webp) |
 | `meta_ads` | `read.metrics`, `read.ad_accounts`, `create.paused_ads`, `create.ad_creative` | OAuth paste-code (`ads_read,ads_management,pages_show_list,pages_manage_ads`), long-lived via `fb_exchange_token` | ≤ 90-day reads; ads are fixed `PAUSED` |
 
 ### Feature coverage
@@ -50,6 +50,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | Capability | Threads | Bluesky | Meta Ads |
 |------------|---------|---------|----------|
 | Text post | ✓ | ✓ | ✗ read-only by design |
+| Image post (`--image`) | ✓ public https URL (`--alt` ignored) | ✓ file upload, `--alt` embedded | — |
 | Reply chain (repeat `--text`) | ✓ | ✗ `thread_unsupported` | — |
 | Reply to existing post (`reply_to_id`) | ✓ | ✗ | — |
 | Dry-run probe (`--dry-run`) | ✓ create-only, expires unpublished in 24h | ✗ `dry_run_unsupported` (atomic `createRecord`) | — |
@@ -58,7 +59,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | Image upload / Page link creative | ✗ | ✗ | ✓ account asset only; cannot deliver alone |
 | Token refresh | ✓ auto, within 7 days of expiry | n/a (app passwords) | ✓ re-issue via `fb_exchange_token` |
 | `whoami` | ✓ | ✓ | ✓ (+ first ad account resolved at auth) |
-| Images / video | ✗ roadmap | ✗ roadmap | — |
+| Video | ✗ roadmap | ✗ roadmap | — |
 | Scheduling / drafts | ✗ by design | ✗ by design | — |
 
 Kernel-level, all sites: 0600 vault with atomic writes, CSPRNG OAuth `state`, redirect-following off, per-target results on fan-out.
@@ -69,6 +70,7 @@ Kernel-level, all sites: 0600 vault with atomic writes, CSPRNG OAuth `state`, re
 postkit post <site> --text "…"              # publish now; --to threads,bluesky fans out
 postkit post threads --text 'root' --text 'reply'   # reply chain on Threads
 postkit post threads --text '…' --dry-run   # probe: publish nothing (threads)
+postkit post bluesky --image hero.png --text 'caption' --alt 'description' # image post
 postkit auth <site> [--token | --code | --password]
 postkit insights meta_ads --from 2026-06-01 --to 2026-06-30 --attribution 7d_click_1d_view --level campaign
 postkit ads create-campaign meta_ads --name 'Draft' --objective sales

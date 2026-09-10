@@ -4,8 +4,8 @@ use crate::http::Http;
 use crate::oauth::{authorize_url, exchange_code, extract_code, new_state};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::types::{
-    AccountCreds, AppConfig, Body, Capability, Deadline, Intent, OAuthApp, Outcome, Probe, Site,
-    WhoAmI,
+    AccountCreds, AppConfig, Body, Capability, Deadline, Image, Intent, OAuthApp, Outcome, Probe,
+    Site, WhoAmI,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -92,7 +92,7 @@ impl Publisher for Threads {
     }
 
     fn capabilities(&self) -> &[Capability] {
-        &[Capability::PublishText]
+        &[Capability::PublishText, Capability::PublishImage]
     }
 
     fn auth_kind(&self) -> AuthKind {
@@ -106,22 +106,70 @@ impl Publisher for Threads {
         intent: Intent,
         deadline: Deadline,
     ) -> Result<Outcome, Error> {
-        let Body::Text { text } = &intent.body;
-        validate_text(text)?;
         let params = parse_params(&intent.params)?;
-        let token = access_token(creds)?;
-        let user_id = path_user_id(&params, creds);
-        post_text(
-            &self.http,
-            &self.base,
-            token,
-            &user_id,
-            text,
-            params.reply_to_id.as_deref(),
-            deadline,
-            self.reply_retry_delay,
-        )
-        .await
+        match &intent.body {
+            Body::Text { text } => {
+                validate_text(text)?;
+                let token = access_token(creds)?;
+                let user_id = path_user_id(&params, creds);
+                post_text(
+                    &self.http,
+                    &self.base,
+                    token,
+                    &user_id,
+                    text,
+                    params.reply_to_id.as_deref(),
+                    deadline,
+                    self.reply_retry_delay,
+                )
+                .await
+            }
+            Body::Image { text, image, .. } => {
+                // Threads has no organic image upload: containers carry a
+                // public https URL that Meta crawls. Bytes are refused at
+                // the door, before credentials — bridging (fetching a URL,
+                // hosting bytes) is deliberately not the kernel's job
+                // (plans/001/015 D1).
+                let Image::Url(url) = image else {
+                    return Err(Error::InvalidPost {
+                        site: self.site.clone(),
+                        reason: "image_source_unsupported:bytes".into(),
+                        limit: None,
+                    });
+                };
+                image.validate().map_err(|reason| Error::InvalidPost {
+                    site: self.site.clone(),
+                    reason,
+                    limit: None,
+                })?;
+                if let Some(caption) = text {
+                    // A caption is a text post's text: same 500-byte rule,
+                    // same empty-refusal. `None` sends no `text` key at all.
+                    validate_text(caption)?;
+                }
+                if params.reply_to_id.is_some() {
+                    // Image replies are a separate, unverified wire contract
+                    // away (015 D4); refuse rather than guess the form.
+                    return Err(Error::InvalidPost {
+                        site: self.site.clone(),
+                        reason: "image_reply_unsupported".into(),
+                        limit: None,
+                    });
+                }
+                let token = access_token(creds)?;
+                let user_id = path_user_id(&params, creds);
+                post_image(
+                    &self.http,
+                    &self.base,
+                    token,
+                    &user_id,
+                    url,
+                    text.as_deref(),
+                    deadline,
+                )
+                .await
+            }
+        }
     }
 
     /// 027 create-only probe: everything a publish does except the step
@@ -145,7 +193,17 @@ impl Publisher for Threads {
         intent: Intent,
         deadline: Deadline,
     ) -> Result<Probe, Error> {
-        let Body::Text { text } = &intent.body;
+        let Body::Text { text } = &intent.body else {
+            // The probe's contract is the *text* create-replies path,
+            // validated live (2026-09-09). An image container is a
+            // different wire form postkit has not verified; refusing beats
+            // probing a shape no publish would send (015 D4).
+            return Err(Error::InvalidPost {
+                site: self.site.clone(),
+                reason: "probe_image_unsupported".into(),
+                limit: None,
+            });
+        };
         validate_text(text)?;
         let params = parse_params(&intent.params)?;
         let token = access_token(creds)?;
@@ -308,6 +366,24 @@ pub fn text_form_pairs<'a>(
     pairs
 }
 
+/// The IMAGE container form. Deliberately no `auto_publish_text`: that
+/// shortcut belongs to standalone text posts — an image container goes
+/// container-then-`threads_publish`, exactly like the reply path. `text`
+/// rides only when a caption exists (Meta: optional, required only for
+/// media_type=TEXT; the first URL in it becomes the link preview).
+pub fn image_form_pairs<'a>(
+    image_url: &'a str,
+    text: Option<&'a str>,
+    access_token: &'a str,
+) -> Vec<(&'a str, &'a str)> {
+    let mut pairs = vec![("media_type", "IMAGE"), ("image_url", image_url)];
+    if let Some(text) = text {
+        pairs.push(("text", text));
+    }
+    pairs.push(("access_token", access_token));
+    pairs
+}
+
 pub fn reply_to_id(params: &Value) -> Result<Option<String>, Error> {
     match params.get("reply_to_id") {
         None | Some(Value::Null) => Ok(None),
@@ -443,6 +519,72 @@ pub async fn post_text(
     } else {
         created_id
     };
+
+    let mut url_out = None;
+    let get_url = format!(
+        "{}/{}?fields=id,permalink&access_token={}",
+        base.trim_end_matches('/'),
+        id,
+        access_token
+    );
+    if let Ok(resp) = http.send(http.get(&get_url), deadline, &site).await {
+        if let Ok(body) = read_json(resp, &site).await {
+            url_out = body
+                .get("permalink")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+        }
+    }
+
+    Ok(Outcome {
+        site,
+        id: Some(id),
+        url: url_out,
+        limits: None,
+    })
+}
+
+/// IMAGE variant of the container creation. Meta cURLs `image_url` at its
+/// leisure; format/size correctness (JPEG/PNG, 8 MB, 10:1) is therefore a
+/// definitive platform error, not a local check.
+async fn create_image_container(
+    http: &Http,
+    base: &str,
+    access_token: &str,
+    user_id: &str,
+    image_url: &str,
+    text: Option<&str>,
+    deadline: Deadline,
+) -> Result<String, Error> {
+    let site = Site::new(SITE);
+    let url = format!("{}/{}/threads", base.trim_end_matches('/'), user_id);
+    let pairs = image_form_pairs(image_url, text, access_token);
+    let req = http
+        .post(&url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(form(&pairs));
+    let resp = http.send(req, deadline, &site).await?;
+    let body = read_json(resp, &site).await?;
+    json_id(&body, &site, "Graph create")
+}
+
+/// Publish an image post: create the IMAGE container, `threads_publish` it,
+/// then fetch the permalink. No reply machinery and no code-24 retry —
+/// those races belong to replies; an image container's parent is none.
+pub async fn post_image(
+    http: &Http,
+    base: &str,
+    access_token: &str,
+    user_id: &str,
+    image_url: &str,
+    text: Option<&str>,
+    deadline: Deadline,
+) -> Result<Outcome, Error> {
+    let site = Site::new(SITE);
+    let created_id =
+        create_image_container(http, base, access_token, user_id, image_url, text, deadline)
+            .await?;
+    let id = publish_container(http, base, user_id, &created_id, access_token, deadline).await?;
 
     let mut url_out = None;
     let get_url = format!(
@@ -1680,5 +1822,160 @@ mod tests {
             .await
             .unwrap();
         assert!(out.id.is_some());
+    }
+
+    fn image_intent(image: Image, text: Option<&str>) -> Intent {
+        Intent {
+            site: Site::new(SITE),
+            params: json!({}),
+            body: Body::Image {
+                text: text.map(str::to_string),
+                image,
+                alt: String::new(),
+            },
+            idempotency_key: None,
+        }
+    }
+
+    #[test]
+    fn image_form_pairs_shape() {
+        // Caption present: text rides the container; no auto_publish_text —
+        // the image path publishes via threads_publish like replies do.
+        let pairs = image_form_pairs("https://cdn.test/hero.png", Some("cap"), "tok");
+        assert_eq!(
+            pairs,
+            vec![
+                ("media_type", "IMAGE"),
+                ("image_url", "https://cdn.test/hero.png"),
+                ("text", "cap"),
+                ("access_token", "tok"),
+            ]
+        );
+        // No caption: the text key is absent, not empty — Meta treats the
+        // field as optional and an empty string is not "absent".
+        let pairs = image_form_pairs("https://cdn.test/hero.png", None, "tok");
+        assert!(!pairs.contains(&("text", "")));
+        assert_eq!(pairs.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn image_post_creates_publishes_and_permalinks() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1.0/me/threads")
+                .body_contains("media_type=IMAGE")
+                .body_contains("image_url=https%3A%2F%2Fcdn.test%2Fhero.png")
+                .body_contains("text=Look");
+            then.status(200).json_body(json!({ "id": "c1" }));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads_publish");
+            then.status(200).json_body(json!({ "id": "p1" }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1.0/p1");
+            then.status(200)
+                .json_body(json!({ "permalink": "https://threads.net/t/p1" }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
+        let out = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                image_intent(Image::Url("https://cdn.test/hero.png".into()), Some("Look")),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.id.as_deref(), Some("p1"));
+        assert_eq!(out.url.as_deref(), Some("https://threads.net/t/p1"));
+    }
+
+    #[tokio::test]
+    async fn image_refusals_happen_before_any_http() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v1.0/me/threads");
+            then.status(200).json_body(json!({ "id": "x" }));
+        });
+        let t = Threads::with_base(format!("{}/v1.0", server.base_url())).unwrap();
+        // Bytes: Threads has no organic upload; refusing beats hosting.
+        let err = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                image_intent(
+                    Image::Bytes {
+                        filename: "h.png".into(),
+                        bytes: b"x".to_vec(),
+                    },
+                    None,
+                ),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidPost { reason, .. } if reason == "image_source_unsupported:bytes")
+        );
+        // Non-https URL dies at the kernel rule.
+        let err = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                image_intent(Image::Url("http://cdn.test/h.png".into()), None),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidPost { reason, .. } if reason == "image_url_must_be_https")
+        );
+        // A caption is a text post's text: same byte rule.
+        let long = "x".repeat(501);
+        let err = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                image_intent(Image::Url("https://cdn.test/h.png".into()), Some(&long)),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(&err, Error::InvalidPost { reason, .. } if reason == "text_too_long"));
+        // reply_to_id + image is an unverified contract (015 D4).
+        let mut intent = image_intent(Image::Url("https://cdn.test/h.png".into()), None);
+        intent.params = json!({ "reply_to_id": "1790" });
+        let err = t
+            .publish(
+                &empty_app(),
+                &token_creds(),
+                intent,
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidPost { reason, .. } if reason == "image_reply_unsupported")
+        );
+        create.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn probe_refuses_image_body() {
+        let t = Threads::new().unwrap();
+        let err = t
+            .probe(
+                &empty_app(),
+                &token_creds(),
+                image_intent(Image::Url("https://cdn.test/h.png".into()), None),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidPost { reason, .. } if reason == "probe_image_unsupported")
+        );
     }
 }

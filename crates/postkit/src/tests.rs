@@ -141,11 +141,16 @@ impl Publisher for MockPub {
                 reason: "token_expired".into(),
             });
         }
-        let Body::Text { text } = intent.body;
+        // The mock models one text publish and one image publish; the
+        // distinct id keeps Client tests honest about which body routed.
+        let label = match intent.body {
+            Body::Text { text } => text,
+            Body::Image { text, .. } => text.unwrap_or_else(|| "image".into()),
+        };
         Ok(Outcome {
             site: intent.site,
-            id: Some(format!("id-{text}")),
-            url: Some(format!("https://example.test/{text}")),
+            id: Some(format!("id-{label}")),
+            url: Some(format!("https://example.test/{label}")),
             limits: None,
         })
     }
@@ -166,7 +171,15 @@ impl Publisher for MockPub {
                 reason: "token_expired".into(),
             });
         }
-        let Body::Text { text } = intent.body;
+        // The probe contract is text-only (015 D4); the mock refuses the
+        // image body the same way the real connectors do.
+        let Body::Text { text } = intent.body else {
+            return Err(Error::InvalidPost {
+                site: self.site.clone(),
+                reason: "probe_image_unsupported".into(),
+                limit: None,
+            });
+        };
         Ok(Probe {
             site: intent.site,
             container_id: format!("container-{text}"),
@@ -1398,6 +1411,77 @@ async fn insights_range_validated_before_any_routing() {
         .await
         .unwrap_err();
     assert!(matches!(err, Error::InvalidQuery { reason, .. } if reason == "range_too_long:91"));
+}
+
+#[test]
+fn image_form_validation_is_local_and_stable() {
+    use crate::types::Image;
+    let ok = Image::Bytes {
+        filename: "hero.png".into(),
+        bytes: b"x".to_vec(),
+    };
+    ok.validate().unwrap();
+    assert_eq!(
+        Image::Bytes {
+            filename: "a/hero.png".into(),
+            bytes: b"x".to_vec()
+        }
+        .validate()
+        .unwrap_err(),
+        "invalid_image_filename"
+    );
+    assert_eq!(
+        Image::Bytes {
+            filename: "hero.png".into(),
+            bytes: vec![]
+        }
+        .validate()
+        .unwrap_err(),
+        "image_file_empty"
+    );
+    assert_eq!(
+        Image::Url("http://cdn.test/h.png".into())
+            .validate()
+            .unwrap_err(),
+        "image_url_must_be_https"
+    );
+    assert_eq!(
+        Image::Url("https:///no-authority".into())
+            .validate()
+            .unwrap_err(),
+        "image_url_must_be_https"
+    );
+    Image::Url("https://cdn.test/h.png".into())
+        .validate()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn client_routes_image_bodies_by_capability() {
+    // A text-only publisher must refuse an image body at the capability
+    // check, before the vault is read — the same door every body faces.
+    let (c, key) = setup(MockPub::text("threads"));
+    let intent = Intent {
+        site: Site::new("threads"),
+        params: serde_json::json!({}),
+        body: crate::types::Body::Image {
+            text: None,
+            image: crate::types::Image::Url("https://cdn.test/h.png".into()),
+            alt: String::new(),
+        },
+        idempotency_key: None,
+    };
+    let err = c
+        .publish(&key, intent, Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        Error::UnsupportedCapability {
+            need: crate::types::Capability::PublishImage,
+            ..
+        }
+    ));
 }
 
 /// Draft orchestration (plans/001/013). A dedicated publisher mock (not the

@@ -10,7 +10,7 @@ Who postkit is for, and how it compares. Stable axes only — prices move, these
 | Platform app | **BYO** (your Meta app) | Theirs — no App Review for you | Per-instance | BYO per SDK |
 | Cost | **$0** | Paid subscription | $0 + your hosting | $0 |
 | Scheduling | ✗ | ✓ | ✓ (the product) | ✗ |
-| Media | ✗ roadmap | ✓ | ✓ | Varies |
+| Media | **Images ✓** (video roadmap) | ✓ | ✓ | Varies |
 | Agent surface | **exec CLI / `cargo add`** | REST + API key | Web app | Hand-rolled |
 | License | **MIT OR Apache-2.0** | Proprietary | AGPL-3.0 | Vendor ToS |
 
@@ -22,7 +22,7 @@ The trade postkit asks of you: you run your own Meta app (tester invites, redire
 
 In priority order:
 
-1. **Images / video.** Comparisons happen on checkbox grids; a tool with ✗ on every media row is filtered out before its architecture is ever read. Media support is the minimum to be *on* the grid.
+1. **Images** — shipped (2026-09-10): one image per post, optional caption; Bluesky uploads bytes (`--image file`), Threads takes a public https URL (`--image https://…`). Video remains roadmap.
 2. **HTTP `serve` mode with `pk_live_` keys.** A growing class of callers (serverless, sandboxed agents, n8n-style automators) cannot exec a binary and can only speak HTTP — today that lane belongs to hosted APIs like Outstand ("unified API for AI agents", ~$19/mo, keys in their cloud). A local `postkit serve` exposes the same JSON contract over localhost HTTP and contests that lane without giving up custody.
 
 Not on the roadmap, ever: calendar, inbox, drafts. Send **now** or nothing is the product.

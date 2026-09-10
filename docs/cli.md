@@ -18,6 +18,8 @@ Global flags work on every subcommand. Output-stream contract, one rule: with `-
 postkit post <site> --text <str> [--param k=v]... [--idempotency <key>]
 postkit post threads --text 'root' --text 'reply'
 postkit post --to threads,bluesky --text <str>
+postkit post bluesky --image hero.png [--text 'caption'] [--alt 'description']
+postkit post threads --image https://cdn.example.com/hero.png [--text 'caption']
 postkit post --stdin
 ```
 
@@ -28,6 +30,8 @@ postkit post --stdin
 | `--param k=v` | `Intent.params` (repeatable). `--param reply_to_id=` = one reply to an existing post (**threads**; Bluesky rejects unknown params with `unsupported_param:<k>` before HTTP) |
 | `--idempotency` | Root segment only on a chain. Client-side dedupe: a retry with the same key returns the stored `Outcome` without HTTP (`~/.postkit/idempotency/…`). Only **completed** publishes are remembered — an attempt that timed out after the platform created the post was never learned and will post again |
 | `--stdin` | Raw request JSON. One body. Exclusive with `--text` |
+| `--image` | One image per post, optional caption (`--text`, zero or one). **Two forms, never bridged**: a local file (Bluesky uploads the bytes; png/jpg/gif/webp, ≤ 2 MB enforced locally) or a public **https** URL (Threads crawls it; JPEG/PNG, 8 MB and format are Meta's definitive errors). A form the site cannot honor fails that target with `image_source_unsupported:bytes\|url` before HTTP. Refused combinations, all exit 2 before any HTTP: with a chain (`image_chain_unsupported`), with `--param reply_to_id=` (`image_reply_unsupported`), with `--dry-run` (`dry_run_image_unsupported`) |
+| `--alt` | Accessibility text for `--image`. Bluesky embeds it in `app.bsky.embed.images` (lexicon-required, empty allowed); Threads has no alt field and ignores it |
 | `--dry-run` | **threads** only. Create-only probe: one container creation, no publish, nothing visible ever — the container expires in 24h. Refused with `dry_run_unsupported` on sites with no create/publish split (Bluesky), and rejected with `dry_run_idempotency` / `dry_run_chain` when combined with `--idempotency` or a reply chain |
 
 Details that bite:
