@@ -18,6 +18,12 @@ same detail by subject.
   `LICENSE-MIT` at the repository root, symlinked into both crates so
   `cargo package` includes them in every published `.crate` — recipients
   previously got the SPDX notice with no terms to comply with.
+- `--stdin` now refuses every content flag instead of silently ignoring it
+  (issue 025): combining it with `--text`, `--image`, `--alt`, `--param`,
+  `--to`, or a positional site exits 2 with `stdin_exclusive` before stdin
+  is read — a script can no longer publish a body its command line does
+  not describe. `--dry-run` and `--idempotency` still apply on top of the
+  stdin request.
 
 - Idempotency check-and-record is now atomic (issue 023): `Client::publish`
   claims the key before publishing and releases it on every exit path, so

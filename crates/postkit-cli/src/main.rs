@@ -1017,6 +1017,20 @@ async fn dispatch(
                 }
                 let _ = image; // resolved below, after the stdin branch
             }
+            // 025: --stdin is a complete request in itself; any other
+            // content-carrying flag would be silently ignored by the stdin
+            // branch — refuse the combination before stdin is even read.
+            if let Some(e) = stdin_conflict(
+                stdin,
+                &text,
+                image.as_deref(),
+                &alt,
+                to.as_deref(),
+                &param,
+                site.as_deref(),
+            ) {
+                return Err(fail(&e, json));
+            }
             if stdin {
                 let mut buf = String::new();
                 io::stdin().read_to_string(&mut buf).map_err(|_| 5)?;
@@ -1181,6 +1195,40 @@ async fn dispatch(
 /// `Client::probe`), so the pairing cannot mean anything. With a chain:
 /// segment N+1 replies to segment N's *published* id, and a probe
 /// publishes nothing — there is no parent to chain onto.
+/// --stdin is a complete request on its own; every other content-carrying
+/// flag would be silently ignored by the stdin branch (issue 025) — a
+/// script could publish a body its command line does not describe. Refuse
+/// them together, before stdin is even read. `--dry-run` and
+/// `--idempotency` are deliberately absent here: they select behavior on
+/// top of the stdin request, not content.
+fn stdin_conflict(
+    stdin: bool,
+    text: &[String],
+    image: Option<&str>,
+    alt: &str,
+    to: Option<&str>,
+    param: &[String],
+    site: Option<&str>,
+) -> Option<Error> {
+    if !stdin {
+        return None;
+    }
+    let clean = text.is_empty()
+        && image.is_none()
+        && alt.is_empty()
+        && to.is_none()
+        && param.is_empty()
+        && site.is_none();
+    if clean {
+        return None;
+    }
+    Some(Error::InvalidPost {
+        site: Site::new(""),
+        reason: "stdin_exclusive".into(),
+        limit: None,
+    })
+}
+
 fn dry_run_conflict(dry_run: bool, idempotency: Option<&str>, texts: usize) -> Option<Error> {
     if !dry_run {
         return None;
@@ -2726,6 +2774,38 @@ mod tests {
             Commands::Post { dry_run, .. } => assert!(dry_run),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn stdin_refuses_every_content_flag() {
+        // --stdin alone is the intended shape: a complete request.
+        assert!(stdin_conflict(true, &[], None, "", None, &[], None).is_none());
+        // Each content-carrying flag must refuse — any of them silently
+        // ignored is a post the command line does not describe (025).
+        let t = vec!["hi".to_string()];
+        let p = vec!["reply_to_id=1".to_string()];
+        for e in [
+            stdin_conflict(true, &t, None, "", None, &[], None),
+            stdin_conflict(true, &[], Some("x.png"), "", None, &[], None),
+            stdin_conflict(true, &[], None, "alt", None, &[], None),
+            stdin_conflict(true, &[], None, "", Some("threads"), &[], None),
+            stdin_conflict(true, &[], None, "", None, &p, None),
+            stdin_conflict(true, &[], None, "", None, &[], Some("threads")),
+        ] {
+            let e = e.expect("must refuse");
+            assert!(matches!(&e, Error::InvalidPost { reason, .. } if reason == "stdin_exclusive"));
+        }
+        // Without --stdin the flags are the normal path, no opinion here.
+        assert!(stdin_conflict(
+            false,
+            &t,
+            Some("x.png"),
+            "alt",
+            Some("threads"),
+            &p,
+            Some("x")
+        )
+        .is_none());
     }
 
     #[test]
