@@ -116,13 +116,23 @@ impl Publisher for Bluesky {
     ) -> Result<Outcome, Error> {
         // Reject before any HTTP: an unsupported param must error here,
         // never become a published post of the wrong shape.
-        validate_params(&intent.params)?;
+        let params = parse_params(&intent.params)?;
         let (pds, identifier, secret) = app_password(creds)?;
         let pds = self.pds_override.as_deref().unwrap_or(pds);
         match &intent.body {
             Body::Text { text } => {
                 validate_text(text)?;
                 let sess = create_session(&self.http, pds, identifier, secret, deadline).await?;
+                // The reply's strongRefs need the session's token, so the
+                // parent lookup happens after createSession — the malformed-
+                // URI case inside it still fires before any write.
+                let reply = match params.reply_to_id.as_deref() {
+                    Some(uri) => Some(
+                        resolve_reply_refs(&self.http, pds, &sess.access_jwt, uri, deadline)
+                            .await?,
+                    ),
+                    None => None,
+                };
                 post_text(
                     &self.http,
                     pds,
@@ -130,11 +140,23 @@ impl Publisher for Bluesky {
                     &sess.did,
                     Some(&sess.handle),
                     text,
+                    reply.as_ref(),
                     deadline,
                 )
                 .await
             }
             Body::Image { text, image, alt } => {
+                // Image replies stay refused at the connector too (the CLI
+                // refuses earlier; this guards serve-mode callers): the
+                // embed-with-reply wire is untaught, and a dropped reply
+                // param would publish a root image post instead.
+                if params.reply_to_id.is_some() {
+                    return Err(Error::InvalidPost {
+                        site: self.site.clone(),
+                        reason: "image_reply_unsupported".into(),
+                        limit: None,
+                    });
+                }
                 // Bluesky uploads bytes as blobs; a URL source is refused
                 // at the door — the kernel never fetches operator URLs
                 // (plans/001/015 D1).
@@ -216,22 +238,191 @@ pub fn validate_text(text: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Bluesky supports no `Intent.params` today. A dropped param is not
-/// neutral: `--param reply_to_id=…` would be silently discarded and a
-/// **root post** published instead of the intended reply — wrong public
-/// output while reporting a success `Outcome`, the worst failure mode
-/// this kernel can have. So any param is an error until the connector
-/// actually implements it (replies via `reply.parent` will teach this
-/// fn the key instead of rejecting it).
-pub fn validate_params(params: &Value) -> Result<(), Error> {
-    if let Some(k) = params.as_object().and_then(|o| o.keys().next()) {
-        return Err(Error::InvalidPost {
-            site: Site::new(SITE),
-            reason: format!("unsupported_param:{k}"),
-            limit: None,
-        });
+/// Bluesky's only `Intent.params` key today is `reply_to_id`, holding the
+/// parent post's `at://` URI (the same string `Outcome.id` returns, so a
+/// reply can target a post this kernel just published). Unknown keys stay
+/// errors: a dropped param is not neutral — `--param chat_id=…` silently
+/// discarded is a post of the wrong shape reported as success, the worst
+/// failure mode this kernel can have.
+#[derive(Default)]
+struct BlueskyParams {
+    reply_to_id: Option<String>,
+}
+
+fn parse_params(params: &Value) -> Result<BlueskyParams, Error> {
+    if params.is_null() {
+        return Ok(BlueskyParams::default());
     }
-    Ok(())
+    let object = params.as_object().ok_or_else(|| Error::InvalidPost {
+        site: Site::new(SITE),
+        reason: "params_not_object".into(),
+        limit: None,
+    })?;
+    for key in object.keys() {
+        if key != "reply_to_id" {
+            return Err(Error::InvalidPost {
+                site: Site::new(SITE),
+                reason: format!("unsupported_param:{key}"),
+                limit: None,
+            });
+        }
+    }
+    let reply_to_id = match object.get("reply_to_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if !s.is_empty() => {
+            // Shape-check here, not after the session: a malformed at-URI
+            // dies before any HTTP at all, including createSession.
+            parse_at_uri(s)?;
+            Some(s.clone())
+        }
+        // An empty or non-string reply target would degrade to a root post
+        // downstream; refuse it here, before credentials are touched.
+        Some(_) => {
+            return Err(Error::InvalidPost {
+                site: Site::new(SITE),
+                reason: "reply_to_id".into(),
+                limit: None,
+            });
+        }
+    };
+    Ok(BlueskyParams { reply_to_id })
+}
+
+/// A `strongRef` (lexicon `com.atproto.repo.strongRef`): the `{uri, cid}`
+/// pair every record reference carries. The cid is the part postkit cannot
+/// know from the at-URI alone, which is why replies resolve the parent via
+/// `getRecord` before creating the reply.
+pub struct StrongRef {
+    pub uri: String,
+    pub cid: String,
+}
+
+impl StrongRef {
+    fn from_json(v: &Value) -> Result<Self, Error> {
+        let uri = v
+            .get("uri")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| Error::Platform {
+                site: Site::new(SITE),
+                code: "missing_uri".into(),
+                message: "strongRef has no uri".into(),
+            })?;
+        let cid = v
+            .get("cid")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| Error::Platform {
+                site: Site::new(SITE),
+                code: "missing_cid".into(),
+                message: "strongRef has no cid".into(),
+            })?;
+        Ok(Self {
+            uri: uri.to_string(),
+            cid: cid.to_string(),
+        })
+    }
+
+    fn to_json(&self) -> Value {
+        json!({ "uri": self.uri, "cid": self.cid })
+    }
+}
+
+/// `reply.root` + `reply.parent` as the post lexicon wants them: the thread
+/// root (which a nested reply inherits from its parent — replying to a
+/// reply must not start a new thread) and the immediate parent.
+pub struct ReplyRefs {
+    pub root: StrongRef,
+    pub parent: StrongRef,
+}
+
+/// The three segments of an at-URI (`at://<authority>/<collection>/<rkey>`).
+/// The authority may be a DID or a handle; `getRecord` accepts either.
+struct AtUri {
+    authority: String,
+    collection: String,
+    rkey: String,
+}
+
+fn parse_at_uri(uri: &str) -> Result<AtUri, Error> {
+    let bad = || Error::InvalidPost {
+        site: Site::new(SITE),
+        reason: "reply_to_id".into(),
+        limit: None,
+    };
+    let rest = uri.strip_prefix("at://").ok_or_else(bad)?;
+    let mut parts = rest.split('/');
+    let authority = parts.next().filter(|s| !s.is_empty()).ok_or_else(bad)?;
+    let collection = parts.next().filter(|s| !s.is_empty()).ok_or_else(bad)?;
+    let rkey = parts.next().filter(|s| !s.is_empty()).ok_or_else(bad)?;
+    if parts.next().is_some() {
+        return Err(bad());
+    }
+    // A reply's parent must be a post; pointing at another collection
+    // (a like, a follow) would publish a malformed record the PDS rejects.
+    if collection != "app.bsky.feed.post" {
+        return Err(bad());
+    }
+    Ok(AtUri {
+        authority: authority.to_string(),
+        collection: collection.to_string(),
+        rkey: rkey.to_string(),
+    })
+}
+
+/// Resolve the parent of a reply: one `com.atproto.repo.getRecord` on the
+/// session's PDS yields the parent's strongRef, and — if the parent is
+/// itself a reply — the thread root it already carries, so a reply-to-reply
+/// lands in the right thread with a single lookup. (Limitation: the PDS
+/// only serves repos it hosts or caches; a parent on a foreign PDS that it
+/// cannot resolve surfaces as a lookup failure rather than a wrong-thread
+/// reply.)
+async fn resolve_reply_refs(
+    http: &Http,
+    pds: &str,
+    access_jwt: &str,
+    parent_uri: &str,
+    deadline: Deadline,
+) -> Result<ReplyRefs, Error> {
+    let site = Site::new(SITE);
+    let at = parse_at_uri(parent_uri)?;
+    let url = xrpc(pds, "com.atproto.repo.getRecord");
+    let req = http
+        .get(&url)
+        .query(&[
+            ("repo", at.authority.as_str()),
+            ("collection", at.collection.as_str()),
+            ("rkey", at.rkey.as_str()),
+        ])
+        .header("Authorization", format!("Bearer {access_jwt}"));
+    let resp = http.send(req, deadline, &site).await?;
+    let body = read_json(resp, &site).await?;
+    // Trust the record's own uri over the operator's input: handles and
+    // DIDs both work in getRecord, and the strongRef should carry the
+    // canonical DID form the PDS returns.
+    let parent = StrongRef {
+        uri: body
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .unwrap_or(parent_uri)
+            .to_string(),
+        cid: body
+            .get("cid")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Platform {
+                site: site.clone(),
+                code: "missing_cid".into(),
+                message: "getRecord returned no cid".into(),
+            })?
+            .to_string(),
+    };
+    let root = body
+        .pointer("/value/reply/root")
+        .map(StrongRef::from_json)
+        .transpose()?
+        .unwrap_or(StrongRef {
+            uri: parent.uri.clone(),
+            cid: parent.cid.clone(),
+        });
+    Ok(ReplyRefs { root, parent })
 }
 
 /// Closed extension → MIME map. The lexicon accepts any `image/*`, but the
@@ -356,6 +547,7 @@ pub async fn post_image_embed(
     })
 }
 
+#[allow(clippy::too_many_arguments)] // one post's fixed wire inputs
 pub async fn post_text(
     http: &Http,
     pds: &str,
@@ -363,6 +555,7 @@ pub async fn post_text(
     did: &str,
     handle: Option<&str>,
     text: &str,
+    reply: Option<&ReplyRefs>,
     deadline: Deadline,
 ) -> Result<Outcome, Error> {
     let site = Site::new(SITE);
@@ -374,14 +567,26 @@ pub async fn post_text(
             message: e.to_string(),
         })?;
     let url = xrpc(pds, "com.atproto.repo.createRecord");
+    // `reply` is only present on replies: root posts carry no reply field,
+    // and a self-referential one would be an invalid record.
+    let reply_json = reply.map(|r| {
+        json!({
+            "root": r.root.to_json(),
+            "parent": r.parent.to_json(),
+        })
+    });
+    let mut record = json!({
+        "$type": "app.bsky.feed.post",
+        "text": text,
+        "createdAt": created,
+    });
+    if let Some(r) = reply_json {
+        record["reply"] = r;
+    }
     let body = json!({
         "repo": did,
         "collection": "app.bsky.feed.post",
-        "record": {
-            "$type": "app.bsky.feed.post",
-            "text": text,
-            "createdAt": created,
-        }
+        "record": record
     });
     let req = http
         .post(&url)
@@ -605,9 +810,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn params_rejected_before_http() {
-        // reply_to_id used to be dropped and a root post published in its
-        // place. The param must be refused before a session is even created.
+    async fn unsupported_params_rejected_before_http() {
+        // reply_to_id is taught; every other key stays an error before a
+        // session is even created — a dropped param would publish a
+        // differently-shaped post while reporting success.
         let server = MockServer::start();
         let session = server.mock(|when, then| {
             when.method(POST)
@@ -621,21 +827,209 @@ mod tests {
         });
         let t = Bluesky::with_pds(server.base_url()).unwrap();
         let mut intent = text_intent("hi");
-        intent.params = json!({ "reply_to_id": "at://did:plc:abc/app.bsky.feed.post/3kx" });
+        intent.params = json!({ "chat_id": "-100" });
         let err = t
             .publish(&empty_app(), &pw_creds(), intent, Deadline::from_secs(30))
             .await
             .unwrap_err();
         assert!(
-            matches!(err, Error::InvalidPost { reason, .. } if reason == "unsupported_param:reply_to_id")
+            matches!(err, Error::InvalidPost { reason, .. } if reason == "unsupported_param:chat_id")
         );
         assert_eq!(session.hits(), 0, "no HTTP before the param check");
     }
 
     #[test]
-    fn empty_params_object_passes() {
-        validate_params(&json!({})).unwrap();
-        validate_params(&Value::Null).unwrap();
+    fn params_parse_reply_key_only() {
+        let p = parse_params(&json!({})).unwrap();
+        assert!(p.reply_to_id.is_none());
+        assert!(parse_params(&Value::Null).unwrap().reply_to_id.is_none());
+        assert!(parse_params(&json!({ "reply_to_id": null }))
+            .unwrap()
+            .reply_to_id
+            .is_none());
+        let p = parse_params(&json!({ "reply_to_id": "at://did:plc:abc/app.bsky.feed.post/3kx" }))
+            .unwrap();
+        assert_eq!(
+            p.reply_to_id.as_deref(),
+            Some("at://did:plc:abc/app.bsky.feed.post/3kx")
+        );
+        // Empty, non-string, unknown keys, and malformed at-URIs all refuse.
+        assert!(parse_params(&json!({ "reply_to_id": "" })).is_err());
+        assert!(parse_params(&json!({ "reply_to_id": 5 })).is_err());
+        assert!(parse_params(&json!({ "user_id": "x" })).is_err());
+        // A bsky.app web URL is not an at-URI; a reply into a non-post
+        // collection would build an invalid record.
+        assert!(
+            parse_params(&json!({ "reply_to_id": "https://bsky.app/profile/you/post/3kx" }))
+                .is_err()
+        );
+        assert!(
+            parse_params(&json!({ "reply_to_id": "at://did:plc:abc/app.bsky.feed.like/3kx" }))
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_reply_uri_refused_before_session() {
+        // The at-URI shape check runs in parse_params, so a bad target dies
+        // before even createSession — no HTTP at all.
+        let server = MockServer::start();
+        let session = server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(200).json_body(json!({
+                "did": "did:plc:abc",
+                "handle": "you.bsky.social",
+                "accessJwt": "jwt"
+            }));
+        });
+        let t = Bluesky::with_pds(server.base_url()).unwrap();
+        for bad in [
+            "https://bsky.app/profile/you.bsky.social/post/3kx",
+            "at://did:plc:abc/app.bsky.feed.like/3kx",
+            "at:///app.bsky.feed.post/3kx",
+        ] {
+            let mut intent = text_intent("hi");
+            intent.params = json!({ "reply_to_id": bad });
+            let err = t
+                .publish(&empty_app(), &pw_creds(), intent, Deadline::from_secs(30))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidPost { reason, .. } if reason == "reply_to_id"),
+                "expected reply_to_id refusal for {bad}"
+            );
+        }
+        assert_eq!(session.hits(), 0, "no HTTP before the URI check");
+    }
+
+    #[tokio::test]
+    async fn reply_resolves_parent_strongref_and_pins_reply_wire() {
+        // The reply wire: one getRecord for the parent's cid, then
+        // createRecord carrying reply.root == reply.parent (a direct reply
+        // to a root post roots the thread at that post).
+        let server = MockServer::start();
+        session_mock(&server);
+        let lookup = server.mock(|when, then| {
+            when.method(GET)
+                .path("/xrpc/com.atproto.repo.getRecord")
+                .query_param("repo", "did:plc:abc")
+                .query_param("collection", "app.bsky.feed.post")
+                .query_param("rkey", "3kx");
+            then.status(200).json_body(json!({
+                "uri": "at://did:plc:abc/app.bsky.feed.post/3kx",
+                "cid": "parentcid",
+                "value": {
+                    "$type": "app.bsky.feed.post",
+                    "text": "parent",
+                    "createdAt": "2026-09-10T00:00:00Z"
+                }
+            }));
+        });
+        let record = server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.repo.createRecord")
+                .body_contains("\"reply\":{")
+                // serde_json emits object keys sorted: cid before uri.
+                .body_contains("\"root\":{\"cid\":\"parentcid\",\"uri\":\"at://did:plc:abc/app.bsky.feed.post/3kx\"}")
+                .body_contains("\"parent\":{\"cid\":\"parentcid\",\"uri\":\"at://did:plc:abc/app.bsky.feed.post/3kx\"}");
+            then.status(200).json_body(json!({
+                "uri": "at://did:plc:abc/app.bsky.feed.post/3ky",
+                "cid": "y"
+            }));
+        });
+        let b = Bluesky::with_pds(server.base_url()).unwrap();
+        let mut intent = text_intent("a reply");
+        intent.params = json!({ "reply_to_id": "at://did:plc:abc/app.bsky.feed.post/3kx" });
+        let out = b
+            .publish(&empty_app(), &pw_creds(), intent, Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(
+            out.id.as_deref(),
+            Some("at://did:plc:abc/app.bsky.feed.post/3ky")
+        );
+        assert_eq!(
+            out.url.as_deref(),
+            Some("https://bsky.app/profile/you.bsky.social/post/3ky")
+        );
+        lookup.assert();
+        record.assert();
+    }
+
+    #[tokio::test]
+    async fn reply_to_reply_inherits_thread_root() {
+        // A parent that is itself a reply already carries reply.root; the
+        // new reply must root at the thread root, not the parent, or it
+        // would start a new thread.
+        let server = MockServer::start();
+        session_mock(&server);
+        server.mock(|when, then| {
+            when.method(GET).path("/xrpc/com.atproto.repo.getRecord");
+            then.status(200).json_body(json!({
+                "uri": "at://did:plc:abc/app.bsky.feed.post/3kx",
+                "cid": "parentcid",
+                "value": {
+                    "$type": "app.bsky.feed.post",
+                    "text": "a reply itself",
+                    "reply": {
+                        "root": {
+                            "uri": "at://did:plc:abc/app.bsky.feed.post/3kw",
+                            "cid": "rootcid"
+                        },
+                        "parent": {
+                            "uri": "at://did:plc:abc/app.bsky.feed.post/3kw",
+                            "cid": "rootcid"
+                        }
+                    }
+                }
+            }));
+        });
+        let record = server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.repo.createRecord")
+                .body_contains("\"root\":{\"cid\":\"rootcid\",\"uri\":\"at://did:plc:abc/app.bsky.feed.post/3kw\"}")
+                .body_contains("\"parent\":{\"cid\":\"parentcid\",\"uri\":\"at://did:plc:abc/app.bsky.feed.post/3kx\"}");
+            then.status(200).json_body(json!({ "uri": "at://x", "cid": "y" }));
+        });
+        let b = Bluesky::with_pds(server.base_url()).unwrap();
+        let mut intent = text_intent("nested");
+        intent.params = json!({ "reply_to_id": "at://did:plc:abc/app.bsky.feed.post/3kx" });
+        b.publish(&empty_app(), &pw_creds(), intent, Deadline::from_secs(30))
+            .await
+            .unwrap();
+        record.assert();
+    }
+
+    #[tokio::test]
+    async fn image_with_reply_param_refused_before_http() {
+        // Parity with threads: the image-with-reply wire is untaught, so
+        // the param must not be dropped into a root image post.
+        let server = MockServer::start();
+        let session = server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.server.createSession");
+            then.status(200)
+                .json_body(json!({ "accessJwt": "jwt", "did": "d", "handle": "h" }));
+        });
+        let b = Bluesky::with_pds(server.base_url()).unwrap();
+        let mut intent = image_intent(
+            Image::Bytes {
+                filename: "hero.png".into(),
+                bytes: b"png".to_vec(),
+            },
+            None,
+            "",
+        );
+        intent.params = json!({ "reply_to_id": "at://did:plc:abc/app.bsky.feed.post/3kx" });
+        let err = b
+            .publish(&empty_app(), &pw_creds(), intent, Deadline::from_secs(30))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidPost { reason, .. } if reason == "image_reply_unsupported")
+        );
+        assert_eq!(session.hits(), 0);
     }
 
     #[test]

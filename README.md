@@ -52,7 +52,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | Text post | ✓ | ✓ | ✗ read-only by design |
 | Image post (`--image`) | ✓ public https URL (`--alt` ignored) | ✓ file upload, `--alt` embedded | — |
 | Reply chain (repeat `--text`) | ✓ | ✗ `thread_unsupported` | — |
-| Reply to existing post (`reply_to_id`) | ✓ | ✗ | — |
+| Reply to existing post (`reply_to_id`) | ✓ media id | ✓ `at://` URI | — |
 | Dry-run probe (`--dry-run`) | ✓ create-only, expires unpublished in 24h | ✗ `dry_run_unsupported` (atomic `createRecord`) | — |
 | Spend / performance insights | ✗ roadmap | ✗ roadmap | ✓ `insights`, daily rows by entity |
 | Paused campaign / ad set / ad create | ✗ | ✗ | ✓ `ads create-*`, activation unavailable |

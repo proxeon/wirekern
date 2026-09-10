@@ -14,6 +14,15 @@ same detail by subject.
 
 ### Added
 
+- Bluesky replies: `postkit post bluesky --param reply_to_id=<at://…>` with
+  the parent's at-URI (the string `Outcome.id` returns). The connector
+  resolves the parent's `cid` via one `com.atproto.repo.getRecord` and
+  writes the lexicon `reply.root`/`reply.parent` strongRefs — a reply to a
+  reply inherits its parent's thread root instead of starting a new thread.
+  Malformed targets (non-`at://` URIs, non-post collections) refuse locally
+  with `invalid_post:reply_to_id` before any HTTP; image replies remain
+  refused (`image_reply_unsupported`) until that wire is taught; unknown
+  params still refuse with `unsupported_param:<k>`.
 - Images on posts (plans/001/015, `publish.image`): `postkit post <site>
   --image … [--text caption] [--alt …]`. The kernel seam carries both forms
   platforms ingest — bytes (Bluesky `uploadBlob` → `app.bsky.embed.images`
