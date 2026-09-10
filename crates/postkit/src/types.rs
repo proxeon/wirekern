@@ -177,14 +177,15 @@ pub enum Body {
     },
     /// One image with an optional caption. The caption obeys the site's
     /// text rule when present (Threads: 500 UTF-8 bytes; Bluesky: 300
-    /// graphemes) and is omitted from the wire entirely when `None`.
+    /// graphemes; Instagram: 2,200 Unicode scalar values) and is omitted
+    /// from the wire entirely when `None`.
     Image {
         text: Option<String>,
         image: Image,
         /// Accessibility text for embed-capable sites. It is part of the
         /// media, not a platform param: Bluesky embeds it (required by the
-        /// lexicon, empty string allowed); Threads has no field for it and
-        /// ignores it.
+        /// lexicon, empty string allowed); Threads and Instagram v1 have no
+        /// verified field for it and ignore it.
         #[serde(default)]
         alt: String,
     },
@@ -200,8 +201,9 @@ impl Body {
 }
 
 /// One image for a post, in the two forms platforms actually ingest
-/// (plans/001/015 D1). Bluesky uploads bytes (`uploadBlob`); Threads crawls
-/// a public https URL (`image_url`) and offers no organic upload. The
+/// (plans/001/015 D1). Bluesky uploads bytes (`uploadBlob`); Threads and
+/// Instagram crawl a public https URL (`image_url`) and offer no organic
+/// upload. The
 /// kernel deliberately never bridges the two: fetching an operator URL is
 /// an SSRF-shaped power it has never had, and hosting bytes to synthesize
 /// a URL is a product decision (015 D5). Each connector refuses the form

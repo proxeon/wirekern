@@ -142,7 +142,10 @@ pub async fn exchange_code(
             .get("error_message")
             .or_else(|| raw.get("error").and_then(|e| e.get("message")))
             .and_then(|v| v.as_str())
-            .unwrap_or(text.as_str());
+            // A failed token endpoint can be a proxy/body generated outside
+            // the OAuth server. Never surface an arbitrary raw body: it may
+            // echo the submitted code, redirect URI, or client credential.
+            .unwrap_or("token_exchange_failed");
         return Err(Error::Auth {
             site: site.clone(),
             reason: msg.to_string(),
@@ -330,5 +333,34 @@ mod tests {
         m.assert();
         assert_eq!(tok.access_token, "SHORT");
         assert_eq!(tok.user_id.as_deref(), Some("1784"));
+    }
+
+    #[tokio::test]
+    async fn exchange_code_error_never_surfaces_a_raw_response_body() {
+        let server = httpmock::MockServer::start();
+        let secret = "client-secret-must-not-leak";
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/token");
+            then.status(502).body(secret);
+        });
+        let http = Http::new().unwrap();
+        let error = exchange_code(
+            &http,
+            &format!("{}/token", server.base_url()),
+            "client-id",
+            secret,
+            "https://example.test/callback",
+            "code-must-not-leak",
+            Deadline::from_secs(30),
+            &Site::new("test"),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::Auth { ref reason, .. } if reason == "token_exchange_failed")
+        );
+        let rendered = error.to_string();
+        assert!(!rendered.contains(secret));
+        assert!(!rendered.contains("code-must-not-leak"));
     }
 }

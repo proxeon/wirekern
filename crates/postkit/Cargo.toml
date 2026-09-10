@@ -20,6 +20,10 @@ threads = ["client", "oauth", "dep:tokio", "dep:emojis"]
 bluesky = ["client", "dep:unicode-segmentation", "dep:time"]
 meta-ads = ["client", "oauth", "dep:tokio"]
 facebook-pages = ["client", "oauth"]
+# Instagram Login is a distinct OAuth surface from Facebook Pages and Ads.
+# Keep it independent so applications can ship direct Instagram publishing
+# without pulling another Meta connector into their dependency graph.
+instagram = ["client", "oauth"]
 draft = ["client", "dep:tokio", "dep:sha2"]
 
 [dependencies]

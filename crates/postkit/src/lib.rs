@@ -46,7 +46,8 @@ pub use oauth::{
     feature = "threads",
     feature = "bluesky",
     feature = "meta-ads",
-    feature = "facebook-pages"
+    feature = "facebook-pages",
+    feature = "instagram"
 ))]
 pub mod connectors;
 

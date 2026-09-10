@@ -14,6 +14,16 @@ same detail by subject.
 
 ### Added
 
+- Instagram organic image publishing: the new `instagram` connector uses the
+  direct Instagram Login authorization path, stores only its long-lived token
+  and resolved professional-account ID, and publishes one public HTTPS image
+  with an optional caption through an explicit media-container → publish flow.
+  It has no text-only post capability, Page target, local-image hosting,
+  dry-run, ads, spend, video/Reels, carousel, Stories, comments, or insights
+  surface. Captions are locally capped at 2,200 Unicode scalar values; generic
+  alt text is deliberately not sent until its Instagram Login wire contract is
+  verified. Token refresh uses `ig_refresh_token`, while ambiguous write
+  outcomes are never auto-retried to avoid duplicate visible posts.
 - Facebook Pages organic publishing: the new `facebook_pages` connector
   discovers token-visible Pages with `postkit pages accounts facebook_pages`,
   then posts text or one local image only when the operator provides an

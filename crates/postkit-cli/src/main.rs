@@ -67,13 +67,13 @@ enum Commands {
         /// would, publish nothing. The container expires in 24h.
         #[arg(long)]
         dry_run: bool,
-        /// One image per post: a local file (Bluesky uploads the bytes) or
-        /// a public https URL (Threads crawls it). The kernel never
-        /// converts between the two forms.
+        /// One image per post: a local file (Bluesky/Facebook Pages upload
+        /// bytes) or a public https URL (Threads/Instagram crawl it). The
+        /// kernel never converts between the two forms.
         #[arg(long)]
         image: Option<String>,
         /// Accessibility text for --image (embedded where the platform
-        /// supports it; Threads has no alt field).
+        /// supports it; Threads and Instagram v1 have no verified alt field).
         #[arg(long, default_value = "")]
         alt: String,
     },
@@ -1304,9 +1304,9 @@ fn invalid_post(site: &str, reason: &str) -> Error {
 }
 
 /// Resolve --image to the kernel's dual form: an https URL passes through
-/// (Threads crawls it), anything else is a local file read here — the sole
-/// filesystem boundary — into bytes + bare basename. Read errors never
-/// echo the operator's path.
+/// (Threads and Instagram crawl it), anything else is a local file read here
+/// — the sole filesystem boundary — into bytes + bare basename. Read errors
+/// never echo the operator's path.
 fn resolve_image(image: &str, site: &str) -> Result<Image, Error> {
     // Anything scheme-shaped is a URL attempt, not a filename: `http://…`
     // must die as "must be https", never as a confusing unreadable file.
@@ -1709,6 +1709,7 @@ fn make_client(home: &std::path::Path) -> Result<Client, Error> {
     registry.register(Arc::new(
         postkit::connectors::facebook_pages::FacebookPages::new()?,
     ));
+    registry.register(Arc::new(postkit::connectors::instagram::Instagram::new()?));
     let vault = Arc::new(FileVault::new(home)?);
     let apps = Arc::new(FileAppStore::new(home)?);
     Ok(Client::new(registry, vault, apps))
