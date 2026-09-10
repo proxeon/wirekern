@@ -197,10 +197,15 @@ pub trait Publisher: Send + Sync {
         })
     }
 
+    /// Re-issue stored credentials. `deadline` is the *caller's* budget —
+    /// issue 024: refresh shares the same end-to-end deadline as the
+    /// publish/insight it serves, so `--deadline 1` bounds refresh plus
+    /// request together instead of silently adding a fixed 30s of its own.
     async fn refresh(
         &self,
         _app: &AppConfig,
         _creds: &AccountCreds,
+        _deadline: Deadline,
     ) -> Result<AccountCreds, Error> {
         Err(Error::Auth {
             site: self.site().clone(),

@@ -149,13 +149,15 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
-        creds = self.maybe_refresh(publisher, &app, key, creds).await?;
+        creds = self
+            .maybe_refresh(publisher, &app, key, creds, deadline)
+            .await?;
         let out = match publisher
             .publish(&app, &creds, intent.clone(), deadline)
             .await
         {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds).await?;
+                let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
                 publisher.publish(&app, &new, intent, deadline).await
             }
@@ -213,10 +215,12 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
-        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        creds = self
+            .maybe_refresh(&*publisher, &app, key, creds, deadline)
+            .await?;
         match publisher.insights(&app, &creds, &query, deadline).await {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds).await?;
+                let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
                 publisher.insights(&app, &new, &query, deadline).await
             }
@@ -247,10 +251,12 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
-        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        creds = self
+            .maybe_refresh(&*publisher, &app, key, creds, deadline)
+            .await?;
         match publisher.ad_accounts(&app, &creds, deadline).await {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds).await?;
+                let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
                 publisher.ad_accounts(&app, &new, deadline).await
             }
@@ -288,13 +294,15 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
-        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        creds = self
+            .maybe_refresh(&*publisher, &app, key, creds, deadline)
+            .await?;
         match publisher
             .create_paused_ad(&app, &creds, &request, deadline)
             .await
         {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds).await?;
+                let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
                 publisher
                     .create_paused_ad(&app, &new, &request, deadline)
@@ -334,13 +342,15 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
-        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        creds = self
+            .maybe_refresh(&*publisher, &app, key, creds, deadline)
+            .await?;
         match publisher
             .upload_ad_image(&app, &creds, &request, deadline)
             .await
         {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds).await?;
+                let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
                 publisher
                     .upload_ad_image(&app, &new, &request, deadline)
@@ -380,13 +390,15 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
-        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        creds = self
+            .maybe_refresh(&*publisher, &app, key, creds, deadline)
+            .await?;
         match publisher
             .create_link_ad_creative(&app, &creds, &request, deadline)
             .await
         {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds).await?;
+                let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
                 publisher
                     .create_link_ad_creative(&app, &new, &request, deadline)
@@ -425,13 +437,15 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
-        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        creds = self
+            .maybe_refresh(&*publisher, &app, key, creds, deadline)
+            .await?;
         match publisher
             .preview_ad_creative(&app, &creds, &request, deadline)
             .await
         {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds).await?;
+                let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
                 publisher
                     .preview_ad_creative(&app, &new, &request, deadline)
@@ -469,13 +483,15 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
-        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        creds = self
+            .maybe_refresh(&*publisher, &app, key, creds, deadline)
+            .await?;
         match publisher
             .ad_review_status(&app, &creds, &request, deadline)
             .await
         {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds).await?;
+                let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
                 publisher
                     .ad_review_status(&app, &new, &request, deadline)
@@ -531,7 +547,9 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
-        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        creds = self
+            .maybe_refresh(&*publisher, &app, key, creds, deadline)
+            .await?;
         let mut retried_expired_token = false;
 
         loop {
@@ -545,7 +563,7 @@ impl Client {
                     // Match every other Client read: an expired token gets
                     // one refresh and one retry, never an unbounded refresh
                     // loop hidden inside a status poller.
-                    creds = publisher.refresh(&app, &creds).await?;
+                    creds = publisher.refresh(&app, &creds, deadline).await?;
                     self.vault.put(key, &creds)?;
                     retried_expired_token = true;
                     continue;
@@ -618,7 +636,7 @@ impl Client {
             .await
         {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds).await?;
+                let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
                 publisher.probe(&app, &new, intent, deadline).await
             }
@@ -694,11 +712,16 @@ impl Client {
         app: &AppConfig,
         key: &AccountKey,
         creds: AccountCreds,
+        deadline: Deadline,
     ) -> Result<AccountCreds, Error> {
         if !refresh_is_due(&creds) {
             return Ok(creds);
         }
-        match publisher.refresh(app, &creds).await {
+        // The caller's deadline governs the refresh too (issue 024): one
+        // budget for refresh plus the request it serves. A deadline spent
+        // here degrades below — publish then fails fast with the same
+        // DeadlineExceeded instead of duplicating the wait.
+        match publisher.refresh(app, &creds, deadline).await {
             Ok(new) => {
                 self.vault.put(key, &new)?;
                 Ok(new)

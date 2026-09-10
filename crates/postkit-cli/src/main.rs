@@ -35,7 +35,7 @@ struct Cli {
     /// Vault root. Default ~/.postkit
     #[arg(long, global = true, env = "POSTKIT_HOME")]
     home: Option<PathBuf>,
-    /// Seconds for a network operation. Default 30.
+    /// Seconds for a network operation, including any token refresh on the way. Default 30.
     #[arg(long, global = true, default_value_t = 30)]
     deadline: u64,
     /// Account alias. Default default.

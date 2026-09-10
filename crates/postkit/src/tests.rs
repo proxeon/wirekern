@@ -39,6 +39,9 @@ struct MockPub {
     /// channels by value while the trait only lends `&self`.
     publish_started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     publish_gate: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    /// 024: the deadline refresh actually received — tests assert the
+    /// caller's budget was threaded through, not a private 30s.
+    refresh_deadline: std::sync::Mutex<Option<Deadline>>,
     publishes: AtomicUsize,
     probes: AtomicUsize,
     paused_creates: AtomicUsize,
@@ -62,6 +65,7 @@ impl MockPub {
             refresh_dead_session: false,
             publish_started: std::sync::Mutex::new(None),
             publish_gate: std::sync::Mutex::new(None),
+            refresh_deadline: std::sync::Mutex::new(None),
             publishes: AtomicUsize::new(0),
             probes: AtomicUsize::new(0),
             paused_creates: AtomicUsize::new(0),
@@ -393,7 +397,13 @@ impl Publisher for MockPub {
         }
     }
 
-    async fn refresh(&self, _app: &AppConfig, creds: &AccountCreds) -> Result<AccountCreds, Error> {
+    async fn refresh(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<AccountCreds, Error> {
+        *self.refresh_deadline.lock().unwrap() = Some(deadline);
         if self.refresh_network_err {
             return Err(Error::Network {
                 site: self.site.clone(),
@@ -504,6 +514,78 @@ fn intent_with_idem(site: &str, text: &str, idem: &str) -> Intent {
         idempotency_key: Some(idem.into()),
         ..intent(site, text)
     }
+}
+
+/// Shared scaffolding for the 024 deadline-threading tests: a client whose
+/// publisher records the deadline its `refresh` received, plus stored
+/// credentials that optionally sit inside the proactive-refresh window.
+fn setup_refresh_probe(mock: MockPub, expiring: bool) -> (Client, AccountKey, Arc<MockPub>) {
+    let mock = Arc::new(mock);
+    let mut reg = Registry::new();
+    reg.register(mock.clone());
+    let vault = Arc::new(MemoryVault::new());
+    let key = AccountKey::new("threads", "default");
+    let extra = if expiring {
+        let expires_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        serde_json::json!({ "expires_at": expires_at, "refreshed_at": 0 })
+    } else {
+        serde_json::json!({})
+    };
+    vault
+        .put(
+            &key,
+            &AccountCreds::OAuth2 {
+                access_token: "tok".into(),
+                refresh_token: None,
+                extra,
+            },
+        )
+        .unwrap();
+    (
+        Client::new(reg, vault, Arc::new(MemoryAppStore::new())),
+        key,
+        mock,
+    )
+}
+
+/// 024: the reactive token-expiry retry refreshes under the caller's
+/// deadline — the same budget object, never a private fixed timeout.
+#[tokio::test]
+async fn reactive_refresh_shares_the_publish_deadline() {
+    let (c, key, mock) = setup_refresh_probe(
+        MockPub {
+            fail_auth_once: true,
+            ..MockPub::text("threads")
+        },
+        false,
+    );
+    let d = Deadline::from_secs(30);
+    c.publish(&key, intent("threads", "hi"), d).await.unwrap();
+    let got = mock.refresh_deadline.lock().unwrap();
+    assert_eq!(
+        got.unwrap().0,
+        d.0,
+        "refresh must receive the caller's budget"
+    );
+}
+
+/// 024: the proactive pre-publish refresh runs under the caller's deadline
+/// too — `--deadline` bounds refresh plus publish end-to-end.
+#[tokio::test]
+async fn proactive_refresh_shares_the_publish_deadline() {
+    let (c, key, mock) = setup_refresh_probe(MockPub::text("threads"), true);
+    let d = Deadline::from_secs(30);
+    c.publish(&key, intent("threads", "hi"), d).await.unwrap();
+    let got = mock.refresh_deadline.lock().unwrap();
+    assert_eq!(
+        got.unwrap().0,
+        d.0,
+        "refresh must receive the caller's budget"
+    );
 }
 
 #[tokio::test]

@@ -287,10 +287,16 @@ impl Publisher for Threads {
         .await
     }
 
-    async fn refresh(&self, _app: &AppConfig, creds: &AccountCreds) -> Result<AccountCreds, Error> {
+    async fn refresh(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<AccountCreds, Error> {
         let token = access_token(creds)?;
         let user_id = extra_user_id(creds);
-        let deadline = Deadline::from_secs(30);
+        // The caller's deadline, not a private 30s (issue 024): one budget
+        // covers refresh plus the publish that asked for it.
         let q = form(&[("grant_type", "th_refresh_token"), ("access_token", token)]);
         let url = format!("{}/refresh_access_token?{q}", self.graph_origin);
         let resp = self
@@ -1785,7 +1791,10 @@ mod tests {
             refresh_token: None,
             extra: json!({ "user_id": "1784" }),
         };
-        let new = t.refresh(&oauth_app(), &old).await.unwrap();
+        let new = t
+            .refresh(&oauth_app(), &old, Deadline::from_secs(30))
+            .await
+            .unwrap();
         match new {
             AccountCreds::OAuth2 {
                 access_token,
@@ -1797,6 +1806,43 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// 024: refresh is bounded by the caller's deadline, not a private
+    /// 30s — a 10s-slow endpoint under a 1s budget must fail as
+    /// DeadlineExceeded in ~1s, never outlive the budget that asked for it.
+    #[tokio::test]
+    async fn refresh_is_bounded_by_the_caller_deadline() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/refresh_access_token")
+                .query_param("grant_type", "th_refresh_token");
+            then.status(200)
+                .delay(std::time::Duration::from_secs(10))
+                .json_body(json!({
+                    "access_token": "NEW",
+                    "expires_in": 5183944
+                }));
+        });
+        let t = Threads::with_origins(format!("{}/v1.0", server.base_url()), server.base_url())
+            .unwrap();
+        let old = AccountCreds::OAuth2 {
+            access_token: "OLD".into(),
+            refresh_token: None,
+            extra: json!({ "user_id": "1784" }),
+        };
+        let start = std::time::Instant::now();
+        let err = t
+            .refresh(&oauth_app(), &old, Deadline::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::DeadlineExceeded { .. }), "got {err:?}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "refresh outlived the caller budget: {:?}",
+            start.elapsed()
+        );
     }
 
     #[tokio::test]

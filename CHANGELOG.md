@@ -22,6 +22,12 @@ same detail by subject.
   the file vault backs the claim with an O_EXCL `0600` claim file, and a
   holder that crashed without releasing is stolen after 15 minutes. A
   failed attempt releases immediately — the key stays retryable.
+- Token refresh now runs under the caller's deadline (issue 024):
+  `Publisher::refresh` takes the publish/insight deadline, so `--deadline 1`
+  bounds refresh plus request end-to-end instead of silently adding a fixed
+  30s while credentials are near expiry. A proactive refresh that meets a
+  spent budget still degrades gracefully to publishing with the stored
+  token, which then fails fast with the same `DeadlineExceeded`.
 
 ### Added
 

@@ -195,12 +195,17 @@ impl Publisher for MetaAds {
 
     /// `fb_exchange_token` re-issue. Needs the app secret, so a stored
     /// long-lived token can only be refreshed while the app config exists.
-    async fn refresh(&self, app: &AppConfig, creds: &AccountCreds) -> Result<AccountCreds, Error> {
+    async fn refresh(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<AccountCreds, Error> {
         let oauth = require_oauth(app)?;
         let token = access_token(creds)?;
         let user_id = extra_string(creds, "user_id");
         let account = extra_string(creds, "ad_account_id");
-        let deadline = Deadline::from_secs(30);
+        // The caller's budget, not a private 30s (issue 024).
         let long = long_lived(
             &self.http,
             &self.graph_origin,
@@ -2270,7 +2275,11 @@ mod tests {
         let t = MetaAds::with_origins(format!("{}/v26.0", server.base_url()), server.base_url())
             .unwrap();
         let new = t
-            .refresh(&oauth_app(), &token_creds("act_123"))
+            .refresh(
+                &oauth_app(),
+                &token_creds("act_123"),
+                Deadline::from_secs(30),
+            )
             .await
             .unwrap();
         m.assert();
@@ -2292,7 +2301,11 @@ mod tests {
         // refresh requires the app config (client_secret); its absence is
         // a door error, not a mid-flight one
         let err = t
-            .refresh(&empty_app(), &token_creds("act_123"))
+            .refresh(
+                &empty_app(),
+                &token_creds("act_123"),
+                Deadline::from_secs(30),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, Error::Auth { reason, .. } if reason == "missing_app_config"));
