@@ -73,6 +73,7 @@ postkit auth <site> [--token | --code | --password]
 postkit insights meta_ads --from 2026-06-01 --to 2026-06-30 --attribution 7d_click_1d_view --level campaign
 postkit ads create-campaign meta_ads --name 'Draft' --objective sales
 postkit ads upload-image meta_ads --file hero.png
+postkit ads create-draft meta_ads --manifest launch.paused.json --state launch.state.json
 postkit whoami <site>
 postkit capabilities [site]
 postkit accounts list|delete
@@ -97,9 +98,9 @@ Fan-out returns one result per target: `{ "results": [ Outcome | WireError, … 
 postkit = { version = "0.1", features = ["vault-file", "threads", "bluesky"] }
 ```
 
-Default features are empty: `vault-file`, `client`, `oauth` (implies `client`), `threads`, `bluesky`, `meta-ads`. `cargo add postkit --features threads` pulls no Bluesky, no scheduler, nothing you did not ask for.
+Default features are empty: `vault-file`, `client`, `oauth` (implies `client`), `threads`, `bluesky`, `meta-ads`, `draft` (manifest-orchestrated paused launches). `cargo add postkit --features threads` pulls no Bluesky, no scheduler, nothing you did not ask for.
 
-`Client::{publish, whoami, insights, auth_start, auth_finish, put_token}`. Connectors register on `Registry`. Refresh (Threads long-lived) runs in `Client`, not in `publish`.
+`Client::{publish, whoami, insights, auth_start, auth_finish, put_token, run_paused_draft}`. Connectors register on `Registry`. Refresh (Threads long-lived) runs in `Client`, not in `publish`.
 
 ## Positioning & roadmap
 

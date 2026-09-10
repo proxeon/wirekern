@@ -67,6 +67,18 @@ impl CampaignObjective {
             Self::Sales => "OUTCOME_SALES",
         }
     }
+
+    /// Operator-facing name (the serde value); `meta_value` is the wire form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Awareness => "awareness",
+            Self::Traffic => "traffic",
+            Self::Engagement => "engagement",
+            Self::Leads => "leads",
+            Self::AppPromotion => "app_promotion",
+            Self::Sales => "sales",
+        }
+    }
 }
 
 impl FromStr for CampaignObjective {

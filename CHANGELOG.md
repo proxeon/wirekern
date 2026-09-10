@@ -14,6 +14,24 @@ same detail by subject.
 
 ### Added
 
+- Meta Ads resumable paused-draft launches (plans/001/013): one reviewed
+  JSON manifest creates the full paused hierarchy (image → campaign → ad set
+  → creative → ad) through the existing Tier B primitives, checkpointing
+  every confirmed remote ID into an owner-only local state file. Commands:
+  `ads validate-draft` (zero-I/O), `ads create-draft`, `ads resume-draft`
+  (runs only remaining steps), `ads status-draft` (GET-only review snapshot,
+  bounded `--wait`), and `ads adopt-draft-step` (records the human-resolved
+  ID of an ambiguous write; delivery objects are remotely verified `PAUSED`
+  first). Ambiguous writes (network/deadline after send) leave an
+  `in_flight` marker and refuse every later run with a
+  `reconciliation_required` result instead of risking duplicate remote
+  objects; there is no `--force`. The state file is `0600`, atomically
+  rewritten, exclusive-locked per run, and stores no secrets. Resume is
+  bound to the manifest's SHA-256 canonical fingerprint — reformatting is
+  harmless, any semantic change refuses (`draft_manifest_changed`). Local
+  validation now closes the objective→optimization→billing pairing
+  (`unsupported_adset_pairing:…`) and Meta's ~USD 1/day budget floor
+  (`daily_budget_below_minimum`) before any remote object exists.
 - Meta Ads Tier A+ read surface: remote ad-account discovery, explicit account
   selection, campaign/ad-set/ad entity filters, typed country/platform/age
   breakdowns, purchase value, and derived ROAS. These remain read-only.

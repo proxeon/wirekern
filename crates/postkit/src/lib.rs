@@ -16,6 +16,11 @@ mod vault;
 #[cfg(feature = "vault-file")]
 mod vault_file;
 
+// Draft orchestration is an optional composition layer over the Tier B
+// client methods; it pulls sha2 for the manifest fingerprint.
+#[cfg(feature = "draft")]
+pub mod draft;
+
 #[cfg(feature = "client")]
 mod http;
 #[cfg(feature = "client")]
@@ -44,6 +49,12 @@ pub use ads::{
 };
 pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
 pub use client::{refresh_is_due, Client};
+#[cfg(feature = "draft")]
+pub use draft::{
+    manifest_fingerprint, DraftImage, DraftStage, DraftStatusReply, DraftStep, DraftStore,
+    FileDraftStore, PausedDraftManifest, PausedDraftResult, PausedDraftState, RunPausedDraft,
+    CONFIGURED_PAUSED, MIN_DAILY_BUDGET,
+};
 pub use error::{Error, WireError};
 pub use insights::{
     AdAccount, AdAccountsReply, AttributionWindow, Breakdown, DateRange, InsightRow, InsightsLevel,

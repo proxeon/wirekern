@@ -186,6 +186,86 @@ still require a valid payment method before it permits creation of the final
 paused **ad** object. Adding a payment method is a financial-account change;
 it does not itself activate a paused campaign, ad set, or ad.
 
+## Resumable paused-draft launches (manifests)
+
+The five commands above are the inspectable primitives; a full launch means
+copying four IDs between them. A manifest composes them into one run with a
+**local checkpoint file**, so an interruption resumes from the last confirmed
+remote create instead of reconstructing progress by hand.
+
+Write one reviewed JSON file (e.g. `launch.paused.json`):
+
+```json
+{
+  "version": 1,
+  "ad_account": "act_123456",
+  "campaign": { "name": "Postkit launch — do not activate", "objective": "awareness", "special_ad_categories": [] },
+  "adset": {
+    "name": "Postkit launch ad set — do not activate",
+    "daily_budget": 2500,
+    "bid_strategy": "lowest_cost_without_cap",
+    "billing_event": "IMPRESSIONS",
+    "optimization_goal": "REACH",
+    "targeting": { "geo_locations": { "countries": ["MY"] }, "age_min": 18, "age_max": 65 }
+  },
+  "creative": {
+    "name": "Postkit launch creative", "image_file": "./hero.png",
+    "page_id": "1413299108523738", "message": "A clear benefit.", "headline": "Learn more",
+    "destination_url": "https://example.com/offer", "call_to_action": "learn_more"
+  },
+  "ad": { "name": "Postkit launch ad — do not activate" }
+}
+```
+
+The manifest has **no** ID fields and **no** status/active/budget-update keys;
+unknown keys are rejected. `daily_budget` is the minor currency unit (RM25.00
+for MYR at `2500`) and is refused below the documented ~USD 1/day floor
+(`daily_budget_below_minimum:100`). Only awareness-family objective →
+optimization → billing pairings are accepted; anything else fails
+`validate-draft` **before** any remote object exists
+(`unsupported_adset_pairing:…`).
+
+```bash
+postkit ads validate-draft meta_ads --manifest launch.paused.json --json
+postkit ads create-draft meta_ads --manifest launch.paused.json --state launch.state.json --json
+postkit ads resume-draft  meta_ads --manifest launch.paused.json --state launch.state.json --json
+postkit ads status-draft  meta_ads --state launch.state.json --wait --json
+postkit ads adopt-draft-step meta_ads --state launch.state.json --step adset --id 123 --json
+```
+
+**Execution order** is image → campaign → ad set → creative → ad: the image
+is the only step that reads local disk and the most likely operator error, so
+it fails before any Graph object exists. Every write follows a write-ahead
+protocol: the state records `in_flight: <step>` *before* the request, and the
+confirmed ID only after.
+
+**The state file** (`--state`) is created `0600`, atomically rewritten, and
+holds remote IDs plus the manifest's SHA-256 **canonical fingerprint** — no
+token, secret, image bytes, or payment data. Reformatting the manifest is
+harmless (whitespace and key order don't change the fingerprint); any
+semantic change (budget, audience, copy) refuses resume with
+`draft_manifest_changed`. A second launch needs a new state path
+(`draft_state_exists`), and only one run may hold a state at a time
+(`draft_busy`; delete a stale `<state>.lock` file only after confirming no
+run is active).
+
+**Ambiguous writes refuse, never retry.** If a run dies mid-write (network
+or deadline after the request left), the `in_flight` marker stays and every
+later `resume-draft` returns `state: "reconciliation_required"` (exit 0 —
+the protocol worked; the next move is human). Reconcile in Ads Manager:
+
+1. The clearly named paused object of that step **exists** → `adopt-draft-step --step <step> --id <its ID>` (delivery objects are remotely verified `PAUSED` first).
+2. It **does not exist** → create it with the matching single-step command above, then adopt the returned ID.
+
+Image hashes and creatives have no review edge; adopting them is a recorded
+human decision, proven only when the next step uses them. There is no
+`--force`: a blind retry could duplicate paused objects.
+
+A completed state is read-only — `resume-draft` replays the result and runs
+zero creates. `status-draft --wait` is GET-only and bounded by `--deadline`.
+A successful run ends with every delivery object `PAUSED`; nothing activates,
+nothing spends.
+
 ## Token lifetime
 
 The long-lived user token lasts ~60 days. `postkit` re-issues it via `fb_exchange_token` automatically (refresh within 7 days of expiry, ≥ 24h since the last) whenever the app file exists — the exchange needs the client secret, so `apps set meta_ads …` (or env vars) must remain configured for refresh to work. Re-run `auth meta_ads` when adding `ads_management` to an older read-only token, or if the session dies.

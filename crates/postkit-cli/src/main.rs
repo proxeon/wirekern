@@ -8,10 +8,11 @@ use postkit::{
     AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest, AdReviewWait, AppConfig, AppStore,
     AttributionWindow, AuthReply, BidStrategy, Body, Breakdown, CampaignObjective, Client,
     CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreviewRequest, DateRange, Deadline, Error, FileAppStore, FileVault, InsightRow,
-    InsightsLevel, InsightsQuery, Intent, LinkAdCreative, LinkCallToAction, Metric, OAuthApp,
-    PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PostRequest, Registry, Site,
-    UploadAdImageRequest, UploadedAdImage, Vault,
+    CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, DraftStep, Error,
+    FileAppStore, FileDraftStore, FileVault, InsightRow, InsightsLevel, InsightsQuery, Intent,
+    LinkAdCreative, LinkCallToAction, Metric, OAuthApp, PausedAd, PausedAdCreate, PausedAdset,
+    PausedCampaign, PausedDraftManifest, PausedDraftResult, PostRequest, Registry, RunPausedDraft,
+    Site, UploadAdImageRequest, UploadedAdImage, Vault,
 };
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
@@ -253,6 +254,55 @@ enum AdsCmd {
         /// Existing Meta ad-creative ID; postkit creates no creative defaults.
         #[arg(long)]
         creative_id: String,
+    },
+    /// Validate a paused-draft manifest locally. No vault read, no image
+    /// read, no HTTP — the answer is a pure function of the file.
+    ValidateDraft {
+        site: String,
+        /// Reviewed JSON manifest (see docs/meta-ads/README.md).
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+    /// Execute a manifest as one paused hierarchy, checkpointing after every
+    /// confirmed remote create. The --state file must not exist yet.
+    CreateDraft {
+        site: String,
+        #[arg(long)]
+        manifest: PathBuf,
+        /// New checkpoint file; owner-only (0600), atomically rewritten.
+        #[arg(long)]
+        state: PathBuf,
+    },
+    /// Continue an interrupted manifest from its last durable checkpoint.
+    /// Refuses (never retries) a step whose remote outcome is unknown.
+    ResumeDraft {
+        site: String,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        state: PathBuf,
+    },
+    /// Read the checkpoint's known objects and their live review states.
+    /// GET-only; `--wait` polls until review settles or --deadline expires.
+    StatusDraft {
+        site: String,
+        #[arg(long)]
+        state: PathBuf,
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Record the human-resolved ID of an ambiguous write (the state's
+    /// in-flight step). Delivery objects are verified PAUSED remotely first.
+    AdoptDraftStep {
+        site: String,
+        #[arg(long)]
+        state: PathBuf,
+        /// image | campaign | adset | creative | ad.
+        #[arg(long)]
+        step: String,
+        /// The remote object ID (or image hash) resolved in Ads Manager.
+        #[arg(long)]
+        id: String,
     },
 }
 
@@ -605,6 +655,122 @@ async fn dispatch(
                 json,
             )
             .await
+        }
+        Commands::Ads(AdsCmd::ValidateDraft { site, manifest }) => {
+            let manifest = read_draft_manifest(&site, &manifest).map_err(|e| fail(&e, json))?;
+            match client.validate_paused_draft(&Site::new(&site), &manifest) {
+                Ok((account_id, fingerprint)) => {
+                    if json {
+                        emit_raw(&serde_json::json!({
+                            "site": site,
+                            "valid": true,
+                            "account_id": account_id,
+                            "fingerprint": fingerprint,
+                        }));
+                    } else {
+                        human_line(format!("{site} manifest valid; {account_id}"));
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(fail(&e, json)),
+            }
+        }
+        Commands::Ads(AdsCmd::CreateDraft {
+            site,
+            manifest,
+            state,
+        }) => {
+            let manifest = read_draft_manifest(&site, &manifest).map_err(|e| fail(&e, json))?;
+            let image = read_draft_image(&site, &manifest).map_err(|e| fail(&e, json))?;
+            let key = AccountKey::new(&site, &account);
+            let result = client
+                .run_paused_draft(RunPausedDraft {
+                    key: &key,
+                    manifest: &manifest,
+                    image: image.as_ref(),
+                    store: &FileDraftStore,
+                    state_path: &state,
+                    resume: false,
+                    deadline,
+                })
+                .await;
+            match result {
+                Ok(reply) => {
+                    emit_draft_result(&reply, json);
+                    Ok(())
+                }
+                Err(e) => Err(fail(&e, json)),
+            }
+        }
+        Commands::Ads(AdsCmd::ResumeDraft {
+            site,
+            manifest,
+            state,
+        }) => {
+            let manifest = read_draft_manifest(&site, &manifest).map_err(|e| fail(&e, json))?;
+            let image = read_draft_image(&site, &manifest).map_err(|e| fail(&e, json))?;
+            let key = AccountKey::new(&site, &account);
+            let result = client
+                .run_paused_draft(RunPausedDraft {
+                    key: &key,
+                    manifest: &manifest,
+                    image: image.as_ref(),
+                    store: &FileDraftStore,
+                    state_path: &state,
+                    resume: true,
+                    deadline,
+                })
+                .await;
+            match result {
+                Ok(reply) => {
+                    emit_draft_result(&reply, json);
+                    Ok(())
+                }
+                Err(e) => Err(fail(&e, json)),
+            }
+        }
+        Commands::Ads(AdsCmd::StatusDraft { site, state, wait }) => {
+            let key = AccountKey::new(&site, &account);
+            loop {
+                let reply = client
+                    .paused_draft_status(&key, &FileDraftStore, &state, deadline)
+                    .await
+                    .map_err(|e| fail(&e, json))?;
+                // `--wait` polls the *read* path only, bounded by the
+                // global --deadline; a still-pending review stays an
+                // explicit, retryable result rather than an error.
+                if !wait || !reply.pending || deadline.remaining().is_zero() {
+                    emit_draft_status(&reply, json);
+                    return Ok(());
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+        Commands::Ads(AdsCmd::AdoptDraftStep {
+            site,
+            state,
+            step,
+            id,
+        }) => {
+            let step =
+                DraftStep::from_str(&step).map_err(|e| fail(&ads_input_error(&site, e), json))?;
+            let result = client
+                .adopt_paused_draft_step(
+                    &AccountKey::new(&site, &account),
+                    &FileDraftStore,
+                    &state,
+                    step,
+                    id,
+                    deadline,
+                )
+                .await;
+            match result {
+                Ok(reply) => {
+                    emit_draft_result(&reply, json);
+                    Ok(())
+                }
+                Err(e) => Err(fail(&e, json)),
+            }
         }
         Commands::Capabilities { site } => {
             if let Some(s) = site {
@@ -1355,6 +1521,126 @@ fn ads_input_error(site: &str, reason: impl Into<String>) -> Error {
     Error::InvalidQuery {
         site: Site::new(site),
         reason: reason.into(),
+    }
+}
+
+/// Parse the reviewed manifest at the operator's chosen path. Read errors
+/// never echo the path; the operator just chose it. Serde's own message is
+/// kept (it names the offending field) but truncated to one line so a
+/// formatting accident cannot flood the terminal.
+fn read_draft_manifest(site: &str, path: &Path) -> Result<PausedDraftManifest, Error> {
+    let raw =
+        std::fs::read_to_string(path).map_err(|_| ads_input_error(site, "manifest_unreadable"))?;
+    serde_json::from_str(&raw).map_err(|e| {
+        let message = e.to_string();
+        let first_line = message.lines().next().unwrap_or("parse error");
+        ads_input_error(site, format!("bad_manifest:{first_line}"))
+    })
+}
+
+/// Resolve the manifest's image reference to bytes + basename — the sole
+/// filesystem boundary of the draft flow, mirroring `UploadImage`. A file
+/// that is missing or unreadable yields `None`, not an error: the core
+/// decides whether the bytes are still needed (a resume whose upload is
+/// already checkpointed must not fail on a since-deleted local file).
+fn read_draft_image(
+    site: &str,
+    manifest: &PausedDraftManifest,
+) -> Result<Option<DraftImage>, Error> {
+    let filename = manifest
+        .image_filename()
+        .map_err(|r| ads_input_error(site, r))?;
+    let Some(bytes) = std::fs::read(&manifest.creative.image_file).ok() else {
+        return Ok(None);
+    };
+    if bytes.is_empty() {
+        return Ok(None); // surfaced later as image_file_empty if still needed
+    }
+    Ok(Some(DraftImage { filename, bytes }))
+}
+
+/// Draft results always print the no-spend posture in human mode: the most
+/// dangerous misreading of this command is "it launched".
+fn emit_draft_result(result: &PausedDraftResult, json: bool) {
+    if json {
+        emit_raw(&serde_json::to_value(result).expect("draft result serializes"));
+        return;
+    }
+    match result {
+        PausedDraftResult::Completed {
+            site,
+            campaign_id,
+            adset_id,
+            creative_id,
+            ad_id,
+            ..
+        } => {
+            human_line(format!(
+                "{site} draft completed — all delivery objects PAUSED, nothing activated, no spend"
+            ));
+            human_line(format!(
+                "campaign {campaign_id} · ad set {adset_id} · creative {creative_id} · ad {ad_id}"
+            ));
+        }
+        PausedDraftResult::InProgress {
+            site,
+            stage,
+            remaining,
+            ..
+        } => {
+            human_line(format!(
+                "{site} draft at {stage}; remaining: {}",
+                remaining.join(", ")
+            ));
+        }
+        PausedDraftResult::ReconciliationRequired {
+            site,
+            step,
+            guidance,
+            ..
+        } => {
+            human_line(format!(
+                "{site} draft step '{step}' has an UNKNOWN outcome — refusing to continue"
+            ));
+            human_line(guidance);
+        }
+    }
+}
+
+fn emit_draft_status(reply: &DraftStatusReply, json: bool) {
+    if json {
+        emit_raw(&serde_json::to_value(reply).expect("draft status serializes"));
+        return;
+    }
+    human_line(format!(
+        "{} draft at {}{}",
+        reply.site,
+        reply.stage,
+        reply
+            .in_flight
+            .map(|s| format!(" (in flight: {s})"))
+            .unwrap_or_default()
+    ));
+    for status in &reply.review {
+        human_line(format!(
+            "{} {}: configured {} · effective {}{}",
+            status.entity.as_str(),
+            status.id,
+            status.configured_status,
+            status.effective_status,
+            if status.is_pending_review() {
+                " · pending review"
+            } else {
+                ""
+            }
+        ));
+        for issue in &status.issues {
+            human_line(format!(
+                "  issue: {} {}",
+                issue.code.as_deref().unwrap_or("?"),
+                issue.summary.as_deref().unwrap_or("")
+            ));
+        }
     }
 }
 
@@ -2330,5 +2616,100 @@ mod tests {
         assert!(matches!(&e, Error::InvalidPost { reason, .. } if reason == "dry_run_chain"));
         // dry-run alone with one text is exactly the intended shape
         assert!(dry_run_conflict(true, None, 1).is_none());
+    }
+
+    #[test]
+    fn draft_subcommands_parse_with_required_flags() {
+        use clap::Parser as _;
+        let cli = Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "create-draft",
+            "meta_ads",
+            "--manifest",
+            "launch.json",
+            "--state",
+            "launch.state.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ads(AdsCmd::CreateDraft { ref site, .. }) if site == "meta_ads"
+        ));
+        let cli = Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "adopt-draft-step",
+            "meta_ads",
+            "--state",
+            "launch.state.json",
+            "--step",
+            "adset",
+            "--id",
+            "123",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ads(AdsCmd::AdoptDraftStep { ref step, ref id, .. })
+                if step == "adset" && id == "123"
+        ));
+        // A draft step typo is a parse-level unknown, never a silent default.
+        assert!(Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "validate-draft",
+            "meta_ads",
+            "--manifest",
+            "m.json"
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn draft_manifest_reader_maps_errors_without_leaking_paths() {
+        let dir = std::env::temp_dir().join(format!("postkit-draft-cli-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("manifest.json");
+
+        // A typo'd key is named by serde and prefixed with the site family.
+        std::fs::write(&path, r#"{"version": 1, "ad_account": "act_1", "x": 0}"#).unwrap();
+        let err = read_draft_manifest("meta_ads", &path).unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidQuery { reason, .. } if reason.starts_with("bad_manifest:"))
+        );
+
+        // Unreadable file: stable reason, no operator path echoed.
+        std::fs::remove_file(&path).unwrap();
+        let err = read_draft_manifest("meta_ads", &path).unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidQuery { reason, .. } if reason == "manifest_unreadable")
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn draft_image_reader_tolerates_missing_file_for_resume() {
+        let dir = std::env::temp_dir().join(format!("postkit-draft-img-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = dir.join("hero.png");
+        std::fs::write(&img, b"bytes").unwrap();
+        let raw = r#"{"version":1,"ad_account":"act_1",
+                "campaign":{"name":"n","objective":"awareness","special_ad_categories":[]},
+                "adset":{"name":"n","daily_budget":100,"bid_strategy":"lowest_cost_without_cap",
+                    "billing_event":"IMPRESSIONS","optimization_goal":"REACH","targeting":{}},
+                "creative":{"name":"n","image_file":"IMGPATH","page_id":"1","message":"m",
+                    "headline":"h","destination_url":"https://e.com/x","call_to_action":"learn_more"},
+                "ad":{"name":"n"}}"#
+            .replace("IMGPATH", &img.display().to_string());
+        let manifest: PausedDraftManifest = serde_json::from_str(&raw).unwrap();
+        let image = read_draft_image("meta_ads", &manifest).unwrap().unwrap();
+        assert_eq!(image.filename, "hero.png");
+        // A since-deleted local file yields None (the core decides whether
+        // the bytes are still needed), not a hard error.
+        std::fs::remove_file(&img).unwrap();
+        assert!(read_draft_image("meta_ads", &manifest).unwrap().is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

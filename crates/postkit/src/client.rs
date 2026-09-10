@@ -671,6 +671,494 @@ impl Client {
     }
 }
 
+/// Draft orchestration (plans/001/013). Everything here composes the Tier B
+/// methods above; no new remote verb is introduced. The only new state is
+/// the operator-selected checkpoint file, and the only new protocol is the
+/// write-ahead `in_flight` marker that turns an ambiguous remote write into
+/// a refusal instead of a guess.
+#[cfg(feature = "draft")]
+mod draft_run {
+    use super::Client;
+    use crate::ads::{
+        AdEntity, AdReviewStatusRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
+        LinkAdCreative, PausedAd, PausedAdCreate, PausedAdset, PausedCampaign,
+        UploadAdImageRequest,
+    };
+    use crate::draft::{
+        adoption_entity, manifest_fingerprint, DraftImage, DraftStage, DraftStatusReply, DraftStep,
+        DraftStore, PausedDraftManifest, PausedDraftResult, PausedDraftState, CONFIGURED_PAUSED,
+        RECONCILE_GUIDANCE,
+    };
+    use crate::error::Error;
+    use crate::policy::AdsAction;
+    use crate::types::{AccountKey, Deadline, Site};
+    use std::path::Path;
+
+    impl Client {
+        /// Zero-I/O validation: the answer to `validate-draft`. Checks the
+        /// manifest's closed contracts (pairing table, budget floor, enums,
+        /// HTTPS destination, image basename) and returns the account and
+        /// fingerprint a run would use. Never reads the vault, the image
+        /// file, or any state.
+        pub fn validate_paused_draft(
+            &self,
+            site: &Site,
+            manifest: &PausedDraftManifest,
+        ) -> Result<(String, String), Error> {
+            let account = manifest
+                .normalized_account()
+                .map_err(|reason| Error::InvalidQuery {
+                    site: site.clone(),
+                    reason,
+                })?;
+            manifest.validate().map_err(|reason| Error::InvalidQuery {
+                site: site.clone(),
+                reason,
+            })?;
+            Ok((account, manifest_fingerprint(manifest)))
+        }
+
+        /// Execute or resume the manifest's paused hierarchy, checkpointing
+        /// after every confirmed remote write. `resume` selects the
+        /// existing-state contract (`resume-draft`); without it the state
+        /// path must be new (`create-draft`).
+        ///
+        /// Return contract: `Ok(ReconciliationRequired)` is a *successful*
+        /// protocol outcome — an ambiguous write leaves the `in_flight`
+        /// marker in place and demands human reconciliation. A `Err` means
+        /// the run definitively failed (Meta answered, or nothing left the
+        /// machine) and is safe to re-run from the last checkpoint.
+        pub async fn run_paused_draft(
+            &self,
+            run: crate::draft::RunPausedDraft<'_>,
+        ) -> Result<PausedDraftResult, Error> {
+            let crate::draft::RunPausedDraft {
+                key,
+                manifest,
+                image,
+                store,
+                state_path,
+                resume,
+                deadline,
+            } = run;
+            let site = key.site.clone();
+            manifest.validate().map_err(|reason| Error::InvalidQuery {
+                site: site.clone(),
+                reason,
+            })?;
+            let fingerprint = manifest_fingerprint(manifest);
+            let account = manifest
+                .normalized_account()
+                .map_err(|reason| Error::InvalidQuery {
+                    site: site.clone(),
+                    reason,
+                })?;
+            // Exclusive lock first: two concurrent runs would both issue
+            // the next write, which is exactly the duplicate the protocol
+            // exists to prevent.
+            let _lock = store
+                .try_lock(state_path)
+                .map_err(|reason| Error::InvalidQuery {
+                    site: site.clone(),
+                    reason,
+                })?;
+            let mut state = if resume {
+                let state = store
+                    .read(state_path)
+                    .map_err(|reason| Error::InvalidQuery {
+                        site: site.clone(),
+                        reason,
+                    })?;
+                // A different manifest (budget, audience, copy, account)
+                // must never inherit a partial hierarchy built from the old
+                // one; the canonical fingerprint makes that a hard refusal.
+                if state.manifest_fingerprint != fingerprint {
+                    return Err(Error::InvalidQuery {
+                        site: site.clone(),
+                        reason: "draft_manifest_changed".into(),
+                    });
+                }
+                if state.site != site.as_str() {
+                    return Err(Error::InvalidQuery {
+                        site: site.clone(),
+                        reason: "draft_state_site".into(),
+                    });
+                }
+                if state.account_id != account {
+                    return Err(Error::InvalidQuery {
+                        site: site.clone(),
+                        reason: "draft_state_account".into(),
+                    });
+                }
+                if let Some(step) = state.in_flight {
+                    return Ok(PausedDraftResult::ReconciliationRequired {
+                        site: site.clone(),
+                        account_id: state.account_id.clone(),
+                        step: step.as_str(),
+                        guidance: RECONCILE_GUIDANCE,
+                    });
+                }
+                // A completed hierarchy is read-only: no further creates.
+                if state.stage == DraftStage::Completed {
+                    return completed_result(&site, &state);
+                }
+                state
+            } else {
+                let state = PausedDraftState::new(&site, account.clone(), fingerprint.clone());
+                store
+                    .create_new(state_path, &state)
+                    .map_err(|reason| Error::InvalidQuery {
+                        site: site.clone(),
+                        reason,
+                    })?;
+                state
+            };
+
+            for step in DraftStep::ALL {
+                if !state.step_pending(step) {
+                    continue; // checkpointed by a previous run
+                }
+                deadline.check(&site)?;
+                // Policy before the marker: a denied step must leave the
+                // state exactly as it was found.
+                self.authorize_draft_step(&site, step)?;
+                let upload = self.image_upload_for(&site, image, &account, step)?;
+                // Write-ahead: record that this write is about to happen
+                // before it can, so a crash can never leave "no marker and
+                // an existing remote object".
+                state.in_flight = Some(step);
+                store
+                    .checkpoint(state_path, &state)
+                    .map_err(|reason| Error::InvalidQuery {
+                        site: site.clone(),
+                        reason,
+                    })?;
+
+                let outcome: Result<String, Error> = match step {
+                    DraftStep::Image => self
+                        .upload_ad_image(key, upload.expect("checked above"), deadline)
+                        .await
+                        .map(|uploaded| uploaded.hash),
+                    DraftStep::Campaign => {
+                        let request = CreatePausedAdRequest {
+                            account: Some(account.clone()),
+                            create: PausedAdCreate::Campaign(PausedCampaign {
+                                name: manifest.campaign.name.clone(),
+                                objective: manifest.campaign.objective,
+                                special_ad_categories: manifest
+                                    .campaign
+                                    .special_ad_categories
+                                    .clone(),
+                            }),
+                        };
+                        self.create_paused_ad(key, request, deadline)
+                            .await
+                            .map(|created| created.id)
+                    }
+                    DraftStep::Adset => {
+                        let request = CreatePausedAdRequest {
+                            account: Some(account.clone()),
+                            create: PausedAdCreate::Adset(PausedAdset {
+                                name: manifest.adset.name.clone(),
+                                // Only a checkpointed campaign ID is ever
+                                // wired in — the operator never retypes it.
+                                campaign_id: state
+                                    .campaign_id
+                                    .clone()
+                                    .expect("lattice guarantees the campaign"),
+                                daily_budget: manifest.adset.daily_budget,
+                                bid_strategy: manifest.adset.bid_strategy,
+                                billing_event: manifest.adset.billing_event.clone(),
+                                optimization_goal: manifest.adset.optimization_goal.clone(),
+                                targeting: manifest.adset.targeting.clone(),
+                            }),
+                        };
+                        self.create_paused_ad(key, request, deadline)
+                            .await
+                            .map(|created| created.id)
+                    }
+                    DraftStep::Creative => {
+                        let request = CreateLinkAdCreativeRequest {
+                            account: Some(account.clone()),
+                            creative: LinkAdCreative {
+                                name: manifest.creative.name.clone(),
+                                page_id: manifest.creative.page_id.clone(),
+                                image_hash: state
+                                    .image_hash
+                                    .clone()
+                                    .expect("lattice guarantees the image"),
+                                message: manifest.creative.message.clone(),
+                                headline: manifest.creative.headline.clone(),
+                                destination_url: manifest.creative.destination_url.clone(),
+                                call_to_action: manifest.creative.call_to_action,
+                            },
+                        };
+                        self.create_link_ad_creative(key, request, deadline)
+                            .await
+                            .map(|created| created.id)
+                    }
+                    DraftStep::Ad => {
+                        let request = CreatePausedAdRequest {
+                            account: Some(account.clone()),
+                            create: PausedAdCreate::Ad(PausedAd {
+                                name: manifest.ad.name.clone(),
+                                adset_id: state
+                                    .adset_id
+                                    .clone()
+                                    .expect("lattice guarantees the ad set"),
+                                creative_id: state
+                                    .creative_id
+                                    .clone()
+                                    .expect("lattice guarantees the creative"),
+                            }),
+                        };
+                        self.create_paused_ad(key, request, deadline)
+                            .await
+                            .map(|created| created.id)
+                    }
+                };
+                match outcome {
+                    Ok(id) => {
+                        state.set_output(step, id);
+                        store.checkpoint(state_path, &state).map_err(|reason| {
+                            Error::InvalidQuery {
+                                site: site.clone(),
+                                reason,
+                            }
+                        })?;
+                    }
+                    // No HTTP response arrived: Meta may or may not have
+                    // created the object. The marker stays and every later
+                    // mutating command refuses until a human reconciles —
+                    // a conservative false positive beats a duplicate
+                    // paused hierarchy.
+                    Err(e @ (Error::Network { .. } | Error::DeadlineExceeded { .. })) => {
+                        let _ = e; // already durably recorded in the state
+                        return Ok(PausedDraftResult::ReconciliationRequired {
+                            site: site.clone(),
+                            account_id: state.account_id.clone(),
+                            step: step.as_str(),
+                            guidance: RECONCILE_GUIDANCE,
+                        });
+                    }
+                    // Every other failure is definitive: Meta answered with
+                    // an error, or the request never left (validation, auth,
+                    // policy). Clearing the marker keeps the step retryable.
+                    Err(e) => {
+                        state.in_flight = None;
+                        store.checkpoint(state_path, &state).map_err(|reason| {
+                            Error::InvalidQuery {
+                                site: site.clone(),
+                                reason,
+                            }
+                        })?;
+                        return Err(e);
+                    }
+                }
+            }
+            completed_result(&site, &state)
+        }
+
+        /// Read-only snapshot for `status-draft`. Takes no lock: checkpoints
+        /// are atomically replaced, so a concurrent run can never expose a
+        /// partial read.
+        pub async fn paused_draft_status(
+            &self,
+            key: &AccountKey,
+            store: &dyn DraftStore,
+            state_path: &Path,
+            deadline: Deadline,
+        ) -> Result<DraftStatusReply, Error> {
+            let state = store
+                .read(state_path)
+                .map_err(|reason| Error::InvalidQuery {
+                    site: key.site.clone(),
+                    reason,
+                })?;
+            if state.site != key.site.as_str() {
+                return Err(Error::InvalidQuery {
+                    site: key.site.clone(),
+                    reason: "draft_state_site".into(),
+                });
+            }
+            let mut review = Vec::new();
+            let mut pending = false;
+            for (id, entity) in [
+                (&state.campaign_id, AdEntity::Campaign),
+                (&state.adset_id, AdEntity::Adset),
+                (&state.ad_id, AdEntity::Ad),
+            ] {
+                let Some(id) = id else {
+                    continue;
+                };
+                let status = self
+                    .ad_review_status(
+                        key,
+                        AdReviewStatusRequest {
+                            entity,
+                            id: id.clone(),
+                        },
+                        deadline,
+                    )
+                    .await?;
+                pending |= status.is_pending_review();
+                review.push(status);
+            }
+            Ok(DraftStatusReply {
+                site: key.site.clone(),
+                account_id: state.account_id.clone(),
+                stage: state.stage.as_str(),
+                image_hash: state.image_hash.clone(),
+                creative_id: state.creative_id.clone(),
+                in_flight: state.in_flight.map(|step| step.as_str()),
+                review,
+                pending,
+            })
+        }
+
+        /// Record the human-resolved outcome of an ambiguous write. The
+        /// `in_flight` marker must name this exact step; a delivery object
+        /// (campaign/ad set/ad) is additionally verified remotely to still
+        /// be configured `PAUSED` before the ID enters the state. Image
+        /// hashes and creatives have no review edge — their adoption is a
+        /// recorded human decision, proven only when the next step uses them.
+        pub async fn adopt_paused_draft_step(
+            &self,
+            key: &AccountKey,
+            store: &dyn DraftStore,
+            state_path: &Path,
+            step: DraftStep,
+            remote_id: String,
+            deadline: Deadline,
+        ) -> Result<PausedDraftResult, Error> {
+            let _lock = store
+                .try_lock(state_path)
+                .map_err(|reason| Error::InvalidQuery {
+                    site: key.site.clone(),
+                    reason,
+                })?;
+            let mut state = store
+                .read(state_path)
+                .map_err(|reason| Error::InvalidQuery {
+                    site: key.site.clone(),
+                    reason,
+                })?;
+            if state.site != key.site.as_str() {
+                return Err(Error::InvalidQuery {
+                    site: key.site.clone(),
+                    reason: "draft_state_site".into(),
+                });
+            }
+            if state.in_flight != Some(step) {
+                return Err(Error::InvalidQuery {
+                    site: key.site.clone(),
+                    reason: format!("draft_not_in_flight:{}", step.as_str()),
+                });
+            }
+            if let Some(entity) = adoption_entity(step) {
+                let status = self
+                    .ad_review_status(
+                        key,
+                        AdReviewStatusRequest {
+                            entity,
+                            id: remote_id.clone(),
+                        },
+                        deadline,
+                    )
+                    .await?;
+                // An ACTIVE or deleted object must never enter a paused
+                // hierarchy's checkpoint, whatever Ads Manager shows.
+                if status.configured_status != CONFIGURED_PAUSED {
+                    return Err(Error::InvalidQuery {
+                        site: key.site.clone(),
+                        reason: format!("adopt_not_paused:{}", status.configured_status),
+                    });
+                }
+            }
+            state.set_output(step, remote_id);
+            store
+                .checkpoint(state_path, &state)
+                .map_err(|reason| Error::InvalidQuery {
+                    site: key.site.clone(),
+                    reason,
+                })?;
+            if state.stage == DraftStage::Completed {
+                return completed_result(&key.site, &state);
+            }
+            Ok(PausedDraftResult::InProgress {
+                site: key.site.clone(),
+                account_id: state.account_id.clone(),
+                stage: state.stage.as_str(),
+                remaining: state.remaining_steps().iter().map(|s| s.as_str()).collect(),
+            })
+        }
+
+        fn authorize_draft_step(&self, site: &Site, step: DraftStep) -> Result<(), Error> {
+            let action = match step {
+                DraftStep::Image => AdsAction::UploadAdImage,
+                DraftStep::Campaign => AdsAction::CreatePausedCampaign,
+                DraftStep::Adset => AdsAction::CreatePausedAdset,
+                DraftStep::Creative => AdsAction::CreateLinkAdCreative,
+                DraftStep::Ad => AdsAction::CreatePausedAd,
+            };
+            self.ads_policy.authorize(site, action)
+        }
+
+        /// The image bytes are needed only while the upload step is pending;
+        /// demanding them earlier would make `resume` after the upload fail
+        /// on a deleted local file for no protocol reason.
+        fn image_upload_for(
+            &self,
+            site: &Site,
+            image: Option<&DraftImage>,
+            account: &str,
+            step: DraftStep,
+        ) -> Result<Option<UploadAdImageRequest>, Error> {
+            if step != DraftStep::Image {
+                return Ok(None);
+            }
+            let Some(image) = image else {
+                return Err(Error::InvalidQuery {
+                    site: site.clone(),
+                    reason: "image_bytes_required".into(),
+                });
+            };
+            Ok(Some(UploadAdImageRequest {
+                account: Some(account.to_string()),
+                filename: image.filename.clone(),
+                bytes: image.bytes.clone(),
+            }))
+        }
+    }
+
+    fn completed_result(site: &Site, state: &PausedDraftState) -> Result<PausedDraftResult, Error> {
+        // The validated lattice guarantees all five outputs here; anything
+        // else is a corrupt file that must refuse, not unwrap.
+        let (Some(image_hash), Some(campaign_id), Some(adset_id), Some(creative_id), Some(ad_id)) = (
+            &state.image_hash,
+            &state.campaign_id,
+            &state.adset_id,
+            &state.creative_id,
+            &state.ad_id,
+        ) else {
+            return Err(Error::InvalidQuery {
+                site: site.clone(),
+                reason: "draft_state_stage".into(),
+            });
+        };
+        Ok(PausedDraftResult::Completed {
+            site: site.clone(),
+            account_id: state.account_id.clone(),
+            image_hash: image_hash.clone(),
+            campaign_id: campaign_id.clone(),
+            adset_id: adset_id.clone(),
+            creative_id: creative_id.clone(),
+            ad_id: ad_id.clone(),
+            configured_status: CONFIGURED_PAUSED,
+        })
+    }
+}
+
 fn empty_app(site: &Site) -> AppConfig {
     AppConfig {
         site: site.clone(),
