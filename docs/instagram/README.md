@@ -58,18 +58,21 @@ Instagram v1 requires a public HTTPS image URL; it does not make a text-only
 feed post. A caption is optional and limited to 2,200 characters.
 
 ```bash
-postkit post instagram \
+postkit --deadline 90 post instagram \
   --idempotency instagram-image-test-2026-09-10 \
   --image 'https://cdn.example.com/postkit-test.jpg' \
   --text 'Postkit Instagram test — please ignore' \
   --alt 'Ignored by Instagram connector v1'
 ```
 
-Meta fetches the URL and Postkit creates a media container, then explicitly
-publishes it. The successful `Outcome.id` is the published media ID; inspect
-the profile to verify the visible post. This is an organic post, not a paused
-draft, so it becomes visible if Meta accepts it. Delete the labelled test in
-Instagram when it is no longer useful.
+Meta fetches the URL asynchronously. Postkit creates a media container, polls
+its read-only `status_code` until it is `FINISHED`, then explicitly publishes
+it. The global `--deadline` bounds both the fetch wait and final publish; use
+`--deadline 90` for a first test so a remote image host has time to respond.
+The successful `Outcome.id` is the published media ID; inspect the profile to
+verify the visible post. This is an organic post, not a paused draft, so it
+becomes visible if Meta accepts it. Delete the labelled test in Instagram when
+it is no longer useful.
 
 `--alt` is accepted so the generic post format remains portable, but v1 does
 not send it: Postkit has not claimed an unverified Instagram Login accessibility

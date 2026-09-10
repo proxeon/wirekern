@@ -23,7 +23,9 @@ facebook-pages = ["client", "oauth"]
 # Instagram Login is a distinct OAuth surface from Facebook Pages and Ads.
 # Keep it independent so applications can ship direct Instagram publishing
 # without pulling another Meta connector into their dependency graph.
-instagram = ["client", "oauth"]
+# Container readiness is an asynchronous Meta-side fetch, so the connector
+# needs Tokio only to perform bounded status polling before its final write.
+instagram = ["client", "oauth", "dep:tokio"]
 draft = ["client", "dep:tokio", "dep:sha2"]
 
 [dependencies]

@@ -17,7 +17,10 @@ same detail by subject.
 - Instagram organic image publishing: the new `instagram` connector uses the
   direct Instagram Login authorization path, stores only its long-lived token
   and resolved professional-account ID, and publishes one public HTTPS image
-  with an optional caption through an explicit media-container → publish flow.
+  with an optional caption through an explicit media-container → readiness
+  poll → publish flow. The container is read until Meta reports `FINISHED`,
+  preventing the live `9007` immediate-publish race; terminal container states
+  refuse before the visible write.
   It has no text-only post capability, Page target, local-image hosting,
   dry-run, ads, spend, video/Reels, carousel, Stories, comments, or insights
   surface. Captions are locally capped at 2,200 Unicode scalar values; generic

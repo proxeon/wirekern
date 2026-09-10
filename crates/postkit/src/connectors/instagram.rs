@@ -15,7 +15,7 @@ use crate::types::{
 };
 use async_trait::async_trait;
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const GRAPH_HOST: &str = "graph.instagram.com";
 /// Keep the Graph API version explicit. A version bump is a reviewed wire
@@ -32,6 +32,9 @@ pub const SCOPES: &str = "instagram_business_basic,instagram_business_content_pu
 /// counts Unicode scalar values, avoiding a byte-based rejection of valid
 /// non-ASCII captions.
 pub const MAX_CAPTION: usize = 2_200;
+/// Meta fetches a public image asynchronously. One second is responsive
+/// enough for a CLI while avoiding a hot loop against the status endpoint.
+pub const DEFAULT_CONTAINER_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Instagram {
     http: Http,
@@ -39,6 +42,7 @@ pub struct Instagram {
     base: String,
     graph_origin: String,
     token_origin: String,
+    container_poll_interval: Duration,
 }
 
 impl Instagram {
@@ -68,7 +72,15 @@ impl Instagram {
             base: base.into().trim_end_matches('/').to_string(),
             graph_origin: graph_origin.into().trim_end_matches('/').to_string(),
             token_origin: token_origin.into().trim_end_matches('/').to_string(),
+            container_poll_interval: DEFAULT_CONTAINER_POLL_INTERVAL,
         })
+    }
+
+    /// Test helper: production checks once per second, while deterministic
+    /// status-transition tests need no wall-clock-second sleeps.
+    pub fn with_container_poll_interval(mut self, interval: Duration) -> Self {
+        self.container_poll_interval = interval;
+        self
     }
 }
 
@@ -133,11 +145,14 @@ impl Publisher for Instagram {
         post_image(
             &self.http,
             &self.base,
-            token,
-            &user_id,
-            image_url,
-            text.as_deref(),
+            ImagePost {
+                access_token: token,
+                user_id: &user_id,
+                image_url,
+                caption: text.as_deref(),
+            },
             deadline,
+            self.container_poll_interval,
         )
         .await
     }
@@ -288,31 +303,61 @@ pub fn image_form_pairs<'a>(
     pairs
 }
 
+/// Validated inputs for the two-step media publish. Grouping the fields keeps
+/// the network primitive honest: adding a media property is a named contract
+/// change rather than another positional argument to a sensitive write path.
+struct ImagePost<'a> {
+    access_token: &'a str,
+    user_id: &'a str,
+    image_url: &'a str,
+    caption: Option<&'a str>,
+}
+
 async fn post_image(
     http: &Http,
     base: &str,
-    access_token: &str,
-    user_id: &str,
-    image_url: &str,
-    caption: Option<&str>,
+    post: ImagePost<'_>,
     deadline: Deadline,
+    poll_interval: Duration,
 ) -> Result<Outcome, Error> {
     let site = Site::new(SITE);
-    let create_url = format!("{}/{user_id}/media", base.trim_end_matches('/'));
+    let create_url = format!("{}/{}/media", base.trim_end_matches('/'), post.user_id);
     let create = http
         .post(&create_url)
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(form(&image_form_pairs(image_url, caption, access_token)));
+        .body(form(&image_form_pairs(
+            post.image_url,
+            post.caption,
+            post.access_token,
+        )));
     let response = http.send(create, deadline, &site).await?;
     let container = json_id(&read_json(response, &site).await?, &site, "media create")?;
 
-    let publish_url = format!("{}/{user_id}/media_publish", base.trim_end_matches('/'));
+    // `POST /media` only asks Meta to fetch/process the public image. The
+    // live API can legitimately reject an immediate publish with code 9007
+    // (not ready), so status is a read-only readiness gate before the one
+    // externally visible `media_publish` write.
+    wait_for_container_ready(
+        http,
+        base,
+        post.access_token,
+        &container,
+        deadline,
+        poll_interval,
+    )
+    .await?;
+
+    let publish_url = format!(
+        "{}/{}/media_publish",
+        base.trim_end_matches('/'),
+        post.user_id
+    );
     let publish = http
         .post(&publish_url)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(form(&[
             ("creation_id", container.as_str()),
-            ("access_token", access_token),
+            ("access_token", post.access_token),
         ]));
     // Never retry this write automatically. A response lost after Meta
     // accepts it is ambiguous, and a retry could make a second visible post.
@@ -324,6 +369,102 @@ async fn post_image(
         url: None,
         limits: None,
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContainerStatus {
+    Finished,
+    InProgress,
+    Error,
+    Expired,
+    Published,
+}
+
+impl ContainerStatus {
+    fn parse(body: &Value, site: &Site) -> Result<Self, Error> {
+        let raw = body
+            .get("status_code")
+            .and_then(Value::as_str)
+            .filter(|status| !status.is_empty())
+            .ok_or_else(|| Error::Platform {
+                site: site.clone(),
+                code: "missing_container_status".into(),
+                message: "media container returned no status_code".into(),
+            })?;
+        match raw {
+            "FINISHED" => Ok(Self::Finished),
+            "IN_PROGRESS" => Ok(Self::InProgress),
+            "ERROR" => Ok(Self::Error),
+            "EXPIRED" => Ok(Self::Expired),
+            "PUBLISHED" => Ok(Self::Published),
+            // A newly introduced status is not evidence that publishing is
+            // safe. Refuse rather than treating an unknown string as ready.
+            _ => Err(Error::Platform {
+                site: site.clone(),
+                code: "unknown_container_status".into(),
+                message: "media container returned an unsupported status".into(),
+            }),
+        }
+    }
+}
+
+async fn wait_for_container_ready(
+    http: &Http,
+    base: &str,
+    access_token: &str,
+    container_id: &str,
+    deadline: Deadline,
+    poll_interval: Duration,
+) -> Result<(), Error> {
+    let site = Site::new(SITE);
+    let query = form(&[("fields", "status_code"), ("access_token", access_token)]);
+    let url = format!("{}/{}?{query}", base.trim_end_matches('/'), container_id);
+    loop {
+        deadline.check(&site)?;
+        let response = http.send(http.get(&url), deadline, &site).await?;
+        match ContainerStatus::parse(&read_json(response, &site).await?, &site)? {
+            ContainerStatus::Finished => return Ok(()),
+            ContainerStatus::InProgress => {
+                let remaining = deadline.remaining();
+                if remaining.is_zero() {
+                    return Err(Error::DeadlineExceeded { site });
+                }
+                // A zero test interval must not turn an embedding caller
+                // into a busy loop. One final sleep to the deadline keeps the
+                // operation bounded and leaves no hidden retry schedule.
+                let delay = if poll_interval.is_zero() {
+                    remaining
+                } else {
+                    poll_interval.min(remaining)
+                };
+                tokio::time::sleep(delay).await;
+            }
+            ContainerStatus::Error => {
+                return Err(Error::Platform {
+                    site,
+                    code: "container_error".into(),
+                    message: "media container processing failed".into(),
+                })
+            }
+            ContainerStatus::Expired => {
+                return Err(Error::Platform {
+                    site,
+                    code: "container_expired".into(),
+                    message: "media container expired before publication".into(),
+                })
+            }
+            ContainerStatus::Published => {
+                // This caller did not publish it, so a separate actor did.
+                // There is no returned media ID to safely dedupe against;
+                // never issue a second publish just because it is visible.
+                return Err(Error::Platform {
+                    site,
+                    code: "container_already_published".into(),
+                    message: "media container was already published".into(),
+                });
+            }
+        }
+    }
 }
 
 fn require_oauth(app: &AppConfig) -> Result<&OAuthApp, Error> {
@@ -551,6 +692,8 @@ mod tests {
     use super::*;
     use httpmock::prelude::*;
     use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
 
     fn app() -> AppConfig {
         AppConfig {
@@ -700,6 +843,14 @@ mod tests {
                 .body_contains("access_token=long-token");
             then.status(200).json_body(json!({ "id": "container-1" }));
         });
+        let ready = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/container-1")
+                .query_param("fields", "status_code")
+                .query_param("access_token", "long-token");
+            then.status(200)
+                .json_body(json!({ "status_code": "FINISHED" }));
+        });
         let publish = server.mock(|when, then| {
             when.method(POST)
                 .path("/v26.0/178900/media_publish")
@@ -718,6 +869,7 @@ mod tests {
             .await
             .unwrap();
         create.assert();
+        ready.assert();
         publish.assert();
         assert_eq!(outcome.id.as_deref(), Some("media-1"));
         assert!(!form(&image_form_pairs(
@@ -746,6 +898,11 @@ mod tests {
                 .body_contains("access_token=long-token");
             then.status(200).json_body(json!({ "id": "container-1" }));
         });
+        let ready = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/container-1");
+            then.status(200)
+                .json_body(json!({ "status_code": "FINISHED" }));
+        });
         let publish = server.mock(|when, then| {
             when.method(POST).path("/v26.0/178900/media_publish");
             then.status(200).json_body(json!({ "id": "media-1" }));
@@ -761,7 +918,97 @@ mod tests {
             .await
             .unwrap();
         create.assert();
+        ready.assert();
         publish.assert();
+    }
+
+    #[tokio::test]
+    async fn image_publish_waits_for_finished_before_the_visible_write() {
+        // httpmock deliberately has no response sequence primitive. This
+        // local four-request script proves the real order: create,
+        // IN_PROGRESS read, FINISHED read, then one visible publish.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for expected in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0u8; 1024];
+                    let read = stream.read(&mut chunk).unwrap();
+                    assert!(read > 0, "request ended before HTTP headers");
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let path = std::str::from_utf8(&request)
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|target| target.split('?').next())
+                    .unwrap();
+                let body = match (expected, path) {
+                    (0, "/v26.0/178900/media") => r#"{"id":"container-1"}"#,
+                    (1, "/v26.0/container-1") => r#"{"status_code":"IN_PROGRESS"}"#,
+                    (2, "/v26.0/container-1") => r#"{"status_code":"FINISHED"}"#,
+                    (3, "/v26.0/178900/media_publish") => r#"{"id":"media-1"}"#,
+                    other => panic!("unexpected request {other:?}"),
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let connector = Instagram::with_base(format!("http://{address}/v26.0"))
+            .unwrap()
+            .with_container_poll_interval(Duration::from_millis(1));
+        let outcome = connector
+            .publish(
+                &app(),
+                &creds(),
+                image_intent(Some("Wait for Meta")),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(outcome.id.as_deref(), Some("media-1"));
+    }
+
+    #[tokio::test]
+    async fn terminal_container_error_refuses_to_publish() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/178900/media");
+            then.status(200).json_body(json!({ "id": "container-1" }));
+        });
+        let status = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/container-1");
+            then.status(200)
+                .json_body(json!({ "status_code": "ERROR" }));
+        });
+        let never_publish = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/178900/media_publish");
+            then.status(200).json_body(json!({ "id": "media-1" }));
+        });
+        let connector = Instagram::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let error = connector
+            .publish(
+                &app(),
+                &creds(),
+                image_intent(None),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        create.assert();
+        status.assert();
+        never_publish.assert_hits(0);
+        assert!(matches!(error, Error::Platform { code, .. } if code == "container_error"));
     }
 
     #[tokio::test]
