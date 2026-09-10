@@ -731,29 +731,27 @@ async fn dispatch(
         }
         Commands::Ads(AdsCmd::StatusDraft { site, state, wait }) => {
             let key = AccountKey::new(&site, &account);
-            loop {
-                let reply = client
+            // `--wait` polls the read path only, bounded by --deadline; the
+            // bounded-wait contract (last observed state, never a raw
+            // timeout) lives in the Client and is tested there.
+            let reply = if wait {
+                client
+                    .paused_draft_status_wait(
+                        &key,
+                        &FileDraftStore,
+                        &state,
+                        deadline,
+                        std::time::Duration::from_secs(2),
+                    )
+                    .await
+            } else {
+                client
                     .paused_draft_status(&key, &FileDraftStore, &state, deadline)
                     .await
-                    .map_err(|e| fail(&e, json))?;
-                // `--wait` polls the *read* path only, bounded by the
-                // global --deadline; a still-pending review stays an
-                // explicit, retryable result rather than an error.
-                if !wait || !reply.pending {
-                    emit_draft_status(&reply, json);
-                    return Ok(());
-                }
-                // Deadline exit must emit the last observed state, never
-                // start a poll that dies inside the connector as a raw
-                // timeout. Sleeping no more than the remaining time makes
-                // the next loop-top check authoritative.
-                let remaining = deadline.remaining();
-                if remaining.is_zero() {
-                    emit_draft_status(&reply, json);
-                    return Ok(());
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(2).min(remaining)).await;
             }
+            .map_err(|e| fail(&e, json))?;
+            emit_draft_status(&reply, json);
+            Ok(())
         }
         Commands::Ads(AdsCmd::AdoptDraftStep {
             site,

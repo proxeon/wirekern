@@ -19,7 +19,7 @@ oauth = ["client", "dep:getrandom"]
 threads = ["client", "oauth", "dep:tokio", "dep:emojis"]
 bluesky = ["client", "dep:unicode-segmentation", "dep:time"]
 meta-ads = ["client", "oauth", "dep:tokio"]
-draft = ["client", "dep:sha2"]
+draft = ["client", "dep:tokio", "dep:sha2"]
 
 [dependencies]
 serde = { workspace = true }

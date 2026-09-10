@@ -12,6 +12,19 @@ same detail by subject.
 
 ## [Unreleased]
 
+### Fixed
+
+- meta_ads OAuth now requests `pages_show_list` and `pages_manage_ads`
+  alongside the ads scopes. Without them `/me/accounts` returns no Pages
+  and the Page-backed link-creative step is unreachable — Tier B's creative
+  path could not complete on any freshly authorized token. Stored tokens
+  keep the scopes they were granted: re-run `auth meta_ads` once.
+- `ads status-draft --wait` (now `Client::paused_draft_status_wait`) ends
+  at `--deadline` by returning the **last observed status reply** — an
+  object still under Meta review stays an explicit pending result — instead
+  of starting a poll with the deadline already spent and surfacing a raw
+  `timeout` error. Found during the 2026-09-10 live validation.
+
 ### Added
 
 - Meta Ads resumable paused-draft launches (plans/001/013): one reviewed

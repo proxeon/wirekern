@@ -1016,6 +1016,42 @@ mod draft_run {
             })
         }
 
+        /// Poll [`Self::paused_draft_status`](Self::paused_draft_status)
+        /// until no object is pending review or `deadline` expires. Expiry
+        /// returns the **last observed reply** — a still-pending review is
+        /// normal Meta latency and an explicit, retryable result, never a
+        /// timeout error. (Regression: the loop used to start a poll with
+        /// the deadline already spent, surfacing a raw `timeout` from the
+        /// connector.) `poll_interval` is injected so tests are
+        /// deterministic, matching `wait_for_ad_review_with_interval`.
+        pub async fn paused_draft_status_wait(
+            &self,
+            key: &AccountKey,
+            store: &dyn DraftStore,
+            state_path: &Path,
+            deadline: Deadline,
+            poll_interval: std::time::Duration,
+        ) -> Result<DraftStatusReply, Error> {
+            loop {
+                let reply = self
+                    .paused_draft_status(key, store, state_path, deadline)
+                    .await?;
+                if !reply.pending {
+                    return Ok(reply);
+                }
+                let remaining = deadline.remaining();
+                if remaining.is_zero() {
+                    return Ok(reply);
+                }
+                let delay = if poll_interval.is_zero() {
+                    remaining
+                } else {
+                    poll_interval.min(remaining)
+                };
+                tokio::time::sleep(delay).await;
+            }
+        }
+
         /// Record the human-resolved outcome of an ambiguous write. The
         /// `in_flight` marker must name this exact step; a delivery object
         /// (campaign/ad set/ad) is additionally verified remotely to still

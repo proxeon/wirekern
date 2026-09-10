@@ -1405,6 +1405,23 @@ mod tests {
                     crate::oauth::query_param(&authorize_url, "scope").as_deref(),
                     Some(SCOPES)
                 );
+                // Regression (d984e73): asserted against literals, not the
+                // SCOPES constant — without pages_show_list the token cannot
+                // see any Page, and without pages_manage_ads a Page-backed
+                // creative cannot act on one; Tier B's creative step was
+                // unreachable until both were added.
+                let scope = crate::oauth::query_param(&authorize_url, "scope").unwrap();
+                for required in [
+                    "ads_read",
+                    "ads_management",
+                    "pages_show_list",
+                    "pages_manage_ads",
+                ] {
+                    assert!(
+                        scope.split(',').any(|s| s == required),
+                        "scope lost {required}"
+                    );
+                }
                 assert!(authorize_url.contains("response_type=code"));
                 assert_eq!(
                     crate::oauth::query_param(&authorize_url, "state").as_deref(),

@@ -1452,6 +1452,10 @@ mod draft_tests {
         /// configured_status per review ID (default PAUSED) — drives the
         /// adoption validation tests.
         review_configured: Mutex<HashMap<String, String>>,
+        /// While > 0, ad_review_status reports effective PENDING_REVIEW and
+        /// counts down — models Meta's fresh-object review latency for the
+        /// bounded-wait tests. usize::MAX means "never settles".
+        review_pending_reads: AtomicUsize,
     }
 
     impl DraftMock {
@@ -1466,6 +1470,7 @@ mod draft_tests {
                 ads: AtomicUsize::new(0),
                 fail_at: Mutex::new(None),
                 review_configured: Mutex::new(HashMap::new()),
+                review_pending_reads: AtomicUsize::new(0),
             })
         }
 
@@ -1474,6 +1479,10 @@ mod draft_tests {
         /// set — a "copy with failure" mock would silently fork them.
         fn fail(&self, at: FailAt) {
             *self.fail_at.lock().unwrap() = Some(at);
+        }
+
+        fn pending_reviews(&self, n: usize) {
+            self.review_pending_reads.store(n, Ordering::SeqCst);
         }
 
         /// One write attempt: consumes the global index and answers the
@@ -1613,13 +1622,23 @@ mod draft_tests {
                 .get(&request.id)
                 .cloned()
                 .unwrap_or_else(|| "PAUSED".into());
+            let countdown = self.review_pending_reads.load(Ordering::SeqCst);
+            let still_pending = countdown > 0;
+            if still_pending {
+                self.review_pending_reads
+                    .store(countdown - 1, Ordering::SeqCst);
+            }
             Ok(AdReviewStatus {
                 site: self.site.clone(),
                 entity: request.entity,
                 id: request.id.clone(),
                 name: None,
                 configured_status: configured,
-                effective_status: "PAUSED".into(),
+                effective_status: if still_pending {
+                    "PENDING_REVIEW".into()
+                } else {
+                    "PAUSED".into()
+                },
                 issues: vec![],
             })
         }
@@ -2201,5 +2220,78 @@ mod draft_tests {
         assert!(
             matches!(err, Error::InvalidQuery { reason, .. } if reason == "draft_state_exists")
         );
+    }
+
+    #[tokio::test]
+    async fn status_wait_settles_when_review_clears() {
+        let mock = DraftMock::new();
+        let (client, key, store) = setup(mock.clone());
+        client
+            .run_paused_draft(RunPausedDraft {
+                key: &key,
+                manifest: &draft_manifest(),
+                image: Some(&draft_image()),
+                store: &*store,
+                state_path: &path(),
+                resume: false,
+                deadline: Deadline::from_secs(30),
+            })
+            .await
+            .unwrap();
+        // Three objects, six reads pending first — review latency in fast
+        // forward; a tiny interval keeps the test instantaneous.
+        mock.pending_reviews(6);
+        let reply = client
+            .paused_draft_status_wait(
+                &key,
+                &*store,
+                &path(),
+                Deadline::from_secs(30),
+                std::time::Duration::from_millis(1),
+            )
+            .await
+            .unwrap();
+        assert!(!reply.pending);
+        assert!(reply.review.iter().all(|s| s.effective_status == "PAUSED"));
+    }
+
+    #[tokio::test]
+    async fn status_wait_returns_last_state_at_deadline_not_a_timeout() {
+        // Regression (48b4a49): a poll started with the deadline spent used
+        // to surface Error::DeadlineExceeded from inside the connector. The
+        // contract is the last observed reply, explicitly still pending.
+        let mock = DraftMock::new();
+        let (client, key, store) = setup(mock.clone());
+        client
+            .run_paused_draft(RunPausedDraft {
+                key: &key,
+                manifest: &draft_manifest(),
+                image: Some(&draft_image()),
+                store: &*store,
+                state_path: &path(),
+                resume: false,
+                deadline: Deadline::from_secs(30),
+            })
+            .await
+            .unwrap();
+        mock.pending_reviews(usize::MAX); // review never settles
+                                          // A zero-second deadline: the first poll succeeds (mocks do not
+                                          // enforce deadlines), then remaining == 0 must end the wait with
+                                          // the observed state instead of a second, doomed poll.
+        let reply = client
+            .paused_draft_status_wait(
+                &key,
+                &*store,
+                &path(),
+                Deadline::from_secs(0),
+                std::time::Duration::from_millis(1),
+            )
+            .await
+            .unwrap();
+        assert!(reply.pending);
+        assert!(reply
+            .review
+            .iter()
+            .all(|s| s.effective_status == "PENDING_REVIEW"));
     }
 }
