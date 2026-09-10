@@ -151,8 +151,8 @@ impl Publisher for Bluesky {
                     limit: None,
                 })?;
                 // All local checks before the session: mime from the closed
-                // extension map (the multipart part needs a content type;
-                // sniffing bytes is out), then the lexicon's 2 MB cap.
+                // extension map (the uploadBlob Content-Type header must
+                // name it; sniffing bytes is out), then the lexicon's 2 MB cap.
                 let mime = image_mime(filename)?;
                 if bytes.len() > MAX_IMAGE_BYTES {
                     return Err(Error::InvalidPost {
@@ -165,16 +165,8 @@ impl Publisher for Bluesky {
                     validate_text(caption)?;
                 }
                 let sess = create_session(&self.http, pds, identifier, secret, deadline).await?;
-                let blob = upload_blob(
-                    &self.http,
-                    pds,
-                    &sess.access_jwt,
-                    filename,
-                    bytes,
-                    mime,
-                    deadline,
-                )
-                .await?;
+                let blob =
+                    upload_blob(&self.http, pds, &sess.access_jwt, bytes, mime, deadline).await?;
                 post_image_embed(
                     &self.http,
                     pds,
@@ -243,10 +235,10 @@ pub fn validate_params(params: &Value) -> Result<(), Error> {
 }
 
 /// Closed extension → MIME map. The lexicon accepts any `image/*`, but the
-/// multipart upload must name one content type and postkit does not sniff
-/// bytes; a conservative closed set turns a typo'd extension into a local
-/// `invalid_post` instead of a server-side guess. Extended deliberately,
-/// like every closed set here.
+/// uploadBlob request must name one content type in its `Content-Type`
+/// header and postkit does not sniff bytes; a conservative closed set turns
+/// a typo'd extension into a local `invalid_post` instead of a server-side
+/// guess. Extended deliberately, like every closed set here.
 pub fn image_mime(filename: &str) -> Result<&'static str, Error> {
     let ext = filename
         .rsplit('.')
@@ -266,34 +258,31 @@ pub fn image_mime(filename: &str) -> Result<&'static str, Error> {
     }
 }
 
-/// `com.atproto.repo.uploadBlob`: one multipart file part carrying the
-/// bytes and their derived content type. Returns the platform's blob
+/// `com.atproto.repo.uploadBlob`: the body is the **raw** image bytes and
+/// the `Content-Type` header names their type. The lexicon's input encoding
+/// is `*/*` and the PDS records the request's Content-Type as the blob's
+/// `mimeType` — wrapping the bytes in multipart (postkit's first attempt)
+/// uploads fine but poisons the blob with `multipart/form-data`, which
+/// `createRecord` then rejects against the post lexicon's `image/*`
+/// (live 2026-09-10: `Expected "image/*" (got "multipart/form-data") at
+/// $.record.embed.images[0].image.mimeType`). Returns the platform's blob
 /// object verbatim (`{"$type":"blob","ref":{"$link":…},"mimeType":…,
 /// "size":…}`) — the embed references it untouched.
 async fn upload_blob(
     http: &Http,
     pds: &str,
     access_jwt: &str,
-    filename: &str,
     bytes: &[u8],
     mime: &str,
     deadline: Deadline,
 ) -> Result<Value, Error> {
     let site = Site::new(SITE);
     let url = xrpc(pds, "com.atproto.repo.uploadBlob");
-    let part = reqwest::multipart::Part::bytes(bytes.to_vec())
-        .file_name(filename.to_string())
-        .mime_str(mime)
-        .map_err(|e| Error::Platform {
-            site: site.clone(),
-            code: "mime".into(),
-            message: e.to_string(),
-        })?;
-    let form = reqwest::multipart::Form::new().part("file", part);
     let req = http
         .post(&url)
+        .header("Content-Type", mime)
         .header("Authorization", format!("Bearer {access_jwt}"))
-        .multipart(form);
+        .body(bytes.to_vec());
     let resp = http.send(req, deadline, &site).await?;
     let body = read_json(resp, &site).await?;
     body.get("blob").cloned().ok_or_else(|| Error::Platform {
@@ -908,9 +897,17 @@ mod tests {
         });
     }
 
-    fn blob_mock<'a>(server: &'a MockServer) -> httpmock::Mock<'a> {
+    /// Wire pin for the live 2026-09-10 bug: uploadBlob must carry the raw
+    /// bytes as the body and the image's type in the Content-Type header.
+    /// `body` is an exact match, so it also proves no multipart envelope is
+    /// sent — which is what poisoned the blob's mimeType before this pin.
+    /// (httpmock's exact matcher is string-typed; image test bytes are ASCII.)
+    fn blob_mock<'a>(server: &'a MockServer, body: &str, mime: &str) -> httpmock::Mock<'a> {
         server.mock(|when, then| {
-            when.method(POST).path("/xrpc/com.atproto.repo.uploadBlob");
+            when.method(POST)
+                .path("/xrpc/com.atproto.repo.uploadBlob")
+                .header("Content-Type", mime)
+                .body(body);
             then.status(200).json_body(json!({
                 "blob": {
                     "$type": "blob",
@@ -926,7 +923,7 @@ mod tests {
     async fn image_post_uploads_blob_then_embeds_it_with_alt() {
         let server = MockServer::start();
         session_mock(&server);
-        let blob = blob_mock(&server);
+        let blob = blob_mock(&server, "png-bytes", "image/png");
         let record = server.mock(|when, then| {
             when.method(POST)
                 .path("/xrpc/com.atproto.repo.createRecord")
@@ -968,7 +965,7 @@ mod tests {
     async fn image_post_without_caption_sends_empty_text() {
         let server = MockServer::start();
         session_mock(&server);
-        blob_mock(&server);
+        let blob = blob_mock(&server, "jpg", "image/jpeg");
         let record = server.mock(|when, then| {
             when.method(POST)
                 .path("/xrpc/com.atproto.repo.createRecord")
@@ -990,6 +987,7 @@ mod tests {
         .await
         .unwrap();
         record.assert();
+        blob.assert();
     }
 
     #[tokio::test]
