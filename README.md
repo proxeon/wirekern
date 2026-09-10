@@ -43,7 +43,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 |------|------------|------|--------|
 | `threads` | `publish.text` | OAuth paste-code, or `--token` long-lived `THQVJ…` | 500 chars; emoji as UTF-8 bytes |
 | `bluesky` | `publish.text` | App password (`--password`). `--account` **is** the handle (`default` rejected) | 300 graphemes |
-| `meta_ads` | `read.metrics`, `read.ad_accounts`, `create.paused_ads`, `create.ad_creative` | OAuth paste-code (`ads_read,ads_management`), long-lived via `fb_exchange_token` | ≤ 90-day reads; ads are fixed `PAUSED` |
+| `meta_ads` | `read.metrics`, `read.ad_accounts`, `create.paused_ads`, `create.ad_creative` | OAuth paste-code (`ads_read,ads_management,pages_show_list,pages_manage_ads`), long-lived via `fb_exchange_token` | ≤ 90-day reads; ads are fixed `PAUSED` |
 
 ### Feature coverage
 

@@ -36,7 +36,11 @@ pub const AUTHORIZE: &str = "https://www.facebook.com/dialog/oauth";
 pub const SITE: &str = "meta_ads";
 /// Tier B adds paused management. Existing `ads_read` tokens keep working for
 /// insights, but an operator must re-authenticate before a create is allowed.
-pub const SCOPES: &str = "ads_read,ads_management";
+/// `pages_show_list` lets the token discover the operator's Pages
+/// (`/me/accounts` returns empty without it) and `pages_manage_ads` lets a
+/// Page-backed `object_story_spec` creative act on the chosen Page — the
+/// Tier B link-creative path is unusable without both.
+pub const SCOPES: &str = "ads_read,ads_management,pages_show_list,pages_manage_ads";
 
 /// Daily rows over a ≤90-day range fit in one Graph page; this cap exists
 /// so a runaway cursor loop fails loudly instead of paging forever.
