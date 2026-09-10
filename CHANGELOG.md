@@ -12,6 +12,17 @@ same detail by subject.
 
 ## [Unreleased]
 
+### Fixed
+
+- Idempotency check-and-record is now atomic (issue 023): `Client::publish`
+  claims the key before publishing and releases it on every exit path, so
+  two concurrent same-key callers can no longer both pass the ledger check
+  and double-post. A call that finds the key in flight answers a new
+  transient `idempotency` wire error (exit 4, same bucket as rate limits);
+  the file vault backs the claim with an O_EXCL `0600` claim file, and a
+  holder that crashed without releasing is stolen after 15 minutes. A
+  failed attempt releases immediately — the key stays retryable.
+
 ### Added
 
 - Bluesky replies: `postkit post bluesky --param reply_to_id=<at://…>` with

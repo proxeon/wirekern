@@ -32,6 +32,13 @@ struct MockPub {
     whoami_fails: bool,
     refresh_network_err: bool,
     refresh_dead_session: bool,
+    /// 023 concurrency scripting: `publish_started` fires when `publish`
+    /// is entered and `publish_gate` parks it until released — together
+    /// they hold one publish inside the claim window deterministically,
+    /// without real timing races. Mutex'd because send/await consume the
+    /// channels by value while the trait only lends `&self`.
+    publish_started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    publish_gate: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     publishes: AtomicUsize,
     probes: AtomicUsize,
     paused_creates: AtomicUsize,
@@ -53,6 +60,8 @@ impl MockPub {
             whoami_fails: false,
             refresh_network_err: false,
             refresh_dead_session: false,
+            publish_started: std::sync::Mutex::new(None),
+            publish_gate: std::sync::Mutex::new(None),
             publishes: AtomicUsize::new(0),
             probes: AtomicUsize::new(0),
             paused_creates: AtomicUsize::new(0),
@@ -128,6 +137,17 @@ impl Publisher for MockPub {
         _deadline: Deadline,
     ) -> Result<Outcome, Error> {
         let n = self.publishes.fetch_add(1, Ordering::SeqCst);
+        // Announce entry, then park if gated — this is what lets the 023
+        // concurrency tests hold a publish inside the claim window. The
+        // guard is dropped before the await: a std MutexGuard is not Send
+        // and must not ride across an await point.
+        if let Some(tx) = self.publish_started.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+        let gate = self.publish_gate.lock().unwrap().take();
+        if let Some(rx) = gate {
+            let _ = rx.await;
+        }
         if self.fail_publish {
             return Err(Error::Platform {
                 site: self.site.clone(),
@@ -830,6 +850,130 @@ async fn put_token_refused_for_app_password_sites() {
         matches!(vault.get(&key), Err(Error::UnknownAccount(_))),
         "no creds may be written on refusal"
     );
+}
+
+/// 023: while one publish under a key is in flight, a second caller with
+/// the same key gets a distinct transient error and the connector is hit
+/// exactly once. The gate holds the first publish inside the claim window
+/// deterministically — no timing race, the parked publish *is* the window.
+#[tokio::test]
+async fn concurrent_same_key_publishes_once() {
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+    let mut mock = MockPub::text("threads");
+    mock.publish_started = std::sync::Mutex::new(Some(started_tx));
+    mock.publish_gate = std::sync::Mutex::new(Some(gate_rx));
+    let mock = Arc::new(mock);
+    let mut reg = Registry::new();
+    reg.register(mock.clone());
+    let vault = Arc::new(MemoryVault::new());
+    let key = AccountKey::new("threads", "default");
+    vault
+        .put(
+            &key,
+            &AccountCreds::OAuth2 {
+                access_token: "tok".into(),
+                refresh_token: None,
+                extra: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    let c = Arc::new(Client::new(
+        reg,
+        vault.clone(),
+        Arc::new(MemoryAppStore::new()),
+    ));
+
+    let first = {
+        let c = c.clone();
+        let key = key.clone();
+        tokio::spawn(async move {
+            c.publish(
+                &key,
+                intent_with_idem("threads", "hi", "k"),
+                Deadline::from_secs(30),
+            )
+            .await
+        })
+    };
+    // Wait until the first publish is inside the connector (claim held).
+    started_rx.await.unwrap();
+    // Second caller with the same key: refused while the first is in
+    // flight, transient enough to retry (wire exit 4), never a duplicate.
+    let err = c
+        .publish(
+            &key,
+            intent_with_idem("threads", "hi", "k"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::IdempotencyInFlight { key: k, .. } if k == "k"),
+        "got {err:?}"
+    );
+    assert_eq!(err.exit_code(), 4);
+    assert_eq!(mock.publishes.load(Ordering::SeqCst), 1);
+    // Release the gate: the first completes, records, and releases; a
+    // retry with the same key now replays the stored outcome.
+    gate_tx.send(()).unwrap();
+    let out = first.await.unwrap().unwrap();
+    assert_eq!(out.id.as_deref(), Some("id-hi"));
+    let retry = c
+        .publish(
+            &key,
+            intent_with_idem("threads", "hi", "k"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry.id, out.id);
+    assert_eq!(mock.publishes.load(Ordering::SeqCst), 1);
+}
+
+/// 023: a failed attempt must release the claim — the key stays retryable.
+#[tokio::test]
+async fn failed_publish_releases_the_claim() {
+    let mock = Arc::new(MockPub {
+        fail_publish: true,
+        ..MockPub::text("threads")
+    });
+    let mut reg = Registry::new();
+    reg.register(mock.clone());
+    let vault = Arc::new(MemoryVault::new());
+    let key = AccountKey::new("threads", "default");
+    vault
+        .put(
+            &key,
+            &AccountCreds::OAuth2 {
+                access_token: "tok".into(),
+                refresh_token: None,
+                extra: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    let c = Client::new(reg, vault, Arc::new(MemoryAppStore::new()));
+    let d = Deadline::from_secs(30);
+
+    let err = c
+        .publish(&key, intent_with_idem("threads", "hi", "k"), d)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::Platform { ref code, .. } if code == "boom"),
+        "got {err:?}"
+    );
+    // A leaked claim would answer IdempotencyInFlight here; the retry
+    // must reach the connector again.
+    let err2 = c
+        .publish(&key, intent_with_idem("threads", "hi", "k"), d)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err2, Error::Platform { ref code, .. } if code == "boom"),
+        "claim leaked: {err2:?}"
+    );
+    assert_eq!(mock.publishes.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

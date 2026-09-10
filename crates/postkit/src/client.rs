@@ -14,7 +14,7 @@ use crate::registry::Registry;
 use crate::types::{
     AccountCreds, AccountKey, AppConfig, Capability, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
 };
-use crate::vault::Vault;
+use crate::vault::{Claim, Vault};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -96,13 +96,60 @@ impl Client {
             if let Some(out) = self.vault.get_outcome(key, idem)? {
                 return Ok(out);
             }
+            // Claim the key before publishing (issue 023): without it, two
+            // concurrent same-key callers both pass the ledger check above
+            // and both publish — a duplicate public post reported as two
+            // successes. A Taken answer is a distinct transient error; the
+            // caller retries and the ledger then answers.
+            match self.vault.claim_outcome(key, idem)? {
+                Claim::Free => {}
+                Claim::Taken => {
+                    return Err(Error::IdempotencyInFlight {
+                        site: key.site.clone(),
+                        key: idem.to_string(),
+                    })
+                }
+            }
         }
+        // One confined attempt so the claim has exactly one release point:
+        // every early `?` inside publish_once lands here, not in the caller.
+        let attempt = self.publish_once(&*publisher, key, intent, deadline).await;
+        let out = match attempt {
+            Ok(out) => out,
+            Err(e) => {
+                // A failed attempt must stay retryable — the claim must
+                // not outlive it.
+                self.release_claim(key, idem.as_deref());
+                return Err(e);
+            }
+        };
+        // Record after success only: a failed attempt must stay retryable.
+        if let Some(idem) = idem.as_deref() {
+            let recorded = self.vault.put_outcome(key, idem, &out);
+            self.release_claim(key, Some(idem));
+            recorded?;
+        }
+        Ok(out)
+    }
+
+    /// The claim-guarded publish: app lookup, credential fetch, proactive
+    /// refresh, publish, and the one reactive token-expiry retry. Extracted
+    /// from `publish` so the idempotency claim can bracket it with a single
+    /// release point — an early `?` here releases the claim on return,
+    /// never leaks the key until the TTL steals it.
+    async fn publish_once(
+        &self,
+        publisher: &dyn Publisher,
+        key: &AccountKey,
+        intent: Intent,
+        deadline: Deadline,
+    ) -> Result<Outcome, Error> {
         let app = self
             .apps
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
-        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        creds = self.maybe_refresh(publisher, &app, key, creds).await?;
         let out = match publisher
             .publish(&app, &creds, intent.clone(), deadline)
             .await
@@ -114,11 +161,16 @@ impl Client {
             }
             other => other,
         }?;
-        // Record after success only: a failed attempt must stay retryable.
-        if let Some(idem) = idem.as_deref() {
-            self.vault.put_outcome(key, idem, &out)?;
-        }
         Ok(out)
+    }
+
+    /// Release an idempotency claim on every exit path. Failures are
+    /// swallowed deliberately: the file claim's TTL self-heals a stuck
+    /// claim, and a release error must not mask the publish's real result.
+    fn release_claim(&self, key: &AccountKey, idem: Option<&str>) {
+        if let Some(idem) = idem {
+            let _ = self.vault.release_outcome(key, idem);
+        }
     }
 
     pub async fn whoami(&self, key: &AccountKey) -> Result<WhoAmI, Error> {

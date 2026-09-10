@@ -1,12 +1,20 @@
 use crate::apps::{env_override, AppStore};
 use crate::error::Error;
 use crate::types::{valid_name, AccountCreds, AccountKey, AppConfig, Outcome, Site};
-use crate::vault::Vault;
+use crate::vault::{Claim, Vault};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+
+/// A claim older than this is presumed abandoned (holder crashed without
+/// releasing) and may be stolen. Must comfortably exceed the longest
+/// legitimate publish — caller deadlines are seconds-to-minutes, so a
+/// quarter hour errs far on the safe side while bounding how long a
+/// crashed holder can block a key.
+const CLAIM_STALE_AFTER: Duration = Duration::from_secs(15 * 60);
 
 pub struct FileVault {
     root: PathBuf,
@@ -137,6 +145,79 @@ impl Vault for FileVault {
         match fs::read(&path) {
             Ok(data) => Ok(Some(serde_json::from_slice(&data)?)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn claim_outcome(&self, key: &AccountKey, idem: &str) -> Result<Claim, Error> {
+        let json_path = self.outcome_path(key, idem)?;
+        let path = json_path.with_extension("claim");
+        if let Some(parent) = path.parent() {
+            self.ensure_dir_under_root(parent)?;
+        }
+        // `create_new` is O_EXCL: exactly one caller system-wide can create
+        // the claim file, which is the whole cross-process guarantee. The
+        // content (pid + wall clock) is diagnostic only.
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                use std::io::Write;
+                let _ = writeln!(
+                    f,
+                    "pid={} unix_ms={}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0)
+                );
+                set_mode(&path, 0o600)?;
+                Ok(Claim::Free)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // A crashed holder never releases; a claim older than the
+                // TTL is stolen. The TTL must comfortably exceed the longest
+                // legitimate publish (deadline + retries + refresh) — 15
+                // minutes dwarfs any documented deadline. mtime in the
+                // future (clock skew) reads as not-stale: the safe side.
+                let stale = fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > CLAIM_STALE_AFTER);
+                if !stale {
+                    return Ok(Claim::Taken);
+                }
+                let _ = fs::remove_file(&path);
+                // Retrying the create races other stealers fairly: O_EXCL
+                // still admits exactly one winner.
+                match fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                {
+                    Ok(_) => {
+                        set_mode(&path, 0o600)?;
+                        Ok(Claim::Free)
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(Claim::Taken),
+                    Err(e) => Err(e.into()),
+                }
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn release_outcome(&self, key: &AccountKey, idem: &str) -> Result<(), Error> {
+        let json_path = self.outcome_path(key, idem)?;
+        let path = json_path.with_extension("claim");
+        // NotFound is success: the key is open either way.
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
         }
     }
@@ -317,6 +398,67 @@ mod tests {
             v.delete(&key).unwrap_err(),
             Error::UnknownAccount(_)
         ));
+    }
+
+    /// 023: the claim is exclusive until released, and the claim file sits
+    /// beside its ledger entry under 0600.
+    #[test]
+    fn claim_is_exclusive_until_released() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        let key = AccountKey::new("threads", "default");
+        assert_eq!(v.claim_outcome(&key, "k").unwrap(), Claim::Free);
+        assert_eq!(v.claim_outcome(&key, "k").unwrap(), Claim::Taken);
+        // A different key is a different reservation.
+        assert_eq!(v.claim_outcome(&key, "other").unwrap(), Claim::Free);
+        v.release_outcome(&key, "other").unwrap();
+        v.release_outcome(&key, "k").unwrap();
+        // Double release is idempotent — the key is open either way.
+        v.release_outcome(&key, "k").unwrap();
+        assert_eq!(v.claim_outcome(&key, "k").unwrap(), Claim::Free);
+        let claim_path = tmp
+            .path()
+            .join("idempotency")
+            .join("threads")
+            .join("default")
+            .join("k.claim");
+        assert!(claim_path.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&claim_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        v.release_outcome(&key, "k").unwrap();
+        assert!(!claim_path.exists());
+    }
+
+    /// 023: a crashed holder never releases; a claim older than the TTL is
+    /// stolen, and a fresh claim is not.
+    #[test]
+    fn stale_claim_is_stolen_after_ttl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let v = FileVault::new(tmp.path()).unwrap();
+        let key = AccountKey::new("threads", "default");
+        assert_eq!(v.claim_outcome(&key, "k").unwrap(), Claim::Free);
+        let claim_path = tmp
+            .path()
+            .join("idempotency")
+            .join("threads")
+            .join("default")
+            .join("k.claim");
+        // Age the claim past the TTL by rewriting its mtime.
+        let old =
+            std::time::SystemTime::now() - CLAIM_STALE_AFTER - std::time::Duration::from_secs(1);
+        let f = fs::File::options().write(true).open(&claim_path).unwrap();
+        f.set_modified(old).unwrap();
+        drop(f);
+        assert_eq!(v.claim_outcome(&key, "k").unwrap(), Claim::Free);
+        // A fresh claim (mtime now) must read as Taken, never stolen.
+        assert_eq!(v.claim_outcome(&key, "k").unwrap(), Claim::Taken);
+        // An idempotency key is caller input and names a claim file too.
+        let err = v.claim_outcome(&key, "../escape").unwrap_err();
+        assert!(matches!(err, Error::InvalidName(n) if n == "../escape"));
     }
 
     #[test]

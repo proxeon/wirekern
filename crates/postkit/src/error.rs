@@ -30,6 +30,8 @@ pub enum Error {
         site: Site,
         retry_after: Option<Duration>,
     },
+    #[error("idempotency key in flight: {key}")]
+    IdempotencyInFlight { site: Site, key: String },
     #[error("platform {code}: {message}")]
     Platform {
         site: Site,
@@ -89,6 +91,10 @@ pub enum WireError {
         #[serde(skip_serializing_if = "Option::is_none")]
         retry_after: Option<u64>,
     },
+    Idempotency {
+        site: Site,
+        key: String,
+    },
     Platform {
         site: Site,
         code: String,
@@ -130,6 +136,10 @@ impl From<&Error> for WireError {
             Error::RateLimited { site, retry_after } => Self::RateLimited {
                 site: site.clone(),
                 retry_after: retry_after.map(|d| d.as_secs()),
+            },
+            Error::IdempotencyInFlight { site, key } => Self::Idempotency {
+                site: site.clone(),
+                key: key.clone(),
             },
             Error::Platform {
                 site,
@@ -178,7 +188,10 @@ impl WireError {
             | Self::InvalidQuery { .. }
             | Self::PolicyDenied { .. } => 2,
             Self::Auth { .. } => 3,
-            Self::RateLimited { .. } => 4,
+            // Transient, retry-later family: an in-flight idempotency key
+            // sits with rate limiting rather than the invalid-input bucket —
+            // the caller did nothing wrong, the answer is "try again soon".
+            Self::RateLimited { .. } | Self::Idempotency { .. } => 4,
             Self::Platform { .. } | Self::Network { .. } | Self::Timeout { .. } => 5,
         }
     }
