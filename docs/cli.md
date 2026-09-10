@@ -21,6 +21,8 @@ postkit post --to threads,bluesky --text <str>
 postkit post bluesky --image hero.png [--text 'caption'] [--alt 'description']
 postkit post threads --image https://cdn.example.com/hero.png [--text 'caption']
 postkit post instagram --image https://cdn.example.com/hero.jpg [--text 'caption']
+postkit post instagram --image https://cdn.example.com/slide-1.jpg --image https://cdn.example.com/slide-2.jpg [--text 'one carousel caption']
+postkit media list instagram [--limit 10]
 postkit post --stdin
 ```
 
@@ -31,7 +33,7 @@ postkit post --stdin
 | `--param k=v` | `Intent.params` (repeatable). `--param reply_to_id=` = one reply to an existing post (**threads**: media id; **Bluesky**: the parent's `at://` URI — the same string `Outcome.id` returns; the connector resolves its `cid` via `getRecord`, and a reply-to-reply inherits the thread root). Other keys refuse with `unsupported_param:<k>` before HTTP |
 | `--idempotency` | Root segment only on a chain. Client-side dedupe: a retry with the same key returns the stored `Outcome` without HTTP (`~/.postkit/idempotency/…`). Only **completed** publishes are remembered — an attempt that timed out after the platform created the post was never learned and will post again. While one publish under a key is in flight (another process or task), a second call answers `idempotency` (exit 4, retry-later) instead of racing to a duplicate; a crashed holder self-heals — its claim is stolen after 15 minutes |
 | `--stdin` | Raw request JSON. One body. Exclusive with every content flag — `--text`, `--image`, `--alt`, `--param`, `--to`, and a positional site refuse with `stdin_exclusive` exit 2 before stdin is read (`--dry-run` and `--idempotency` still apply on top of the stdin request) |
-| `--image` | One image per post, optional caption (`--text`, zero or one). **Two forms, never bridged**: a local file (Bluesky uploads the bytes; png/jpg/gif/webp, ≤ 2 MB enforced locally) or a public **https** URL (Threads and Instagram crawl it; Meta is definitive on reachability, format, and size). A form the site cannot honor fails that target with `image_source_unsupported:bytes\|url` before HTTP. Refused combinations, all exit 2 before any HTTP: with a chain (`image_chain_unsupported`), with `--param reply_to_id=` (`image_reply_unsupported`), with `--dry-run` (`dry_run_image_unsupported`) |
+| `--image` | Repeatable only for an Instagram **image carousel**: one image is the normal optional-caption image post; 2–10 become one carousel with a single parent caption. **Two forms, never bridged**: a local file (Bluesky uploads the bytes; png/jpg/gif/webp, ≤ 2 MB enforced locally) or a public **https** URL (Threads and Instagram crawl it; Meta is definitive on reachability, format, and size). A form the site cannot honor fails that target with `image_source_unsupported:bytes\|url` before HTTP. Refused combinations, all exit 2 before any HTTP: with a chain (`image_chain_unsupported` / `carousel_caption_multiple`), with `--param reply_to_id=` (`image_reply_unsupported` / `carousel_reply_unsupported`), with `--dry-run` (`dry_run_image_unsupported`), or carousel `--alt` (`carousel_alt_unsupported`) |
 | `--alt` | Accessibility text for `--image`. Bluesky embeds it in `app.bsky.embed.images` (lexicon-required, empty allowed); Threads and Instagram v1 have no verified alt field and ignore it |
 | `--dry-run` | **threads** only. Create-only probe: one container creation, no publish, nothing visible ever — the container expires in 24h. Refused with `dry_run_unsupported` on sites with no create/publish split (Bluesky), and rejected with `dry_run_idempotency` / `dry_run_chain` when combined with `--idempotency` or a reply chain |
 
@@ -72,9 +74,39 @@ postkit auth instagram                        # Instagram Login for one professi
 - `instagram` uses Instagram Login rather than Facebook Login. It needs
   `instagram_business_basic,instagram_business_content_publish` and a
   professional Business or Creator Instagram account; it stores the resolved
-  account ID and can publish one public-image URL with an optional 2,200-character
-  caption. There is no Page target parameter or text-only post. See the
+  account ID and can publish one public-image URL, or a 2–10-image carousel,
+  with an optional 2,200-character parent caption. There is no Page target
+  parameter or text-only post. See the
   [Instagram runbook](./instagram/README.md).
+
+## Instagram image carousel
+
+Repeat `--image` exactly 2 through 10 times on `post instagram` to create
+**one** carousel post. Every slide must be a public HTTPS URL; Postkit creates
+and waits for invisible child containers, creates/waits for one carousel
+parent, then makes exactly one `media_publish` write. The optional `--text`
+is the parent caption, never a per-slide caption. `--alt` is rejected for a
+carousel because one generic value cannot describe all slides and v1 has no
+reviewed per-slide accessibility field. A failed child or parent readiness
+check creates no visible post; a confirmed post returns its final media ID and
+best-effort permalink. See [the Instagram runbook](./instagram/README.md) for
+the idempotency and live-validation guidance.
+
+## `media` (instagram)
+
+```text
+postkit media list instagram [--limit 10] [--json]
+```
+
+`media list` is the Instagram connector's read-only `read.media` capability.
+It reads one server-ordered first page for the account resolved during
+`auth instagram`; it cannot choose another user ID, follow pagination, create
+media, update media, or download the image. `--limit` is constrained to **1
+through 25** (default 10) before credentials or HTTP are touched. The JSON
+reply is `{ "site", "media": [ … ] }`; every media item has an `id` and may
+include Meta's `permalink`, `caption`, `media_type`, and `timestamp`. Human
+output intentionally excludes captions because remote captions can contain
+newlines; pass `--json` for structured caption data.
 
 ## `whoami` / `capabilities`
 

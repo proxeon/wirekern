@@ -169,6 +169,15 @@ impl Publisher for Threads {
                 )
                 .await
             }
+            // A carousel is not interchangeable with several image
+            // containers: Threads has no reviewed v1 parent-container wire.
+            // Keep the direct connector call fail-closed as well as the
+            // Client capability gate.
+            Body::Carousel { .. } => Err(Error::InvalidPost {
+                site: self.site.clone(),
+                reason: "carousel_unsupported".into(),
+                limit: None,
+            }),
         }
     }
 

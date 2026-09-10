@@ -5,6 +5,7 @@ use crate::ads::{
 };
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
+use crate::media::{MediaQuery, MediaReply};
 use crate::pages::PagesReply;
 use crate::types::{
     AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
@@ -131,6 +132,22 @@ pub trait Publisher: Send + Sync {
         Err(Error::UnsupportedCapability {
             site: self.site().clone(),
             need: Capability::ReadPages,
+        })
+    }
+
+    /// Read a connector's bounded first page of already-published media. A
+    /// separate capability prevents a write-only social connector from
+    /// accidentally becoming a profile reader just by accepting images.
+    async fn media(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _query: &MediaQuery,
+        _deadline: Deadline,
+    ) -> Result<MediaReply, Error> {
+        Err(Error::UnsupportedCapability {
+            site: self.site().clone(),
+            need: Capability::ReadMedia,
         })
     }
 

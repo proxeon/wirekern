@@ -52,6 +52,8 @@ pub enum Capability {
     PublishText,
     #[serde(rename = "publish.image")]
     PublishImage,
+    #[serde(rename = "publish.carousel")]
+    PublishCarousel,
     #[serde(rename = "publish.video")]
     PublishVideo,
     #[serde(rename = "read.metrics")]
@@ -60,6 +62,8 @@ pub enum Capability {
     ReadAdAccounts,
     #[serde(rename = "read.pages")]
     ReadPages,
+    #[serde(rename = "read.media")]
+    ReadMedia,
     #[serde(rename = "read.ad_previews")]
     ReadAdPreviews,
     #[serde(rename = "read.ad_review_status")]
@@ -75,10 +79,12 @@ impl Capability {
         match self {
             Self::PublishText => "publish.text",
             Self::PublishImage => "publish.image",
+            Self::PublishCarousel => "publish.carousel",
             Self::PublishVideo => "publish.video",
             Self::ReadMetrics => "read.metrics",
             Self::ReadAdAccounts => "read.ad_accounts",
             Self::ReadPages => "read.pages",
+            Self::ReadMedia => "read.media",
             Self::ReadAdPreviews => "read.ad_previews",
             Self::ReadAdReviewStatus => "read.ad_review_status",
             Self::CreatePausedAds => "create.paused_ads",
@@ -189,6 +195,15 @@ pub enum Body {
         #[serde(default)]
         alt: String,
     },
+    /// A single feed carousel, not a batch of independent posts. Images keep
+    /// the same URL/bytes model as `Image`, but each connector must advertise
+    /// `publish.carousel` before the Client will route this distinct wire
+    /// grammar to it. V1 does not carry generic alt text because one string
+    /// cannot truthfully describe multiple slides.
+    Carousel {
+        text: Option<String>,
+        images: Vec<Image>,
+    },
 }
 
 impl Body {
@@ -196,6 +211,7 @@ impl Body {
         match self {
             Self::Text { .. } => Capability::PublishText,
             Self::Image { .. } => Capability::PublishImage,
+            Self::Carousel { .. } => Capability::PublishCarousel,
         }
     }
 }

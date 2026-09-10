@@ -27,6 +27,23 @@ same detail by subject.
   alt text is deliberately not sent until its Instagram Login wire contract is
   verified. Token refresh uses `ig_refresh_token`, while ambiguous write
   outcomes are never auto-retried to avoid duplicate visible posts.
+- Instagram bounded media reads: `postkit media list instagram --limit 1..25`
+  adds the separate `read.media` capability for one server-ordered first page
+  of the authorized professional account's published media. The reply exposes
+  only ID plus optional permalink, caption, media type, and timestamp; it has
+  no arbitrary account target or pagination cursor. A confirmed image publish
+  now makes one best-effort permalink GET and returns `Outcome.url` when Meta
+  supplies it. That follow-up failure never turns the already-confirmed write
+  into an error or causes a second visible publish.
+- Instagram image carousels: repeat `post instagram --image` 2–10 times to
+  create one `publish.carousel` post with an optional single parent caption.
+  Postkit creates each public-HTTPS child with `is_carousel_item=true`, waits
+  for every child, creates and waits for the `CAROUSEL` parent, and then sends
+  exactly one visible publish request. Child/parent errors stop before that
+  final write; child IDs stay internal and expiring. Carousel `--alt`, replies,
+  dry-runs, local files, videos, and mixed-media albums are refused rather than
+  guessed. Confirmed results use the existing best-effort permalink lookup;
+  visible writes are never retried automatically.
 - Facebook Pages organic publishing: the new `facebook_pages` connector
   discovers token-visible Pages with `postkit pages accounts facebook_pages`,
   then posts text or one local image only when the operator provides an

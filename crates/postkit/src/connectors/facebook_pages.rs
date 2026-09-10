@@ -136,6 +136,14 @@ impl Publisher for FacebookPages {
                 )
                 .await
             }
+            // `validate_body` returns before this branch can be reached, but
+            // spelling it out keeps a future validation refactor from
+            // accidentally turning a carousel into multiple visible Photos.
+            Body::Carousel { .. } => Err(Error::InvalidPost {
+                site: self.site.clone(),
+                reason: "carousel_unsupported".into(),
+                limit: None,
+            }),
         }
     }
 
@@ -295,6 +303,14 @@ fn validate_body(body: &Body) -> Result<(), Error> {
         } => image.validate().map_err(|reason| Error::InvalidPost {
             site: Site::new(SITE),
             reason,
+            limit: None,
+        }),
+        // Pages' photos endpoint is intentionally one local multipart image
+        // per post in v1. A caller must not get multiple independent public
+        // Page posts just because it supplied a carousel body.
+        Body::Carousel { .. } => Err(Error::InvalidPost {
+            site: Site::new(SITE),
+            reason: "carousel_unsupported".into(),
             limit: None,
         }),
     }

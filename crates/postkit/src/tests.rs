@@ -11,6 +11,7 @@ use crate::insights::{
     AdAccount, AdAccountsReply, AttributionWindow, InsightRow, InsightsLevel, InsightsQuery,
     InsightsReply, Metric,
 };
+use crate::media::{MediaQuery, MediaReply, PublishedMedia};
 use crate::pages::{PageAccount, PagesReply};
 use crate::policy::{AdsAction, AdsPolicy};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
@@ -51,6 +52,7 @@ struct MockPub {
     creative_previews: AtomicUsize,
     review_status_reads: AtomicUsize,
     page_reads: AtomicUsize,
+    media_reads: AtomicUsize,
     review_status_pending_reads: usize,
 }
 
@@ -76,6 +78,7 @@ impl MockPub {
             creative_previews: AtomicUsize::new(0),
             review_status_reads: AtomicUsize::new(0),
             page_reads: AtomicUsize::new(0),
+            media_reads: AtomicUsize::new(0),
             review_status_pending_reads: 0,
         }
     }
@@ -97,6 +100,13 @@ impl MockPub {
     fn pages(site: &str) -> Self {
         Self {
             caps: vec![Capability::ReadPages],
+            ..Self::text(site)
+        }
+    }
+
+    fn media(site: &str) -> Self {
+        Self {
+            caps: vec![Capability::ReadMedia],
             ..Self::text(site)
         }
     }
@@ -180,6 +190,7 @@ impl Publisher for MockPub {
         let label = match intent.body {
             Body::Text { text } => text,
             Body::Image { text, .. } => text.unwrap_or_else(|| "image".into()),
+            Body::Carousel { text, .. } => text.unwrap_or_else(|| "carousel".into()),
         };
         Ok(Outcome {
             site: intent.site,
@@ -295,6 +306,34 @@ impl Publisher for MockPub {
                 id: "10".into(),
                 name: Some("Test Page".into()),
                 tasks: vec!["CREATE_CONTENT".into()],
+            }],
+        })
+    }
+
+    async fn media(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        query: &MediaQuery,
+        _deadline: Deadline,
+    ) -> Result<MediaReply, Error> {
+        let read = self.media_reads.fetch_add(1, Ordering::SeqCst);
+        if self.fail_auth_once && read == 0 {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "token_expired".into(),
+            });
+        }
+        // Echo the query in a stable suffix so the Client test proves the
+        // operator-selected bounded limit reaches the connector unchanged.
+        Ok(MediaReply {
+            site: self.site.clone(),
+            media: vec![PublishedMedia {
+                id: format!("recent-{}", query.limit),
+                permalink: Some("https://example.test/recent".into()),
+                caption: Some("test post".into()),
+                media_type: Some("IMAGE".into()),
+                timestamp: None,
             }],
         })
     }
@@ -836,6 +875,34 @@ async fn default_pages_refuses_without_an_explicit_connector_method() {
     ));
 }
 
+/// Media reads default to the same fail-closed posture as Page discovery: a
+/// connector must explicitly implement the endpoint and its data boundary.
+#[tokio::test]
+async fn default_media_refuses_without_an_explicit_connector_method() {
+    let publisher = Bare {
+        caps: vec![Capability::PublishText],
+    };
+    let error = publisher
+        .media(
+            &AppConfig {
+                site: Site::new("bluesky"),
+                oauth: None,
+                extra: serde_json::json!({}),
+            },
+            &AccountCreds::BotToken {
+                token: "not-used".into(),
+            },
+            &MediaQuery::default(),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::UnsupportedCapability { need, .. } if need == Capability::ReadMedia
+    ));
+}
+
 /// 027: a probe runs the capability gate exactly like a publish.
 #[tokio::test]
 async fn probe_checks_capability() {
@@ -1354,6 +1421,53 @@ async fn client_pages_routes_retries_expired_token_and_checks_capability() {
     ));
 }
 
+/// Published-media reads share the read-only refresh rule while keeping their
+/// own capability, so a connector cannot expose profile content by accident.
+#[tokio::test]
+async fn client_media_routes_retries_expired_token_and_checks_bounds() {
+    let mut publisher = MockPub::media("instagram");
+    publisher.fail_auth_once = true;
+    let (client, key) = setup(publisher);
+    let reply = client
+        .media(&key, MediaQuery { limit: 2 }, Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(reply.media[0].id, "recent-2");
+    assert_eq!(
+        reply.media[0].permalink.as_deref(),
+        Some("https://example.test/recent")
+    );
+
+    // Limit validation comes before even the capability lookup/vault read;
+    // an embedding caller receives the same safe local error as the CLI.
+    let mut registry = Registry::new();
+    registry.register(Arc::new(MockPub::text("instagram")));
+    let client = Client::new(
+        registry,
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let key = AccountKey::new("instagram", "default");
+    let invalid = client
+        .media(&key, MediaQuery { limit: 0 }, Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(invalid, Error::InvalidQuery { reason, .. } if reason == "media_limit_out_of_range")
+    );
+
+    // A valid request to a write-only connector refuses before it demands a
+    // credential, exactly like the other remote discovery commands.
+    let unsupported = client
+        .media(&key, MediaQuery { limit: 1 }, Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        unsupported,
+        Error::UnsupportedCapability { need, .. } if need == Capability::ReadMedia
+    ));
+}
+
 /// Tier B follows the same capability routing discipline as reads, with an
 /// extra policy gate before it can touch a credential or issue a write.
 #[tokio::test]
@@ -1800,6 +1914,33 @@ async fn client_routes_image_bodies_by_capability() {
         err,
         Error::UnsupportedCapability {
             need: crate::types::Capability::PublishImage,
+            ..
+        }
+    ));
+
+    // A carousel gets its own capability. Reusing `publish.image` here would
+    // let a connector see a multi-container body it never opted in to handle.
+    let (c, key) = setup(MockPub::text("instagram"));
+    let intent = Intent {
+        site: Site::new("instagram"),
+        params: serde_json::json!({}),
+        body: crate::types::Body::Carousel {
+            text: None,
+            images: vec![
+                crate::types::Image::Url("https://cdn.test/1.jpg".into()),
+                crate::types::Image::Url("https://cdn.test/2.jpg".into()),
+            ],
+        },
+        idempotency_key: None,
+    };
+    let err = c
+        .publish(&key, intent, Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        Error::UnsupportedCapability {
+            need: crate::types::Capability::PublishCarousel,
             ..
         }
     ));

@@ -7,6 +7,7 @@
 use crate::error::Error;
 use crate::form::form;
 use crate::http::Http;
+use crate::media::{MediaQuery, MediaReply, PublishedMedia};
 use crate::oauth::{authorize_url, exchange_code, extract_code, new_state};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::types::{
@@ -32,6 +33,10 @@ pub const SCOPES: &str = "instagram_business_basic,instagram_business_content_pu
 /// counts Unicode scalar values, avoiding a byte-based rejection of valid
 /// non-ASCII captions.
 pub const MAX_CAPTION: usize = 2_200;
+/// A carousel needs at least two slides to differ from the existing image
+/// post, and Meta's current carousel container accepts at most ten items.
+pub const MIN_CAROUSEL_IMAGES: usize = 2;
+pub const MAX_CAROUSEL_IMAGES: usize = 10;
 /// Meta fetches a public image asynchronously. One second is responsive
 /// enough for a CLI while avoiding a hot loop against the status endpoint.
 pub const DEFAULT_CONTAINER_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -94,7 +99,11 @@ impl Publisher for Instagram {
         // Feed publishing has no text-only media type. Advertising a text
         // capability here would make `post instagram --text` look valid even
         // though there is no truthful Graph request to send.
-        &[Capability::PublishImage]
+        &[
+            Capability::PublishImage,
+            Capability::PublishCarousel,
+            Capability::ReadMedia,
+        ]
     }
 
     fn auth_kind(&self) -> AuthKind {
@@ -109,52 +118,61 @@ impl Publisher for Instagram {
         deadline: Deadline,
     ) -> Result<Outcome, Error> {
         validate_params(&intent.params)?;
-        let Body::Image { text, image, .. } = &intent.body else {
+        match &intent.body {
+            Body::Image { text, image, .. } => {
+                let image_url = public_image_url(image)?;
+                if let Some(caption) = text {
+                    validate_caption(caption)?;
+                }
+                // V1 intentionally ignores generic `alt`: no verified
+                // Instagram Login wire field is sent until that accessibility
+                // contract is implemented and live-validated rather than
+                // guessed.
+                let token = access_token(creds)?;
+                let user_id = stored_user_id(creds)?;
+                post_image(
+                    &self.http,
+                    &self.base,
+                    ImagePost {
+                        access_token: token,
+                        user_id: &user_id,
+                        image_url,
+                        caption: text.as_deref(),
+                    },
+                    deadline,
+                    self.container_poll_interval,
+                )
+                .await
+            }
+            Body::Carousel { text, images } => {
+                let image_urls = carousel_image_urls(images)?;
+                if let Some(caption) = text {
+                    validate_caption(caption)?;
+                }
+                let token = access_token(creds)?;
+                let user_id = stored_user_id(creds)?;
+                post_carousel(
+                    &self.http,
+                    &self.base,
+                    CarouselPost {
+                        access_token: token,
+                        user_id: &user_id,
+                        image_urls: &image_urls,
+                        caption: text.as_deref(),
+                    },
+                    deadline,
+                    self.container_poll_interval,
+                )
+                .await
+            }
             // `Client` normally refuses this through capabilities first. The
             // connector is still safe when embedded and called directly.
-            return Err(Error::InvalidPost {
+            Body::Text { .. } => Err(Error::InvalidPost {
                 site: self.site.clone(),
                 reason: "image_required".into(),
                 limit: None,
-            });
-        };
-        let Image::Url(image_url) = image else {
-            // Instagram fetches `image_url` itself. Postkit never becomes an
-            // image host or URL fetcher, which keeps SSRF-shaped I/O outside
-            // the publishing kernel.
-            return Err(Error::InvalidPost {
-                site: self.site.clone(),
-                reason: "image_source_unsupported:bytes".into(),
-                limit: None,
-            });
-        };
-        image.validate().map_err(|reason| Error::InvalidPost {
-            site: self.site.clone(),
-            reason,
-            limit: None,
-        })?;
-        if let Some(caption) = text {
-            validate_caption(caption)?;
+            }),
         }
-
-        // V1 intentionally ignores generic `alt`: no verified Instagram
-        // Login wire field is sent until that accessibility contract is
-        // implemented and live-validated rather than guessed.
-        let token = access_token(creds)?;
-        let user_id = stored_user_id(creds)?;
-        post_image(
-            &self.http,
-            &self.base,
-            ImagePost {
-                access_token: token,
-                user_id: &user_id,
-                image_url,
-                caption: text.as_deref(),
-            },
-            deadline,
-            self.container_poll_interval,
-        )
-        .await
     }
 
     async fn whoami(&self, _app: &AppConfig, creds: &AccountCreds) -> Result<WhoAmI, Error> {
@@ -163,6 +181,28 @@ impl Publisher for Instagram {
             &self.base,
             access_token(creds)?,
             Deadline::from_secs(30),
+        )
+        .await
+    }
+
+    async fn media(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        query: &MediaQuery,
+        deadline: Deadline,
+    ) -> Result<MediaReply, Error> {
+        // The credential's resolved user ID is intentionally the only read
+        // target too. A read command must not become a side door for probing
+        // arbitrary Instagram accounts by ID.
+        let user_id = stored_user_id(creds)?;
+        list_published_media(
+            &self.http,
+            &self.base,
+            access_token(creds)?,
+            &user_id,
+            query,
+            deadline,
         )
         .await
     }
@@ -289,6 +329,46 @@ pub fn validate_caption(caption: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Instagram Login asks Meta to crawl each supplied image URL. Keeping this
+/// check shared by single-image and carousel paths guarantees Postkit never
+/// grows an implicit local-upload, fetch, or image-hosting capability.
+fn public_image_url(image: &Image) -> Result<&str, Error> {
+    let Image::Url(image_url) = image else {
+        return Err(Error::InvalidPost {
+            site: Site::new(SITE),
+            reason: "image_source_unsupported:bytes".into(),
+            limit: None,
+        });
+    };
+    image.validate().map_err(|reason| Error::InvalidPost {
+        site: Site::new(SITE),
+        reason,
+        limit: None,
+    })?;
+    Ok(image_url)
+}
+
+/// Return the exact ordered URLs that become Meta carousel children. The
+/// count guard is deliberately before credential lookup and child creation:
+/// a malformed batch must not leave even invisible remote containers behind.
+fn carousel_image_urls(images: &[Image]) -> Result<Vec<&str>, Error> {
+    if images.len() < MIN_CAROUSEL_IMAGES {
+        return Err(Error::InvalidPost {
+            site: Site::new(SITE),
+            reason: "carousel_too_few_images".into(),
+            limit: Some(MIN_CAROUSEL_IMAGES as u32),
+        });
+    }
+    if images.len() > MAX_CAROUSEL_IMAGES {
+        return Err(Error::InvalidPost {
+            site: Site::new(SITE),
+            reason: "carousel_too_many_images".into(),
+            limit: Some(MAX_CAROUSEL_IMAGES as u32),
+        });
+    }
+    images.iter().map(public_image_url).collect()
+}
+
 /// The create-container body. `alt` is intentionally absent; see `publish`.
 pub fn image_form_pairs<'a>(
     image_url: &'a str,
@@ -296,6 +376,36 @@ pub fn image_form_pairs<'a>(
     access_token: &'a str,
 ) -> Vec<(&'a str, &'a str)> {
     let mut pairs = vec![("image_url", image_url)];
+    if let Some(caption) = caption {
+        pairs.push(("caption", caption));
+    }
+    pairs.push(("access_token", access_token));
+    pairs
+}
+
+/// A child has no caption of its own. The parent is the only carousel
+/// container that carries visible copy; putting it here would invite Meta to
+/// reject the batch or create an ambiguous per-slide contract.
+pub fn carousel_item_form_pairs<'a>(
+    image_url: &'a str,
+    access_token: &'a str,
+) -> Vec<(&'a str, &'a str)> {
+    vec![
+        ("image_url", image_url),
+        ("is_carousel_item", "true"),
+        ("access_token", access_token),
+    ]
+}
+
+/// The parent owns the ordered children and optional post caption. `children`
+/// is one comma-separated form value because that is Meta's carousel grammar,
+/// not a JSON array or a series of repeated fields.
+pub fn carousel_parent_form_pairs<'a>(
+    children: &'a str,
+    caption: Option<&'a str>,
+    access_token: &'a str,
+) -> Vec<(&'a str, &'a str)> {
+    let mut pairs = vec![("media_type", "CAROUSEL"), ("children", children)];
     if let Some(caption) = caption {
         pairs.push(("caption", caption));
     }
@@ -313,6 +423,16 @@ struct ImagePost<'a> {
     caption: Option<&'a str>,
 }
 
+/// Validated carousel inputs. URLs are borrowed from `Body::Carousel`, so
+/// this primitive cannot invent another target or source while it constructs
+/// child containers in their caller-specified order.
+struct CarouselPost<'a> {
+    access_token: &'a str,
+    user_id: &'a str,
+    image_urls: &'a [&'a str],
+    caption: Option<&'a str>,
+}
+
 async fn post_image(
     http: &Http,
     base: &str,
@@ -320,18 +440,19 @@ async fn post_image(
     deadline: Deadline,
     poll_interval: Duration,
 ) -> Result<Outcome, Error> {
-    let site = Site::new(SITE);
-    let create_url = format!("{}/{}/media", base.trim_end_matches('/'), post.user_id);
-    let create = http
-        .post(&create_url)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(form(&image_form_pairs(
+    let container = create_media_container(
+        http,
+        base,
+        post.user_id,
+        form(&image_form_pairs(
             post.image_url,
             post.caption,
             post.access_token,
-        )));
-    let response = http.send(create, deadline, &site).await?;
-    let container = json_id(&read_json(response, &site).await?, &site, "media create")?;
+        )),
+        "media create",
+        deadline,
+    )
+    .await?;
 
     // `POST /media` only asks Meta to fetch/process the public image. The
     // live API can legitimately reject an immediate publish with code 9007
@@ -347,27 +468,238 @@ async fn post_image(
     )
     .await?;
 
-    let publish_url = format!(
-        "{}/{}/media_publish",
-        base.trim_end_matches('/'),
-        post.user_id
-    );
+    publish_ready_container(
+        http,
+        base,
+        post.access_token,
+        post.user_id,
+        &container,
+        deadline,
+    )
+    .await
+}
+
+/// Build a carousel without ever turning its input into independent posts.
+/// Each child reaches `FINISHED` before the parent is created, so one failed
+/// or expired URL stops further work before there is any visible publish.
+async fn post_carousel(
+    http: &Http,
+    base: &str,
+    post: CarouselPost<'_>,
+    deadline: Deadline,
+    poll_interval: Duration,
+) -> Result<Outcome, Error> {
+    let mut children = Vec::with_capacity(post.image_urls.len());
+    for image_url in post.image_urls {
+        let child = create_media_container(
+            http,
+            base,
+            post.user_id,
+            form(&carousel_item_form_pairs(image_url, post.access_token)),
+            "carousel child create",
+            deadline,
+        )
+        .await?;
+        wait_for_container_ready(
+            http,
+            base,
+            post.access_token,
+            &child,
+            deadline,
+            poll_interval,
+        )
+        .await?;
+        children.push(child);
+    }
+
+    // The comma join is internal only. Returning child IDs would let a caller
+    // mistake invisible, expiring containers for independently published media.
+    let children = children.join(",");
+    let parent = create_media_container(
+        http,
+        base,
+        post.user_id,
+        form(&carousel_parent_form_pairs(
+            &children,
+            post.caption,
+            post.access_token,
+        )),
+        "carousel parent create",
+        deadline,
+    )
+    .await?;
+    wait_for_container_ready(
+        http,
+        base,
+        post.access_token,
+        &parent,
+        deadline,
+        poll_interval,
+    )
+    .await?;
+
+    publish_ready_container(
+        http,
+        base,
+        post.access_token,
+        post.user_id,
+        &parent,
+        deadline,
+    )
+    .await
+}
+
+/// Create an invisible media container with the caller's already-reviewed
+/// form body. The action label is only for a missing-ID diagnosis; raw server
+/// bodies remain inside `read_json`'s credential-safe error boundary.
+async fn create_media_container(
+    http: &Http,
+    base: &str,
+    user_id: &str,
+    body: String,
+    action: &str,
+    deadline: Deadline,
+) -> Result<String, Error> {
+    let site = Site::new(SITE);
+    let create = http
+        .post(&format!("{}/{user_id}/media", base.trim_end_matches('/')))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body);
+    let response = http.send(create, deadline, &site).await?;
+    json_id(&read_json(response, &site).await?, &site, action)
+}
+
+/// The one irreversible write shared by single images and carousel parents.
+/// It is intentionally called only after its container's read-only readiness
+/// gate has returned `FINISHED`.
+async fn publish_ready_container(
+    http: &Http,
+    base: &str,
+    access_token: &str,
+    user_id: &str,
+    container: &str,
+    deadline: Deadline,
+) -> Result<Outcome, Error> {
+    let site = Site::new(SITE);
+    let publish_url = format!("{}/{}/media_publish", base.trim_end_matches('/'), user_id);
     let publish = http
         .post(&publish_url)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(form(&[
-            ("creation_id", container.as_str()),
-            ("access_token", post.access_token),
+            ("creation_id", container),
+            ("access_token", access_token),
         ]));
     // Never retry this write automatically. A response lost after Meta
     // accepts it is ambiguous, and a retry could make a second visible post.
     let response = http.send(publish, deadline, &site).await?;
     let id = json_id(&read_json(response, &site).await?, &site, "media publish")?;
+    // Publishing has already succeeded. A permalink GET is useful output but
+    // not part of the write's truth: a timeout, permission rollout, or a
+    // malformed optional reply must never report a confirmed visible post as
+    // failed or tempt Client into retrying `media_publish`.
+    let url = published_permalink(http, base, access_token, &id, deadline)
+        .await
+        .ok()
+        .flatten();
     Ok(Outcome {
         site,
         id: Some(id),
-        url: None,
+        url,
         limits: None,
+    })
+}
+
+/// Read the first page of a credential owner's media, with an explicit
+/// provider limit and no cursor follow-up. Keeping this as one GET gives the
+/// generic `read.media` capability a hard ceiling even if Meta adds pagination
+/// links to a future response.
+async fn list_published_media(
+    http: &Http,
+    base: &str,
+    access_token: &str,
+    user_id: &str,
+    query: &MediaQuery,
+    deadline: Deadline,
+) -> Result<MediaReply, Error> {
+    query.validate().map_err(|reason| Error::InvalidQuery {
+        site: Site::new(SITE),
+        reason,
+    })?;
+    let site = Site::new(SITE);
+    let limit = query.limit.to_string();
+    let request_query = form(&[
+        ("fields", "id,permalink,caption,media_type,timestamp"),
+        ("limit", limit.as_str()),
+        ("access_token", access_token),
+    ]);
+    let response = http
+        .send(
+            http.get(&format!(
+                "{}/{user_id}/media?{request_query}",
+                base.trim_end_matches('/')
+            )),
+            deadline,
+            &site,
+        )
+        .await?;
+    let body = read_json(response, &site).await?;
+    let entries = body
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Platform {
+            site: site.clone(),
+            code: "missing_media_data".into(),
+            message: "media list returned no data array".into(),
+        })?;
+
+    // Honor the public Postkit bound even if a remote regression ignores our
+    // `limit` query parameter. Retaining order preserves Meta's recency order.
+    let media = entries
+        .iter()
+        .take(query.limit.into())
+        .map(|entry| parse_published_media(entry, &site))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(MediaReply { site, media })
+}
+
+/// Fetch only the link for a newly confirmed media ID. This narrow helper is
+/// intentionally not a public arbitrary-ID lookup: it is used solely to
+/// enrich the outcome of the preceding publish.
+async fn published_permalink(
+    http: &Http,
+    base: &str,
+    access_token: &str,
+    media_id: &str,
+    deadline: Deadline,
+) -> Result<Option<String>, Error> {
+    let site = Site::new(SITE);
+    let request_query = form(&[("fields", "permalink"), ("access_token", access_token)]);
+    let response = http
+        .send(
+            http.get(&format!(
+                "{}/{media_id}?{request_query}",
+                base.trim_end_matches('/')
+            )),
+            deadline,
+            &site,
+        )
+        .await?;
+    let body = read_json(response, &site).await?;
+    Ok(nonempty_value_string(body.get("permalink")))
+}
+
+fn parse_published_media(entry: &Value, site: &Site) -> Result<PublishedMedia, Error> {
+    let id = nonempty_value_string(entry.get("id")).ok_or_else(|| Error::Platform {
+        site: site.clone(),
+        code: "missing_media_id".into(),
+        message: "media list returned an item without id".into(),
+    })?;
+    Ok(PublishedMedia {
+        id,
+        permalink: nonempty_value_string(entry.get("permalink")),
+        caption: value_string(entry.get("caption")),
+        media_type: nonempty_value_string(entry.get("media_type")),
+        timestamp: nonempty_value_string(entry.get("timestamp")),
     })
 }
 
@@ -613,6 +945,13 @@ fn value_string(value: Option<&Value>) -> Option<String> {
     })
 }
 
+/// IDs and URL-like fields must not turn an empty provider string into a
+/// usable target. Captions intentionally use `value_string` directly: an
+/// empty caption is still distinct from a field Meta omitted.
+fn nonempty_value_string(value: Option<&Value>) -> Option<String> {
+    value_string(value).filter(|value| !value.is_empty())
+}
+
 async fn read_json(response: reqwest::Response, site: &Site) -> Result<Value, Error> {
     let status = response.status();
     // A body-read failure may include credential-bearing request details in a
@@ -723,6 +1062,21 @@ mod tests {
                 text: caption.map(str::to_owned),
                 image: Image::Url("https://cdn.example.test/photo.jpg".into()),
                 alt: "A deliberately ignored v1 alt field".into(),
+            },
+            idempotency_key: None,
+        }
+    }
+
+    fn carousel_intent(caption: Option<&str>) -> Intent {
+        Intent {
+            site: Site::new(SITE),
+            params: json!({}),
+            body: Body::Carousel {
+                text: caption.map(str::to_owned),
+                images: vec![
+                    Image::Url("https://cdn.example.test/slide-1.jpg".into()),
+                    Image::Url("https://cdn.example.test/slide-2.jpg".into()),
+                ],
             },
             idempotency_key: None,
         }
@@ -858,6 +1212,14 @@ mod tests {
                 .body_contains("access_token=long-token");
             then.status(200).json_body(json!({ "id": "media-1" }));
         });
+        let permalink = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/media-1")
+                .query_param("fields", "permalink")
+                .query_param("access_token", "long-token");
+            then.status(200)
+                .json_body(json!({ "permalink": "https://www.instagram.com/p/media-1/" }));
+        });
         let connector = Instagram::with_base(format!("{}/v26.0", server.base_url())).unwrap();
         let outcome = connector
             .publish(
@@ -871,7 +1233,12 @@ mod tests {
         create.assert();
         ready.assert();
         publish.assert();
+        permalink.assert();
         assert_eq!(outcome.id.as_deref(), Some("media-1"));
+        assert_eq!(
+            outcome.url.as_deref(),
+            Some("https://www.instagram.com/p/media-1/")
+        );
         assert!(!form(&image_form_pairs(
             "https://cdn.example.test/photo.jpg",
             Some("Hello Instagram"),
@@ -907,6 +1274,13 @@ mod tests {
             when.method(POST).path("/v26.0/178900/media_publish");
             then.status(200).json_body(json!({ "id": "media-1" }));
         });
+        let permalink = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/media-1")
+                .query_param("fields", "permalink");
+            then.status(200)
+                .json_body(json!({ "permalink": "https://www.instagram.com/p/media-1/" }));
+        });
         let connector = Instagram::with_base(format!("{}/v26.0", server.base_url())).unwrap();
         connector
             .publish(
@@ -920,17 +1294,19 @@ mod tests {
         create.assert();
         ready.assert();
         publish.assert();
+        permalink.assert();
     }
 
     #[tokio::test]
     async fn image_publish_waits_for_finished_before_the_visible_write() {
         // httpmock deliberately has no response sequence primitive. This
-        // local four-request script proves the real order: create,
-        // IN_PROGRESS read, FINISHED read, then one visible publish.
+        // local five-request script proves the real order: create,
+        // IN_PROGRESS read, FINISHED read, one visible publish, then the
+        // strictly follow-up permalink read.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            for expected in 0..4 {
+            for expected in 0..5 {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = Vec::new();
                 loop {
@@ -953,6 +1329,9 @@ mod tests {
                     (1, "/v26.0/container-1") => r#"{"status_code":"IN_PROGRESS"}"#,
                     (2, "/v26.0/container-1") => r#"{"status_code":"FINISHED"}"#,
                     (3, "/v26.0/178900/media_publish") => r#"{"id":"media-1"}"#,
+                    (4, "/v26.0/media-1") => {
+                        r#"{"permalink":"https://www.instagram.com/p/media-1/"}"#
+                    }
                     other => panic!("unexpected request {other:?}"),
                 };
                 write!(
@@ -977,6 +1356,347 @@ mod tests {
             .unwrap();
         server.join().unwrap();
         assert_eq!(outcome.id.as_deref(), Some("media-1"));
+        assert_eq!(
+            outcome.url.as_deref(),
+            Some("https://www.instagram.com/p/media-1/")
+        );
+    }
+
+    #[tokio::test]
+    async fn carousel_publishes_ready_children_then_one_ready_parent() {
+        let server = MockServer::start();
+        // Child forms use no caption: only the parent owns visible carousel
+        // copy. The distinct URLs make the test prove caller order is kept.
+        let child_one = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/178900/media")
+                .body_contains("image_url=https%3A%2F%2Fcdn.example.test%2Fslide-1.jpg")
+                .body_contains("is_carousel_item=true")
+                .body_contains("access_token=long-token");
+            then.status(200).json_body(json!({ "id": "child-1" }));
+        });
+        let child_one_ready = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/child-1")
+                .query_param("fields", "status_code");
+            then.status(200)
+                .json_body(json!({ "status_code": "FINISHED" }));
+        });
+        let child_two = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/178900/media")
+                .body_contains("image_url=https%3A%2F%2Fcdn.example.test%2Fslide-2.jpg")
+                .body_contains("is_carousel_item=true")
+                .body_contains("access_token=long-token");
+            then.status(200).json_body(json!({ "id": "child-2" }));
+        });
+        let child_two_ready = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/child-2")
+                .query_param("fields", "status_code");
+            then.status(200)
+                .json_body(json!({ "status_code": "FINISHED" }));
+        });
+        let parent = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/178900/media")
+                .body_contains("media_type=CAROUSEL")
+                .body_contains("children=child-1%2Cchild-2")
+                .body_contains("caption=Carousel+caption")
+                .body_contains("access_token=long-token");
+            then.status(200).json_body(json!({ "id": "parent-1" }));
+        });
+        let parent_ready = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/parent-1")
+                .query_param("fields", "status_code");
+            then.status(200)
+                .json_body(json!({ "status_code": "FINISHED" }));
+        });
+        let publish = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/178900/media_publish")
+                .body_contains("creation_id=parent-1")
+                .body_contains("access_token=long-token");
+            then.status(200).json_body(json!({ "id": "carousel-1" }));
+        });
+        let permalink = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/carousel-1")
+                .query_param("fields", "permalink");
+            then.status(200)
+                .json_body(json!({ "permalink": "https://www.instagram.com/p/carousel-1/" }));
+        });
+        let connector = Instagram::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let outcome = connector
+            .publish(
+                &app(),
+                &creds(),
+                carousel_intent(Some("Carousel caption")),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        child_one.assert();
+        child_one_ready.assert();
+        child_two.assert();
+        child_two_ready.assert();
+        parent.assert();
+        parent_ready.assert();
+        publish.assert();
+        permalink.assert();
+        assert_eq!(outcome.id.as_deref(), Some("carousel-1"));
+        assert_eq!(
+            outcome.url.as_deref(),
+            Some("https://www.instagram.com/p/carousel-1/")
+        );
+
+        let child_form = form(&carousel_item_form_pairs(
+            "https://cdn.example.test/slide-1.jpg",
+            "long-token",
+        ));
+        assert!(child_form.contains("is_carousel_item=true"));
+        assert!(!child_form.contains("caption="));
+        let parent_form = form(&carousel_parent_form_pairs(
+            "child-1,child-2",
+            Some("Carousel caption"),
+            "long-token",
+        ));
+        assert!(parent_form.contains("media_type=CAROUSEL"));
+        assert!(parent_form.contains("children=child-1%2Cchild-2"));
+    }
+
+    #[tokio::test]
+    async fn carousel_child_failure_refuses_parent_and_visible_publish() {
+        let server = MockServer::start();
+        let child = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/178900/media");
+            then.status(200).json_body(json!({ "id": "child-1" }));
+        });
+        let failed_child = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/child-1");
+            then.status(200)
+                .json_body(json!({ "status_code": "ERROR" }));
+        });
+        let never_parent = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/178900/media")
+                .body_contains("media_type=CAROUSEL");
+            then.status(200).json_body(json!({ "id": "parent-1" }));
+        });
+        let never_publish = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/178900/media_publish");
+            then.status(200).json_body(json!({ "id": "carousel-1" }));
+        });
+        let connector = Instagram::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let error = connector
+            .publish(
+                &app(),
+                &creds(),
+                carousel_intent(None),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        child.assert();
+        failed_child.assert();
+        never_parent.assert_hits(0);
+        never_publish.assert_hits(0);
+        assert!(matches!(error, Error::Platform { code, .. } if code == "container_error"));
+    }
+
+    #[tokio::test]
+    async fn carousel_parent_failure_refuses_visible_publish() {
+        let server = MockServer::start();
+        let child_one = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/178900/media")
+                .body_contains("slide-1.jpg");
+            then.status(200).json_body(json!({ "id": "child-1" }));
+        });
+        let child_one_ready = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/child-1");
+            then.status(200)
+                .json_body(json!({ "status_code": "FINISHED" }));
+        });
+        let child_two = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/178900/media")
+                .body_contains("slide-2.jpg");
+            then.status(200).json_body(json!({ "id": "child-2" }));
+        });
+        let child_two_ready = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/child-2");
+            then.status(200)
+                .json_body(json!({ "status_code": "FINISHED" }));
+        });
+        let parent = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/178900/media")
+                .body_contains("media_type=CAROUSEL");
+            then.status(200).json_body(json!({ "id": "parent-1" }));
+        });
+        let failed_parent = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/parent-1");
+            then.status(200)
+                .json_body(json!({ "status_code": "ERROR" }));
+        });
+        let never_publish = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/178900/media_publish");
+            then.status(200).json_body(json!({ "id": "carousel-1" }));
+        });
+        let connector = Instagram::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let error = connector
+            .publish(
+                &app(),
+                &creds(),
+                carousel_intent(None),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        child_one.assert();
+        child_one_ready.assert();
+        child_two.assert();
+        child_two_ready.assert();
+        parent.assert();
+        failed_parent.assert();
+        never_publish.assert_hits(0);
+        assert!(matches!(error, Error::Platform { code, .. } if code == "container_error"));
+    }
+
+    #[tokio::test]
+    async fn media_list_is_bounded_and_preserves_meta_order() {
+        let server = MockServer::start();
+        let list = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/178900/media")
+                .query_param("fields", "id,permalink,caption,media_type,timestamp")
+                .query_param("limit", "2")
+                .query_param("access_token", "long-token");
+            then.status(200).json_body(json!({
+                "data": [
+                    {
+                        "id": "newest",
+                        "permalink": "https://www.instagram.com/p/newest/",
+                        "caption": "Recent labelled test",
+                        "media_type": "IMAGE",
+                        "timestamp": "2026-09-10T12:00:00+0000"
+                    },
+                    { "id": "older", "media_type": "CAROUSEL_ALBUM" },
+                    { "id": "ignored-beyond-limit" }
+                ]
+            }));
+        });
+        let connector = Instagram::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let reply = connector
+            .media(
+                &app(),
+                &creds(),
+                &MediaQuery { limit: 2 },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        list.assert();
+        assert_eq!(reply.site, Site::new(SITE));
+        assert_eq!(
+            reply
+                .media
+                .iter()
+                .map(|media| media.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["newest", "older"]
+        );
+        assert_eq!(
+            reply.media[0].permalink.as_deref(),
+            Some("https://www.instagram.com/p/newest/")
+        );
+        assert_eq!(reply.media[1].caption, None);
+        assert_eq!(reply.media[1].media_type.as_deref(), Some("CAROUSEL_ALBUM"));
+    }
+
+    #[tokio::test]
+    async fn media_list_refuses_a_malformed_item_after_the_single_get() {
+        let server = MockServer::start();
+        let list = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/178900/media");
+            then.status(200)
+                .json_body(json!({ "data": [{ "caption": "no id" }] }));
+        });
+        let connector = Instagram::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let error = connector
+            .media(
+                &app(),
+                &creds(),
+                &MediaQuery { limit: 1 },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        list.assert();
+        assert!(matches!(error, Error::Platform { code, .. } if code == "missing_media_id"));
+    }
+
+    #[tokio::test]
+    async fn media_list_validates_the_limit_before_http() {
+        let server = MockServer::start();
+        let no_get = server.mock(|when, then| {
+            when.method(GET);
+            then.status(500);
+        });
+        let connector = Instagram::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let error = connector
+            .media(
+                &app(),
+                &creds(),
+                &MediaQuery { limit: 0 },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        no_get.assert_hits(0);
+        assert!(
+            matches!(error, Error::InvalidQuery { reason, .. } if reason == "media_limit_out_of_range")
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmed_publish_stays_successful_if_permalink_lookup_fails() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/178900/media");
+            then.status(200).json_body(json!({ "id": "container-1" }));
+        });
+        let ready = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/container-1");
+            then.status(200)
+                .json_body(json!({ "status_code": "FINISHED" }));
+        });
+        let publish = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/178900/media_publish");
+            then.status(200).json_body(json!({ "id": "media-1" }));
+        });
+        let failed_permalink = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/media-1");
+            then.status(500).body("gateway unavailable");
+        });
+        let connector = Instagram::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let outcome = connector
+            .publish(
+                &app(),
+                &creds(),
+                image_intent(Some("Confirmed despite lookup")),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        create.assert();
+        ready.assert();
+        publish.assert();
+        failed_permalink.assert();
+        assert_eq!(outcome.id.as_deref(), Some("media-1"));
+        assert_eq!(outcome.url, None);
     }
 
     #[tokio::test]
@@ -1081,6 +1801,74 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(matches!(error, Error::InvalidPost { reason: actual, .. } if actual == reason));
+        }
+        no_write.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn invalid_carousels_fail_before_any_container_create() {
+        let server = MockServer::start();
+        let no_write = server.mock(|when, then| {
+            when.method(POST);
+            then.status(500);
+        });
+        let connector = Instagram::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let too_few = Intent {
+            site: Site::new(SITE),
+            params: json!({}),
+            body: Body::Carousel {
+                text: None,
+                images: vec![Image::Url("https://cdn.example.test/only.jpg".into())],
+            },
+            idempotency_key: None,
+        };
+        let too_many = Intent {
+            site: Site::new(SITE),
+            params: json!({}),
+            body: Body::Carousel {
+                text: None,
+                images: (0..MAX_CAROUSEL_IMAGES + 1)
+                    .map(|number| Image::Url(format!("https://cdn.example.test/{number}.jpg")))
+                    .collect(),
+            },
+            idempotency_key: None,
+        };
+        let byte_source = Intent {
+            site: Site::new(SITE),
+            params: json!({}),
+            body: Body::Carousel {
+                text: None,
+                images: vec![
+                    Image::Url("https://cdn.example.test/first.jpg".into()),
+                    Image::Bytes {
+                        filename: "second.jpg".into(),
+                        bytes: vec![1],
+                    },
+                ],
+            },
+            idempotency_key: None,
+        };
+        for (intent, reason, limit) in [
+            (
+                too_few,
+                "carousel_too_few_images",
+                MIN_CAROUSEL_IMAGES as u32,
+            ),
+            (
+                too_many,
+                "carousel_too_many_images",
+                MAX_CAROUSEL_IMAGES as u32,
+            ),
+            (byte_source, "image_source_unsupported:bytes", 0),
+        ] {
+            let error = connector
+                .publish(&app(), &creds(), intent, Deadline::from_secs(30))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidPost { reason: actual, limit: actual_limit, .. }
+                    if actual == reason && (limit == 0 || actual_limit == Some(limit)))
+            );
         }
         no_write.assert_hits(0);
     }

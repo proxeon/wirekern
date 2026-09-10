@@ -8,6 +8,7 @@ use crate::ads::{
 use crate::apps::AppStore;
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
+use crate::media::{MediaQuery, MediaReply};
 use crate::pages::PagesReply;
 use crate::policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
@@ -300,6 +301,44 @@ impl Client {
                 let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
                 publisher.pages(&app, &new, deadline).await
+            }
+            other => other,
+        }
+    }
+
+    /// Read one intentionally bounded page of published media. Like every
+    /// remote read, this validates before credentials are loaded, then uses
+    /// the standard one-refresh retry only for a confirmed expired token.
+    pub async fn media(
+        &self,
+        key: &AccountKey,
+        query: MediaQuery,
+        deadline: Deadline,
+    ) -> Result<MediaReply, Error> {
+        query.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        let publisher = self.publisher(&key.site)?;
+        if !publisher.capabilities().contains(&Capability::ReadMedia) {
+            return Err(Error::UnsupportedCapability {
+                site: key.site.clone(),
+                need: Capability::ReadMedia,
+            });
+        }
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let mut creds = self.vault.get(key)?;
+        creds = self
+            .maybe_refresh(&*publisher, &app, key, creds, deadline)
+            .await?;
+        match publisher.media(&app, &creds, &query, deadline).await {
+            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
+                let new = publisher.refresh(&app, &creds, deadline).await?;
+                self.vault.put(key, &new)?;
+                publisher.media(&app, &new, &query, deadline).await
             }
             other => other,
         }

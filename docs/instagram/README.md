@@ -69,10 +69,13 @@ Meta fetches the URL asynchronously. Postkit creates a media container, polls
 its read-only `status_code` until it is `FINISHED`, then explicitly publishes
 it. The global `--deadline` bounds both the fetch wait and final publish; use
 `--deadline 90` for a first test so a remote image host has time to respond.
-The successful `Outcome.id` is the published media ID; inspect the profile to
-verify the visible post. This is an organic post, not a paused draft, so it
-becomes visible if Meta accepts it. Delete the labelled test in Instagram when
-it is no longer useful.
+The successful `Outcome.id` is the published media ID. Postkit makes one
+best-effort, read-only permalink lookup after the confirmed write, so modern
+results also include `Outcome.url` when Meta supplies it. A missing `url` does
+not invalidate the visible post: use the returned ID or the media list below,
+and Postkit will never retry `media_publish` just to obtain a link. This is an
+organic post, not a paused draft, so it becomes visible if Meta accepts it.
+Delete the labelled test in Instagram when it is no longer useful.
 
 `--alt` is accepted so the generic post format remains portable, but v1 does
 not send it: Postkit has not claimed an unverified Instagram Login accessibility
@@ -85,6 +88,53 @@ fails after Meta accepts a write, do **not** blindly retry: inspect Instagram
 first, because the remote outcome is ambiguous and a new request may make a
 second visible post.
 
+## Publish an image carousel
+
+Repeat `--image` **2 through 10 times** to create one swipeable image
+carousel. Every image must be a public HTTPS URL. The one optional `--text`
+value is the post caption on the carousel parent, not a caption on each
+slide:
+
+```bash
+postkit --deadline 180 post instagram \
+  --idempotency instagram-carousel-test-2026-09-10 \
+  --image 'https://cdn.example.com/postkit-slide-1.jpg' \
+  --image 'https://cdn.example.com/postkit-slide-2.jpg' \
+  --text 'Postkit Instagram carousel test — please ignore'
+```
+
+Postkit creates one invisible `is_carousel_item=true` container per image and
+waits for each to become `FINISHED`. It then creates one `CAROUSEL` parent
+with the ordered child IDs, waits for that parent, and sends exactly one
+visible `media_publish` request. A child or parent processing failure leaves
+any earlier child containers invisible and stops before publication. The
+global deadline covers every child, parent, and permalink read; start with
+`--deadline 180` for a first live test.
+
+`--alt` is refused for a carousel (`carousel_alt_unsupported`) rather than
+being silently copied to every slide or silently discarded. Carousel video or
+mixed-media support, local file hosting, user tags, location, and per-slide
+alt text are not implemented. As with a single image, inspect Instagram
+before retrying an unknown write outcome; an idempotency key only replays a
+confirmed Postkit outcome.
+
+## Read recent published media
+
+The same credential can read the first page of the directly authorized
+account's recent media. It is a single GET; it never selects another account,
+follows a pagination cursor, downloads images, or creates/changes a post.
+
+```bash
+postkit --json media list instagram --limit 5
+```
+
+`--limit` is 1 through 25 (default 10). The JSON reply contains `site` and a
+server-ordered `media` array. Every item has `id`; `permalink`, `caption`,
+`media_type`, and `timestamp` appear only when Meta supplies them. Human
+output deliberately prints only copyable identity/link metadata; use `--json`
+when a script needs captions. There is no pagination flag in v1, so a single
+call always remains bounded.
+
 ## Common failures
 
 | Symptom | Meaning / next action |
@@ -96,13 +146,18 @@ second visible post.
 | `image_source_unsupported:bytes` | Supply a public `https://` image URL rather than a local path. |
 | `image_url_must_be_https` | Use HTTPS with a real public host; Meta is the final authority on image format, size, and reachability. |
 | `caption_empty` / `caption_too_long` | Omit `--text` for no caption, or provide 1–2,200 nonblank characters. |
+| `carousel_too_few_images` / `carousel_too_many_images` | Use 2–10 `--image` values. One image is the normal image-post flow. |
+| `carousel_alt_unsupported` | Omit `--alt`; v1 has no reviewed per-slide alt-text contract. |
+| `carousel_caption_multiple` / `carousel_reply_unsupported` | Use at most one parent `--text` and no `reply_to_id` parameter. |
 | `unsupported_param:*` | V1 has no arbitrary target parameters, replies, mentions, or scheduling fields. |
 
 ## Deliberate v1 boundary
 
-Implemented: OAuth, long-lived token refresh, identity lookup, and one
-public-image feed post with optional caption. Not implemented: local image
-upload/hosting, video/Reels, carousel, Stories, comments, insights,
-multi-account discovery, Page selection, editing/deletion, scheduling, or an
-honest `--dry-run`. Each has a different API shape and visible side effect, so
-it needs a separate reviewed contract before it is added.
+Implemented: OAuth, long-lived token refresh, identity lookup, one
+public-image feed post, a 2–10-image carousel (both with optional caption),
+and a bounded first-page read of that account's published media. Not
+implemented: local image upload/hosting, video/Reels or mixed-media carousels,
+Stories, per-slide alt text, comments, insights, multi-account discovery, Page
+selection, editing/deletion, scheduling, or an honest `--dry-run`. Each has a
+different API shape and visible side effect, so it needs a separate reviewed
+contract before it is added.

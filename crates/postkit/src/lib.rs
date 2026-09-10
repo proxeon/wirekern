@@ -7,6 +7,7 @@ mod apps;
 mod client;
 mod error;
 mod insights;
+mod media;
 mod pages;
 mod policy;
 mod publisher;
@@ -70,6 +71,7 @@ pub use insights::{
     AdAccount, AdAccountsReply, AttributionWindow, Breakdown, DateRange, InsightRow, InsightsLevel,
     InsightsQuery, InsightsReply, Metric, MAX_RANGE_DAYS,
 };
+pub use media::{MediaQuery, MediaReply, PublishedMedia, DEFAULT_MEDIA_LIMIT, MAX_MEDIA_LIMIT};
 pub use pages::{PageAccount, PagesReply};
 pub use policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};
 pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};

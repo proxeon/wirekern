@@ -202,6 +202,14 @@ impl Publisher for Bluesky {
                 )
                 .await
             }
+            // One image embed is the only reviewed Bluesky image shape.
+            // Refuse a carousel explicitly instead of creating several
+            // separate records or pretending a multi-image embed is known.
+            Body::Carousel { .. } => Err(Error::InvalidPost {
+                site: self.site.clone(),
+                reason: "carousel_unsupported".into(),
+                limit: None,
+            }),
         }
     }
 

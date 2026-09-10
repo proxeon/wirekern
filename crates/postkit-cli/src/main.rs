@@ -2,6 +2,7 @@ mod output;
 
 use clap::{Parser, Subcommand};
 use output::{emit_err, emit_ok, emit_raw, human_line};
+use postkit::connectors::instagram::MAX_CAROUSEL_IMAGES;
 use postkit::connectors::threads::validate_text;
 use postkit::{
     app_source, extract_code, valid_name, verify_state, AccountKey, AdAccount, AdEntity,
@@ -10,9 +11,10 @@ use postkit::{
     CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
     CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, DraftStep, Error,
     FileAppStore, FileDraftStore, FileVault, Image, InsightRow, InsightsLevel, InsightsQuery,
-    Intent, LinkAdCreative, LinkCallToAction, Metric, OAuthApp, PausedAd, PausedAdCreate,
-    PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult, PostRequest, Registry,
-    RunPausedDraft, Site, UploadAdImageRequest, UploadedAdImage, Vault,
+    Intent, LinkAdCreative, LinkCallToAction, MediaQuery, Metric, OAuthApp, PausedAd,
+    PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
+    PostRequest, PublishedMedia, Registry, RunPausedDraft, Site, UploadAdImageRequest,
+    UploadedAdImage, Vault, DEFAULT_MEDIA_LIMIT,
 };
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
@@ -67,11 +69,12 @@ enum Commands {
         /// would, publish nothing. The container expires in 24h.
         #[arg(long)]
         dry_run: bool,
-        /// One image per post: a local file (Bluesky/Facebook Pages upload
-        /// bytes) or a public https URL (Threads/Instagram crawl it). The
-        /// kernel never converts between the two forms.
-        #[arg(long)]
-        image: Option<String>,
+        /// Repeat for an Instagram image carousel (2–10 public HTTPS URLs).
+        /// One image remains the normal site-specific image post: a local
+        /// file (Bluesky/Facebook Pages upload bytes) or a public HTTPS URL
+        /// (Threads/Instagram crawl it). The kernel never converts forms.
+        #[arg(long, action = clap::ArgAction::Append)]
+        image: Vec<String>,
         /// Accessibility text for --image (embedded where the platform
         /// supports it; Threads and Instagram v1 have no verified alt field).
         #[arg(long, default_value = "")]
@@ -129,6 +132,10 @@ enum Commands {
     /// `--param page_id=<id>` for an explicit organic publish target.
     #[command(subcommand)]
     Pages(PagesCmd),
+    /// Read a deliberately bounded first page of published media. This is
+    /// GET-only and never creates, edits, or makes a post visible.
+    #[command(subcommand)]
+    Media(MediaCmd),
     Capabilities {
         site: Option<String>,
     },
@@ -327,6 +334,18 @@ enum PagesCmd {
 }
 
 #[derive(Subcommand, Debug)]
+enum MediaCmd {
+    /// List recent published media for the credential's explicit account.
+    List {
+        site: String,
+        /// First-page size, 1 through 25. Postkit intentionally exposes no
+        /// pagination cursor until that larger read contract is reviewed.
+        #[arg(long, default_value_t = DEFAULT_MEDIA_LIMIT)]
+        limit: u8,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum AppsCmd {
     Show {
         site: String,
@@ -473,6 +492,22 @@ async fn dispatch(
     deadline: Deadline,
 ) -> Result<(), i32> {
     match cmd {
+        Commands::Media(MediaCmd::List { site, limit }) => {
+            let key = AccountKey::new(&site, &account);
+            match client.media(&key, MediaQuery { limit }, deadline).await {
+                Ok(reply) => {
+                    if json {
+                        emit_raw(&serde_json::to_value(&reply).expect("json"));
+                    } else {
+                        for media in &reply.media {
+                            human_line(media_line(media));
+                        }
+                    }
+                    Ok(())
+                }
+                Err(error) => Err(fail(&error, json)),
+            }
+        }
         Commands::Pages(PagesCmd::Accounts { site }) => {
             let key = AccountKey::new(&site, &account);
             match client.pages(&key, deadline).await {
@@ -1032,23 +1067,9 @@ async fn dispatch(
             // Image exclusions fire before any parsing or I/O: each
             // combination names a wire contract postkit has not verified
             // (015 D4), and half-honoring it is the 022 failure mode.
-            if let Some(image) = &image {
-                let err = if text.len() > 1 {
-                    "image_chain_unsupported"
-                } else if dry_run {
-                    "dry_run_image_unsupported"
-                } else if param
-                    .iter()
-                    .any(|p| p.split('=').next().unwrap_or("") == "reply_to_id")
-                {
-                    "image_reply_unsupported"
-                } else {
-                    ""
-                };
-                if !err.is_empty() {
-                    return Err(fail(&invalid_post(&site_or_to(&site, &to), err), json));
-                }
-                let _ = image; // resolved below, after the stdin branch
+            if let Some(err) = image_input_conflict(image.len(), text.len(), dry_run, &alt, &param)
+            {
+                return Err(fail(&invalid_post(&site_or_to(&site, &to), err), json));
             }
             // 025: --stdin is a complete request in itself; any other
             // content-carrying flag would be silently ignored by the stdin
@@ -1056,7 +1077,7 @@ async fn dispatch(
             if let Some(e) = stdin_conflict(
                 stdin,
                 &text,
-                image.as_deref(),
+                &image,
                 &alt,
                 to.as_deref(),
                 &param,
@@ -1079,7 +1100,7 @@ async fn dispatch(
                 })?;
                 let (key, mut intent) = req.into_key_intent().map_err(|e| fail(&e, json))?;
                 intent.idempotency_key = idempotency;
-                if dry_run && matches!(intent.body, Body::Image { .. }) {
+                if dry_run && matches!(intent.body, Body::Image { .. } | Body::Carousel { .. }) {
                     return Err(fail(
                         &invalid_post(key.site.as_str(), "dry_run_image_unsupported"),
                         json,
@@ -1094,7 +1115,7 @@ async fn dispatch(
             }
             // With --image the caption is optional (zero or one --text);
             // without it the existing text rules apply unchanged.
-            let texts = if image.is_some() {
+            let texts = if !image.is_empty() {
                 if text.iter().any(|t| t == "-") {
                     return Err(fail(
                         &invalid_post(&site_or_to(&site, &to), "image_chain_unsupported"),
@@ -1147,16 +1168,8 @@ async fn dispatch(
                     // Bytes are cloned per target: each connector gets its
                     // own copy and a per-target failure (e.g. a URL image
                     // on Bluesky) is isolated in the fan-out results.
-                    let body = match &image {
-                        Some(raw) => Body::Image {
-                            text: text.clone(),
-                            image: resolve_image(raw, s).map_err(|e| fail(&e, json))?,
-                            alt: alt.clone(),
-                        },
-                        None => Body::Text {
-                            text: text.clone().expect("resolve_texts guarantees one"),
-                        },
-                    };
+                    let body = build_post_body(&image, text.clone(), &alt, s)
+                        .map_err(|e| fail(&e, json))?;
                     let intent = Intent {
                         site: Site::new(s),
                         params: params.clone(),
@@ -1194,16 +1207,8 @@ async fn dispatch(
             } else {
                 let site = sites.into_iter().next().expect("collect_post_sites");
                 let key = AccountKey::new(&site, &account);
-                let body = match &image {
-                    Some(raw) => Body::Image {
-                        text,
-                        image: resolve_image(raw, &site).map_err(|e| fail(&e, json))?,
-                        alt,
-                    },
-                    None => Body::Text {
-                        text: text.expect("resolve_texts guarantees one"),
-                    },
-                };
+                let body =
+                    build_post_body(&image, text, &alt, &site).map_err(|e| fail(&e, json))?;
                 let intent = Intent {
                     site: Site::new(&site),
                     params,
@@ -1237,7 +1242,7 @@ async fn dispatch(
 fn stdin_conflict(
     stdin: bool,
     text: &[String],
-    image: Option<&str>,
+    images: &[String],
     alt: &str,
     to: Option<&str>,
     param: &[String],
@@ -1247,7 +1252,7 @@ fn stdin_conflict(
         return None;
     }
     let clean = text.is_empty()
-        && image.is_none()
+        && images.is_empty()
         && alt.is_empty()
         && to.is_none()
         && param.is_empty()
@@ -1300,6 +1305,84 @@ fn invalid_post(site: &str, reason: &str) -> Error {
         site: Site::new(site),
         reason: reason.into(),
         limit: None,
+    }
+}
+
+/// Reject a multi-image command shape that Postkit cannot map to one honest
+/// carousel. Kept pure so CLI tests prove every refusal occurs before a local
+/// image read, credential lookup, or remote container create.
+fn image_input_conflict(
+    image_count: usize,
+    text_count: usize,
+    dry_run: bool,
+    alt: &str,
+    params: &[String],
+) -> Option<&'static str> {
+    if image_count == 0 {
+        return None;
+    }
+    if text_count > 1 {
+        return Some(if image_count > 1 {
+            "carousel_caption_multiple"
+        } else {
+            "image_chain_unsupported"
+        });
+    }
+    if dry_run {
+        return Some("dry_run_image_unsupported");
+    }
+    if image_count > 1 && !alt.is_empty() {
+        // A single generic alt string cannot truthfully describe multiple
+        // slides. Reject it instead of silently dropping it while Instagram
+        // carousel alt text is not a reviewed per-slide wire contract.
+        return Some("carousel_alt_unsupported");
+    }
+    if params
+        .iter()
+        .any(|param| param.split('=').next().unwrap_or("") == "reply_to_id")
+    {
+        return Some(if image_count > 1 {
+            "carousel_reply_unsupported"
+        } else {
+            "image_reply_unsupported"
+        });
+    }
+    None
+}
+
+/// Build one typed body after the CLI has rejected combinations it cannot
+/// represent faithfully. Repeating `--image` is a single carousel body, not
+/// a loop that could accidentally create multiple visible posts.
+fn build_post_body(
+    images: &[String],
+    text: Option<String>,
+    alt: &str,
+    site: &str,
+) -> Result<Body, Error> {
+    match images {
+        [] => Ok(Body::Text {
+            text: text.expect("resolve_texts guarantees one when no image exists"),
+        }),
+        [image] => Ok(Body::Image {
+            text,
+            image: resolve_image(image, site)?,
+            alt: alt.to_string(),
+        }),
+        images if images.len() > MAX_CAROUSEL_IMAGES => Err(Error::InvalidPost {
+            site: Site::new(site),
+            reason: "carousel_too_many_images".into(),
+            // Check the cardinality before resolving a local filename. A
+            // malformed 11-image command should not touch eleven files only
+            // to report a platform limit that was already knowable.
+            limit: Some(MAX_CAROUSEL_IMAGES as u32),
+        }),
+        images => Ok(Body::Carousel {
+            text,
+            images: images
+                .iter()
+                .map(|image| resolve_image(image, site))
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
     }
 }
 
@@ -2147,6 +2230,20 @@ fn ad_account_line(account: &AdAccount) -> String {
     )
 }
 
+/// Keep human output to copyable identity/link metadata. Captions can contain
+/// arbitrary newlines and are already available faithfully in `--json`; never
+/// render them as terminal lines where remote content could blur record
+/// boundaries for an operator.
+fn media_line(media: &PublishedMedia) -> String {
+    let media_type = media.media_type.as_deref().unwrap_or("-");
+    let permalink = media.permalink.as_deref().unwrap_or("-");
+    let timestamp = media.timestamp.as_deref().unwrap_or("-");
+    format!(
+        "{} type={media_type} timestamp={timestamp} permalink={permalink}",
+        media.id
+    )
+}
+
 /// The id is adjacent to its entity name, followed by explicit `PAUSED`, so
 /// it can be copied into Ads Manager without a human mistaking it for active.
 fn created_ad_line(created: &CreatedAd) -> String {
@@ -2344,6 +2441,15 @@ mod tests {
         let cli = Cli::try_parse_from(["postkit", "pages", "accounts", "facebook_pages"]).unwrap();
         assert!(
             matches!(cli.command, Commands::Pages(PagesCmd::Accounts { site }) if site == "facebook_pages")
+        );
+    }
+
+    #[test]
+    fn media_list_command_parses_with_an_explicit_bounded_limit() {
+        let cli =
+            Cli::try_parse_from(["postkit", "media", "list", "instagram", "--limit", "2"]).unwrap();
+        assert!(
+            matches!(cli.command, Commands::Media(MediaCmd::List { site, limit }) if site == "instagram" && limit == 2)
         );
     }
 
@@ -2824,33 +2930,25 @@ mod tests {
     #[test]
     fn stdin_refuses_every_content_flag() {
         // --stdin alone is the intended shape: a complete request.
-        assert!(stdin_conflict(true, &[], None, "", None, &[], None).is_none());
+        assert!(stdin_conflict(true, &[], &[], "", None, &[], None).is_none());
         // Each content-carrying flag must refuse — any of them silently
         // ignored is a post the command line does not describe (025).
         let t = vec!["hi".to_string()];
+        let image = vec!["x.png".to_string()];
         let p = vec!["reply_to_id=1".to_string()];
         for e in [
-            stdin_conflict(true, &t, None, "", None, &[], None),
-            stdin_conflict(true, &[], Some("x.png"), "", None, &[], None),
-            stdin_conflict(true, &[], None, "alt", None, &[], None),
-            stdin_conflict(true, &[], None, "", Some("threads"), &[], None),
-            stdin_conflict(true, &[], None, "", None, &p, None),
-            stdin_conflict(true, &[], None, "", None, &[], Some("threads")),
+            stdin_conflict(true, &t, &[], "", None, &[], None),
+            stdin_conflict(true, &[], &image, "", None, &[], None),
+            stdin_conflict(true, &[], &[], "alt", None, &[], None),
+            stdin_conflict(true, &[], &[], "", Some("threads"), &[], None),
+            stdin_conflict(true, &[], &[], "", None, &p, None),
+            stdin_conflict(true, &[], &[], "", None, &[], Some("threads")),
         ] {
             let e = e.expect("must refuse");
             assert!(matches!(&e, Error::InvalidPost { reason, .. } if reason == "stdin_exclusive"));
         }
         // Without --stdin the flags are the normal path, no opinion here.
-        assert!(stdin_conflict(
-            false,
-            &t,
-            Some("x.png"),
-            "alt",
-            Some("threads"),
-            &p,
-            Some("x")
-        )
-        .is_none());
+        assert!(stdin_conflict(false, &t, &image, "alt", Some("threads"), &p, Some("x")).is_none());
     }
 
     #[test]
@@ -3008,7 +3106,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Post { ref image, ref alt, .. }
-                if image.as_deref() == Some("./hero.png") && alt == "chart"
+                if image == &["./hero.png"] && alt == "chart"
         ));
         // Image without any --text is a valid, caption-less post.
         let cli = Cli::try_parse_from([
@@ -3020,5 +3118,66 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(cli.command, Commands::Post { ref text, .. } if text.is_empty()));
+
+        let carousel = Cli::try_parse_from([
+            "postkit",
+            "post",
+            "instagram",
+            "--image",
+            "https://cdn.test/one.jpg",
+            "--image",
+            "https://cdn.test/two.jpg",
+            "--text",
+            "one caption",
+        ])
+        .unwrap();
+        assert!(matches!(
+            carousel.command,
+            Commands::Post { ref image, .. }
+                if image == &["https://cdn.test/one.jpg", "https://cdn.test/two.jpg"]
+        ));
+    }
+
+    #[test]
+    fn repeated_images_build_one_carousel_and_reject_ambiguous_flags() {
+        let images = vec![
+            "https://cdn.test/one.jpg".to_string(),
+            "https://cdn.test/two.jpg".to_string(),
+        ];
+        let body = build_post_body(&images, Some("one caption".into()), "", "instagram").unwrap();
+        assert!(matches!(
+            &body,
+            Body::Carousel { text: Some(text), images }
+                if text == "one caption" && images.len() == 2
+        ));
+        assert_eq!(
+            body.required_capability(),
+            postkit::Capability::PublishCarousel
+        );
+
+        let reply = vec!["reply_to_id=1".to_string()];
+        assert_eq!(
+            image_input_conflict(2, 1, false, "alt", &[]),
+            Some("carousel_alt_unsupported")
+        );
+        assert_eq!(
+            image_input_conflict(2, 2, false, "", &[]),
+            Some("carousel_caption_multiple")
+        );
+        assert_eq!(
+            image_input_conflict(2, 1, false, "", &reply),
+            Some("carousel_reply_unsupported")
+        );
+        assert_eq!(
+            image_input_conflict(2, 1, true, "", &[]),
+            Some("dry_run_image_unsupported")
+        );
+
+        let too_many = (0..MAX_CAROUSEL_IMAGES + 1)
+            .map(|index| format!("missing-{index}.jpg"))
+            .collect::<Vec<_>>();
+        let error = build_post_body(&too_many, None, "", "instagram").unwrap_err();
+        assert!(matches!(error, Error::InvalidPost { reason, limit, .. }
+                if reason == "carousel_too_many_images" && limit == Some(MAX_CAROUSEL_IMAGES as u32)));
     }
 }
