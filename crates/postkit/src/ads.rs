@@ -29,6 +29,19 @@ impl AdEntity {
     }
 }
 
+impl FromStr for AdEntity {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "campaign" => Ok(Self::Campaign),
+            "adset" => Ok(Self::Adset),
+            "ad" => Ok(Self::Ad),
+            other => Err(format!("unknown_ad_entity:{other}")),
+        }
+    }
+}
+
 /// Meta's outcome-based campaign objectives. Keeping this closed prevents a
 /// misspelled command-line objective from becoming an opaque Graph error
 /// after a write has already been attempted.
@@ -280,6 +293,22 @@ impl CreativePreviewRequest {
     }
 }
 
+/// Identify exactly one delivery object for a status inspection. The entity
+/// type is carried with the ID rather than inferred from a Graph response so
+/// the operator can see whether they inspected the campaign, ad set, or final
+/// ad in a paused hierarchy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdReviewStatusRequest {
+    pub entity: AdEntity,
+    pub id: String,
+}
+
+impl AdReviewStatusRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("ad_entity_id", &self.id)
+    }
+}
+
 /// A management request is structurally paused: no enum variant represents
 /// an active create. Future activation work must add a new type and cross the
 /// policy boundary intentionally.
@@ -399,6 +428,62 @@ pub struct CreativePreview {
     pub body: String,
 }
 
+/// One operator-facing problem Meta attached to an advertising object. Meta
+/// may omit any individual property, so preserve the stable fields it did
+/// supply instead of replacing a specific review failure with a generic
+/// Postkit error.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdReviewIssue {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+}
+
+/// The effective state is Meta's current delivery/review interpretation;
+/// configured state is the explicit state Postkit requested. They differ
+/// while Meta processes a fresh paused draft, and both must be shown so a
+/// `PENDING_REVIEW` value is never mistaken for delivery.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdReviewStatus {
+    pub site: Site,
+    pub entity: AdEntity,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub configured_status: String,
+    pub effective_status: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<AdReviewIssue>,
+}
+
+impl AdReviewStatus {
+    /// Meta documents these two transitional values while it processes a
+    /// newly created object. A configured `PAUSED` object remains unable to
+    /// deliver during either state; callers can poll without issuing a write.
+    pub fn is_pending_review(&self) -> bool {
+        matches!(
+            self.effective_status.as_str(),
+            "PENDING_REVIEW" | "IN_PROCESS"
+        )
+    }
+}
+
+/// The bounded wait result is deliberately a value, not a timeout error.
+/// Pending review is a normal Meta lifecycle state: callers need the last
+/// observed status and issues to decide when to try again, not a silent wait
+/// or an ambiguous transport failure.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "review", content = "status", rename_all = "snake_case")]
+pub enum AdReviewWait {
+    Settled(AdReviewStatus),
+    PendingReview(AdReviewStatus),
+}
+
 impl std::fmt::Debug for CreativePreview {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // An iframe's source can be short-lived and account-scoped. Match the
@@ -475,6 +560,11 @@ mod tests {
         assert_eq!(
             CampaignObjective::from_str("sales").unwrap().meta_value(),
             "OUTCOME_SALES"
+        );
+        assert_eq!(AdEntity::from_str("adset").unwrap(), AdEntity::Adset);
+        assert_eq!(
+            AdEntity::from_str("creative").unwrap_err(),
+            "unknown_ad_entity:creative"
         );
         assert_eq!(
             CampaignObjective::from_str("clicks").unwrap_err(),
@@ -553,6 +643,21 @@ mod tests {
             .validate()
             .unwrap_err(),
             "bad_creative_id:not-an-id"
+        );
+        assert!(AdReviewStatusRequest {
+            entity: AdEntity::Ad,
+            id: "789".into(),
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            AdReviewStatusRequest {
+                entity: AdEntity::Campaign,
+                id: "campaign-789".into(),
+            }
+            .validate()
+            .unwrap_err(),
+            "bad_ad_entity_id:campaign-789"
         );
         // The raw iframe is intentionally available in-process for a caller
         // to write to a file, but its derived JSON form must never become a

@@ -1,7 +1,8 @@
 use crate::ads::{
-    AdPreviewFormat, CampaignObjective, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
-    CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest, PausedAdCreate,
-    PausedCampaign, UploadAdImageRequest, UploadedAdImage,
+    AdEntity, AdPreviewFormat, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest,
+    CampaignObjective, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
+    CreatedAdCreative, CreativePreview, CreativePreviewRequest, PausedAdCreate, PausedCampaign,
+    UploadAdImageRequest, UploadedAdImage,
 };
 use crate::apps::{AppStore, MemoryAppStore};
 use crate::client::Client;
@@ -37,6 +38,8 @@ struct MockPub {
     image_uploads: AtomicUsize,
     creative_creates: AtomicUsize,
     creative_previews: AtomicUsize,
+    review_status_reads: AtomicUsize,
+    review_status_pending_reads: usize,
 }
 
 impl MockPub {
@@ -56,6 +59,8 @@ impl MockPub {
             image_uploads: AtomicUsize::new(0),
             creative_creates: AtomicUsize::new(0),
             creative_previews: AtomicUsize::new(0),
+            review_status_reads: AtomicUsize::new(0),
+            review_status_pending_reads: 0,
         }
     }
 
@@ -90,6 +95,14 @@ impl MockPub {
     fn creative_previews(site: &str) -> Self {
         Self {
             caps: vec![Capability::ReadAdPreviews],
+            ..Self::text(site)
+        }
+    }
+
+    fn review_statuses(site: &str, pending_reads: usize) -> Self {
+        Self {
+            caps: vec![Capability::ReadAdReviewStatus],
+            review_status_pending_reads: pending_reads,
             ..Self::text(site)
         }
     }
@@ -284,6 +297,42 @@ impl Publisher for MockPub {
             creative_id: request.creative_id.clone(),
             ad_format: request.ad_format,
             body: format!("<iframe data-preview=\"{n}\"></iframe>"),
+        })
+    }
+
+    async fn ad_review_status(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &AdReviewStatusRequest,
+        _deadline: Deadline,
+    ) -> Result<AdReviewStatus, Error> {
+        let n = self.review_status_reads.fetch_add(1, Ordering::SeqCst);
+        // The counter provides a deterministic PENDING_REVIEW → PAUSED
+        // sequence, so the Client test proves polling reads repeatedly without
+        // a real clock or Meta account.
+        let pending = n < self.review_status_pending_reads;
+        Ok(AdReviewStatus {
+            site: self.site.clone(),
+            entity: request.entity,
+            id: request.id.clone(),
+            name: Some("Paused draft".into()),
+            configured_status: "PAUSED".into(),
+            effective_status: if pending {
+                "PENDING_REVIEW".into()
+            } else {
+                "PAUSED".into()
+            },
+            issues: if pending {
+                vec![AdReviewIssue {
+                    code: Some("100".into()),
+                    summary: Some("Review pending".into()),
+                    message: None,
+                    level: Some("WARNING".into()),
+                }]
+            } else {
+                vec![]
+            },
         })
     }
 
@@ -1213,6 +1262,90 @@ async fn client_creative_preview_routes_validates_and_retries_expired_tokens() {
     assert!(
         matches!(err, Error::InvalidQuery { reason, .. } if reason == "bad_creative_id:bad-id")
     );
+}
+
+/// Review status is a separately declared, GET-only capability. It validates
+/// before vault access and represents Meta's transitional state explicitly;
+/// `PENDING_REVIEW` is never mistaken for an active delivery request.
+#[tokio::test]
+async fn client_ad_review_status_routes_validates_and_checks_capability() {
+    let (client, key) = setup(MockPub::review_statuses("meta_ads", 1));
+    let status = client
+        .ad_review_status(
+            &key,
+            AdReviewStatusRequest {
+                entity: AdEntity::Ad,
+                id: "123".into(),
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert!(status.is_pending_review());
+    assert_eq!(status.configured_status, "PAUSED");
+    assert_eq!(status.issues[0].summary.as_deref(), Some("Review pending"));
+
+    let (no_status_capability, key) = setup(MockPub::text("meta_ads"));
+    let err = no_status_capability
+        .ad_review_status(
+            &key,
+            AdReviewStatusRequest {
+                entity: AdEntity::Adset,
+                id: "123".into(),
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadAdReviewStatus)
+    );
+
+    let empty = Client::new(
+        Registry::new(),
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let err = empty
+        .ad_review_status(
+            &AccountKey::new("meta_ads", "default"),
+            AdReviewStatusRequest {
+                entity: AdEntity::Campaign,
+                id: "bad-id".into(),
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidQuery { reason, .. } if reason == "bad_ad_entity_id:bad-id")
+    );
+}
+
+/// A poller is useful only if it stops on the platform's final state. The
+/// short test interval is private to the Client test; production uses the
+/// conservative two-second interval and always honors the global deadline.
+#[cfg(feature = "meta-ads")]
+#[tokio::test]
+async fn client_ad_review_wait_polls_pending_status_until_settled() {
+    let (client, key) = setup(MockPub::review_statuses("meta_ads", 1));
+    let result = client
+        .wait_for_ad_review_with_interval(
+            &key,
+            AdReviewStatusRequest {
+                entity: AdEntity::Ad,
+                id: "123".into(),
+            },
+            Deadline::from_secs(1),
+            std::time::Duration::from_millis(1),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        crate::ads::AdReviewWait::Settled(AdReviewStatus { effective_status, .. })
+            if effective_status == "PAUSED"
+    ));
 }
 
 /// The trait's default `insights` must refuse — the same honesty the

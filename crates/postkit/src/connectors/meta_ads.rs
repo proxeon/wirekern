@@ -7,8 +7,9 @@
 //! `fb_exchange_token` grant (~60 days).
 
 use crate::ads::{
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreview, CreativePreviewRequest, PausedAdCreate, UploadAdImageRequest, UploadedAdImage,
+    AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, CreateLinkAdCreativeRequest,
+    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
+    PausedAdCreate, UploadAdImageRequest, UploadedAdImage,
 };
 use crate::error::Error;
 use crate::form::form;
@@ -87,6 +88,7 @@ impl Publisher for MetaAds {
             Capability::ReadMetrics,
             Capability::ReadAdAccounts,
             Capability::ReadAdPreviews,
+            Capability::ReadAdReviewStatus,
             Capability::CreatePausedAds,
             Capability::CreateAdCreative,
         ]
@@ -405,6 +407,17 @@ impl Publisher for MetaAds {
         let token = access_token(creds)?;
         preview_ad_creative(&self.http, &self.base, &self.site, token, request, deadline).await
     }
+
+    async fn ad_review_status(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &AdReviewStatusRequest,
+        deadline: Deadline,
+    ) -> Result<AdReviewStatus, Error> {
+        let token = access_token(creds)?;
+        read_ad_review_status(&self.http, &self.base, &self.site, token, request, deadline).await
+    }
 }
 
 /// Submit the one intentionally narrow Tier B form. `status=PAUSED` lives in
@@ -647,6 +660,78 @@ async fn preview_ad_creative(
         ad_format: request.ad_format,
         body,
     })
+}
+
+/// Read Meta's lifecycle fields for one existing campaign, ad set, or ad.
+/// This endpoint intentionally has no account path: all three Graph objects
+/// are addressed by their globally unique IDs, and the selected credential
+/// still authorizes the read. Keeping this to GET prevents review inspection
+/// from ever changing a paused draft's delivery or billing state.
+async fn read_ad_review_status(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    token: &str,
+    request: &AdReviewStatusRequest,
+    deadline: Deadline,
+) -> Result<AdReviewStatus, Error> {
+    let params = form(&[
+        // `issues_info` carries Meta's concrete review/configuration errors;
+        // without it operators see only a status and must switch tools to
+        // learn why a draft cannot settle.
+        (
+            "fields",
+            "id,name,configured_status,effective_status,issues_info",
+        ),
+        ("access_token", token),
+    ]);
+    let url = format!("{base}/{}?{params}", request.id);
+    let response = http.send(http.get(&url), deadline, site).await?;
+    let response = read_json(response, site).await?;
+    let configured_status =
+        nonempty_value_string(response.get("configured_status")).ok_or_else(|| {
+            Error::Platform {
+                site: site.clone(),
+                code: "missing_configured_status".into(),
+                message: "ad status returned no configured status".into(),
+            }
+        })?;
+    let effective_status =
+        nonempty_value_string(response.get("effective_status")).ok_or_else(|| Error::Platform {
+            site: site.clone(),
+            code: "missing_effective_status".into(),
+            message: "ad status returned no effective status".into(),
+        })?;
+    let issues = response
+        .get("issues_info")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().map(review_issue_from).collect())
+        .unwrap_or_default();
+    Ok(AdReviewStatus {
+        site: site.clone(),
+        entity: request.entity,
+        // Echo the validated request ID instead of trusting an optional Graph
+        // response field: a malformed or partial reply cannot make a status
+        // line appear to describe a different object.
+        id: request.id.clone(),
+        name: nonempty_value_string(response.get("name")),
+        configured_status,
+        effective_status,
+        issues,
+    })
+}
+
+/// Preserve Meta's review vocabulary without making the connector depend on
+/// a particular issue subtype. Graph has used numeric and string error codes
+/// across fields, so `value_string` normalizes both while absent fields remain
+/// absent in Postkit's stable JSON response.
+fn review_issue_from(value: &Value) -> AdReviewIssue {
+    AdReviewIssue {
+        code: nonempty_value_string(value.get("error_code")),
+        summary: nonempty_value_string(value.get("error_summary")),
+        message: nonempty_value_string(value.get("error_message")),
+        level: nonempty_value_string(value.get("level")),
+    }
 }
 
 /// Map a metric to its Graph insights field name; `None` for metrics that
@@ -990,6 +1075,13 @@ fn value_string(value: Option<&Value>) -> Option<String> {
     })
 }
 
+/// Status and issue strings that contain only whitespace are semantically
+/// missing; treating them as real values would falsely imply Meta answered a
+/// review question when it did not.
+fn nonempty_value_string(value: Option<&Value>) -> Option<String> {
+    value_string(value).filter(|value| !value.trim().is_empty())
+}
+
 fn ad_account_from(value: &Value) -> Result<AdAccount, Error> {
     let raw = value_string(value.get("account_id")).ok_or_else(|| Error::Platform {
         site: Site::new(SITE),
@@ -1162,9 +1254,9 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
 mod tests {
     use super::*;
     use crate::ads::{
-        AdPreviewFormat, CampaignObjective, CreateLinkAdCreativeRequest, CreativePreviewRequest,
-        LinkAdCreative, LinkCallToAction, PausedAd, PausedAdset, PausedCampaign,
-        UploadAdImageRequest,
+        AdEntity, AdPreviewFormat, AdReviewStatusRequest, CampaignObjective,
+        CreateLinkAdCreativeRequest, CreativePreviewRequest, LinkAdCreative, LinkCallToAction,
+        PausedAd, PausedAdset, PausedCampaign, UploadAdImageRequest,
     };
     use crate::insights::{AttributionWindow, InsightsLevel};
     use httpmock::prelude::*;
@@ -1537,6 +1629,75 @@ mod tests {
         assert!(
             matches!(err, Error::Platform { code, message, .. } if code == "missing_preview_body" && message == "creative preview returned no body")
         );
+    }
+
+    #[tokio::test]
+    async fn review_status_reads_only_lifecycle_fields_and_preserves_meta_issues() {
+        let server = MockServer::start();
+        let status = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/700")
+                .query_param(
+                    "fields",
+                    "id,name,configured_status,effective_status,issues_info",
+                )
+                .query_param("access_token", "tok");
+            then.status(200).json_body(json!({
+                "id": "700",
+                "name": "Paused validation ad",
+                "configured_status": "PAUSED",
+                "effective_status": "PENDING_REVIEW",
+                "issues_info": [{
+                    "error_code": 100,
+                    "error_summary": "Review pending",
+                    "error_message": "Meta is reviewing this ad.",
+                    "level": "WARNING"
+                }]
+            }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let response = connector
+            .ad_review_status(
+                &empty_app(),
+                &token_creds("123"),
+                &AdReviewStatusRequest {
+                    entity: AdEntity::Ad,
+                    id: "700".into(),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        status.assert();
+        assert_eq!(response.configured_status, "PAUSED");
+        assert_eq!(response.effective_status, "PENDING_REVIEW");
+        assert!(response.is_pending_review());
+        assert_eq!(response.issues.len(), 1);
+        assert_eq!(response.issues[0].code.as_deref(), Some("100"));
+        assert_eq!(
+            response.issues[0].message.as_deref(),
+            Some("Meta is reviewing this ad.")
+        );
+
+        let missing_status = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/701");
+            then.status(200).json_body(json!({ "id": "701" }));
+        });
+        let err = connector
+            .ad_review_status(
+                &empty_app(),
+                &token_creds("123"),
+                &AdReviewStatusRequest {
+                    entity: AdEntity::Campaign,
+                    id: "701".into(),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        missing_status.assert();
+        assert!(matches!(err, Error::Platform { code, .. } if code == "missing_configured_status"));
     }
 
     #[tokio::test]

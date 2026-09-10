@@ -37,10 +37,10 @@ pub use oauth::{
 pub mod connectors;
 
 pub use ads::{
-    AdEntity, AdPreviewFormat, BidStrategy, CampaignObjective, CreateLinkAdCreativeRequest,
-    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
-    LinkAdCreative, LinkCallToAction, PausedAd, PausedAdCreate, PausedAdset, PausedCampaign,
-    UploadAdImageRequest, UploadedAdImage,
+    AdEntity, AdPreviewFormat, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdReviewWait,
+    BidStrategy, CampaignObjective, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
+    CreatedAdCreative, CreativePreview, CreativePreviewRequest, LinkAdCreative, LinkCallToAction,
+    PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, UploadAdImageRequest, UploadedAdImage,
 };
 pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
 pub use client::{refresh_is_due, Client};

@@ -4,12 +4,13 @@ use clap::{Parser, Subcommand};
 use output::{emit_err, emit_ok, emit_raw, human_line};
 use postkit::connectors::threads::validate_text;
 use postkit::{
-    app_source, extract_code, valid_name, verify_state, AccountKey, AdAccount, AdPreviewFormat,
-    AppConfig, AppStore, AttributionWindow, AuthReply, BidStrategy, Body, Breakdown,
-    CampaignObjective, Client, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
-    CreatedAdCreative, CreativePreviewRequest, DateRange, Deadline, Error, FileAppStore, FileVault,
-    InsightRow, InsightsLevel, InsightsQuery, Intent, LinkAdCreative, LinkCallToAction, Metric,
-    OAuthApp, PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PostRequest, Registry, Site,
+    app_source, extract_code, valid_name, verify_state, AccountKey, AdAccount, AdEntity,
+    AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest, AdReviewWait, AppConfig, AppStore,
+    AttributionWindow, AuthReply, BidStrategy, Body, Breakdown, CampaignObjective, Client,
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    CreativePreviewRequest, DateRange, Deadline, Error, FileAppStore, FileVault, InsightRow,
+    InsightsLevel, InsightsQuery, Intent, LinkAdCreative, LinkCallToAction, Metric, OAuthApp,
+    PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PostRequest, Registry, Site,
     UploadAdImageRequest, UploadedAdImage, Vault,
 };
 use std::fs::OpenOptions;
@@ -139,6 +140,22 @@ enum AccountsCmd {
 enum AdsCmd {
     /// List Meta ad accounts visible to the selected credential.
     Accounts { site: String },
+    /// Read a campaign, ad set, or ad's configured and effective review
+    /// states. `--wait` polls only until the global --deadline and never
+    /// changes a draft, activation, budget, or payment setting.
+    Status {
+        site: String,
+        /// campaign | adset | ad.
+        #[arg(long)]
+        entity: String,
+        /// Existing Meta campaign, ad set, or ad ID.
+        #[arg(long)]
+        id: String,
+        /// Poll Meta's read-only status endpoint until review settles or
+        /// --deadline expires. A pending result is explicit and retryable.
+        #[arg(long)]
+        wait: bool,
+    },
     /// Render a saved Meta creative locally. This is a read-only review and
     /// cannot create, activate, fund, or otherwise change an ad.
     PreviewCreative {
@@ -401,6 +418,24 @@ async fn dispatch(
                 }
                 Err(e) => Err(fail(&e, json)),
             }
+        }
+        Commands::Ads(AdsCmd::Status {
+            site,
+            entity,
+            id,
+            wait,
+        }) => {
+            let request =
+                build_ad_review_status_request(&site, &entity, &id).map_err(|e| fail(&e, json))?;
+            one_ad_review_status(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                wait,
+                deadline,
+                json,
+            )
+            .await
         }
         Commands::Ads(AdsCmd::PreviewCreative {
             site,
@@ -1177,6 +1212,78 @@ async fn one_creative_preview(
     }
 }
 
+/// Status inspection's two modes share the same clear rendering. A waiting
+/// result is still a read-only observation: `pending_review` is not an error
+/// and never implies that a `PAUSED` object can start delivery.
+async fn one_ad_review_status(
+    client: &Client,
+    key: &AccountKey,
+    request: AdReviewStatusRequest,
+    wait: bool,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    if wait {
+        match client.wait_for_ad_review(key, request, deadline).await {
+            Ok(result) => {
+                if json {
+                    emit_raw(&serde_json::to_value(&result).expect("json"));
+                } else {
+                    match result {
+                        AdReviewWait::Settled(status) => emit_ad_review_status(&status, "settled"),
+                        AdReviewWait::PendingReview(status) => {
+                            emit_ad_review_status(&status, "pending_review")
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Err(error) => Err(fail(&error, json)),
+        }
+    } else {
+        match client.ad_review_status(key, request, deadline).await {
+            Ok(status) => {
+                if json {
+                    emit_raw(&serde_json::to_value(&status).expect("json"));
+                } else {
+                    let review = if status.is_pending_review() {
+                        "pending_review"
+                    } else {
+                        "settled"
+                    };
+                    emit_ad_review_status(&status, review);
+                }
+                Ok(())
+            }
+            Err(error) => Err(fail(&error, json)),
+        }
+    }
+}
+
+/// Print the two status layers on every human reply and retain Meta's issue
+/// text on separate lines. This makes `PENDING_REVIEW` visibly distinct from
+/// a requested `PAUSED` state without hiding the actionable review problem.
+fn emit_ad_review_status(status: &AdReviewStatus, review: &str) {
+    human_line(format!(
+        "{} {} configured={} effective={} review={} issues={}",
+        status.entity.as_str(),
+        status.id,
+        status.configured_status,
+        status.effective_status,
+        review,
+        status.issues.len(),
+    ));
+    for issue in &status.issues {
+        let code = issue.code.as_deref().unwrap_or("-");
+        let level = issue.level.as_deref().unwrap_or("-");
+        let summary = issue.summary.as_deref().unwrap_or("-");
+        let message = issue.message.as_deref().unwrap_or("-");
+        human_line(format!(
+            "issue code={code} level={level} summary={summary} message={message}"
+        ));
+    }
+}
+
 /// `--json` prints `{ "results": [...] }`; human mode one line per result,
 /// on stderr per the output-stream contract.
 fn print_results(results: &[serde_json::Value], json: bool) {
@@ -1350,6 +1457,25 @@ fn build_creative_preview_request(
     let request = CreativePreviewRequest {
         creative_id: creative_id.into(),
         ad_format,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+/// Parse the CLI's broad `--entity` string only at the boundary, then carry a
+/// closed enum through the library. A typo must be a local, no-HTTP error—not
+/// a generic Graph response about an arbitrary object path.
+fn build_ad_review_status_request(
+    site: &str,
+    entity: &str,
+    id: &str,
+) -> Result<AdReviewStatusRequest, Error> {
+    let entity = AdEntity::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
+    let request = AdReviewStatusRequest {
+        entity,
+        id: id.into(),
     };
     request
         .validate()
@@ -1716,6 +1842,44 @@ mod tests {
         assert!(
             matches!(cli.command, Commands::Ads(AdsCmd::Accounts { site }) if site == "meta_ads")
         );
+    }
+
+    #[test]
+    fn ads_status_command_is_closed_and_opt_in_for_bounded_waiting() {
+        let cli = Cli::try_parse_from([
+            "postkit", "ads", "status", "meta_ads", "--entity", "ad", "--id", "700", "--wait",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ads(AdsCmd::Status { site, entity, id, wait })
+                if site == "meta_ads" && entity == "ad" && id == "700" && wait
+        ));
+
+        let request = build_ad_review_status_request("meta_ads", "adset", "700").unwrap();
+        assert_eq!(request.entity, AdEntity::Adset);
+        let bad_entity = build_ad_review_status_request("meta_ads", "creative", "700").unwrap_err();
+        assert!(
+            matches!(bad_entity, Error::InvalidQuery { reason, .. } if reason == "unknown_ad_entity:creative")
+        );
+        let bad_id = build_ad_review_status_request("meta_ads", "ad", "ad-700").unwrap_err();
+        assert!(
+            matches!(bad_id, Error::InvalidQuery { reason, .. } if reason == "bad_ad_entity_id:ad-700")
+        );
+
+        let pending = AdReviewStatus {
+            site: Site::new("meta_ads"),
+            entity: AdEntity::Ad,
+            id: "700".into(),
+            name: Some("Paused validation".into()),
+            configured_status: "PAUSED".into(),
+            effective_status: "PENDING_REVIEW".into(),
+            issues: vec![],
+        };
+        assert!(pending.is_pending_review());
+        let wire = serde_json::to_value(AdReviewWait::PendingReview(pending)).unwrap();
+        assert_eq!(wire["review"], "pending_review");
+        assert_eq!(wire["status"]["configured_status"], "PAUSED");
     }
 
     #[test]

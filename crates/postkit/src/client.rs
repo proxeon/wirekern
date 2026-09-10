@@ -1,6 +1,9 @@
+#[cfg(feature = "meta-ads")]
+use crate::ads::AdReviewWait;
 use crate::ads::{
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreview, CreativePreviewRequest, UploadAdImageRequest, UploadedAdImage,
+    AdReviewStatus, AdReviewStatusRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
+    CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest, UploadAdImageRequest,
+    UploadedAdImage,
 };
 use crate::apps::AppStore;
 use crate::error::Error;
@@ -14,6 +17,12 @@ use crate::types::{
 use crate::vault::Vault;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Meta review normally takes longer than a single HTTP response but should
+/// never turn a CLI call into an unbounded background worker. The public wait
+/// method always caps polls with the caller's existing `Deadline`.
+#[cfg(feature = "meta-ads")]
+const REVIEW_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub struct Client {
     registry: Registry,
@@ -377,6 +386,137 @@ impl Client {
                     .await
             }
             other => other,
+        }
+    }
+
+    /// Read one ad object's configured and effective state once. This is a
+    /// GET-only operation, so it bypasses `AdsPolicy`: inspecting a Meta
+    /// review cannot activate an object, alter a budget, or affect billing.
+    pub async fn ad_review_status(
+        &self,
+        key: &AccountKey,
+        request: AdReviewStatusRequest,
+        deadline: Deadline,
+    ) -> Result<AdReviewStatus, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        let publisher = self.publisher(&key.site)?;
+        if !publisher
+            .capabilities()
+            .contains(&Capability::ReadAdReviewStatus)
+        {
+            return Err(Error::UnsupportedCapability {
+                site: key.site.clone(),
+                need: Capability::ReadAdReviewStatus,
+            });
+        }
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let mut creds = self.vault.get(key)?;
+        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        match publisher
+            .ad_review_status(&app, &creds, &request, deadline)
+            .await
+        {
+            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
+                let new = publisher.refresh(&app, &creds).await?;
+                self.vault.put(key, &new)?;
+                publisher
+                    .ad_review_status(&app, &new, &request, deadline)
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    /// Poll review state only until `deadline`. The `PendingReview` reply is
+    /// successful but explicit: it preserves the final known state and tells
+    /// a script to retry later without recasting normal Meta review latency as
+    /// a network timeout. This method exists only with the Meta connector,
+    /// where Tokio's timer dependency is already part of the feature.
+    #[cfg(feature = "meta-ads")]
+    pub async fn wait_for_ad_review(
+        &self,
+        key: &AccountKey,
+        request: AdReviewStatusRequest,
+        deadline: Deadline,
+    ) -> Result<AdReviewWait, Error> {
+        self.wait_for_ad_review_with_interval(key, request, deadline, REVIEW_POLL_INTERVAL)
+            .await
+    }
+
+    /// The interval-bearing helper keeps the production interval conservative
+    /// while letting the deterministic client test prove the bounded polling
+    /// behavior without sleeping for seconds.
+    #[cfg(feature = "meta-ads")]
+    pub(crate) async fn wait_for_ad_review_with_interval(
+        &self,
+        key: &AccountKey,
+        request: AdReviewStatusRequest,
+        deadline: Deadline,
+        poll_interval: std::time::Duration,
+    ) -> Result<AdReviewWait, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        let publisher = self.publisher(&key.site)?;
+        if !publisher
+            .capabilities()
+            .contains(&Capability::ReadAdReviewStatus)
+        {
+            return Err(Error::UnsupportedCapability {
+                site: key.site.clone(),
+                need: Capability::ReadAdReviewStatus,
+            });
+        }
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let mut creds = self.vault.get(key)?;
+        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        let mut retried_expired_token = false;
+
+        loop {
+            let status = match publisher
+                .ad_review_status(&app, &creds, &request, deadline)
+                .await
+            {
+                Err(Error::Auth { ref reason, .. })
+                    if reason == "token_expired" && !retried_expired_token =>
+                {
+                    // Match every other Client read: an expired token gets
+                    // one refresh and one retry, never an unbounded refresh
+                    // loop hidden inside a status poller.
+                    creds = publisher.refresh(&app, &creds).await?;
+                    self.vault.put(key, &creds)?;
+                    retried_expired_token = true;
+                    continue;
+                }
+                other => other,
+            }?;
+            if !status.is_pending_review() {
+                return Ok(AdReviewWait::Settled(status));
+            }
+
+            let remaining = deadline.remaining();
+            if remaining.is_zero() {
+                return Ok(AdReviewWait::PendingReview(status));
+            }
+            // A zero supplied interval would otherwise busy-spin in an
+            // embedding program. Sleeping the remaining deadline makes it a
+            // single bounded observation instead.
+            let delay = if poll_interval.is_zero() {
+                remaining
+            } else {
+                poll_interval.min(remaining)
+            };
+            tokio::time::sleep(delay).await;
         }
     }
 

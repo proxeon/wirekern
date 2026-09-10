@@ -114,6 +114,12 @@ postkit ads preview-creative meta_ads --creative-id <CREATIVE_ID> \
 postkit ads create-ad meta_ads --ad-account act_123 \
   --name 'Postkit validation ad — do not activate' --adset-id <ADSET_ID> \
   --creative-id <CREATIVE_ID> --json
+
+# Inspect configured versus effective state. This is a GET-only operation;
+# `--wait` polls only until the command's --deadline and returns a clear
+# pending_review result if Meta has not finished processing the draft.
+postkit --deadline 30 ads status meta_ads --entity ad --id <AD_ID> --json
+postkit --deadline 30 ads status meta_ads --entity ad --id <AD_ID> --wait --json
 ```
 
 - `--status` does not exist. A request cannot opt out of `PAUSED`.
@@ -147,6 +153,20 @@ postkit ads create-ad meta_ads --ad-account act_123 \
   funds, or enables delivery. Meta preview iframe URLs may be short-lived, so
   regenerate a preview rather than treating the saved file as a permanent
   share link.
+- `ads status` is lifecycle inspection, not an edit. It returns both
+  `configured_status` (what Postkit requested) and `effective_status` (Meta's
+  current interpretation), plus any `issues_info` Meta supplied. A new paused
+  ad can legitimately show `configured_status: "PAUSED"` with
+  `effective_status: "IN_PROCESS"` or `"PENDING_REVIEW"`; it is still unable
+  to deliver because its configured state remains paused.
+- `ads status --wait` makes repeated GETs every two seconds only until global
+  `--deadline` (30 seconds by default). If review remains pending, the JSON
+  reply is `{ "review": "pending_review", "status": { … } }`, not a silent
+  wait or a delivery action. Re-run it later; do not treat review completion as
+  authorization to activate an ad.
+- Campaign, ad set, and ad IDs are globally addressed by Graph, so `ads
+  status` deliberately has no `--ad-account` flag. The selected credential
+  still must be entitled to inspect the object.
 
 ### Live validation without spend
 
@@ -183,3 +203,4 @@ The long-lived user token lasts ~60 days. `postkit` re-issues it via `fb_exchang
 | Meta code 10 / permission error | token lacks `ads_management`; re-run `postkit auth meta_ads` and approve the expanded scope |
 | Meta code 100 with a detailed message | postkit preserves Meta's `error_user_msg` when present; correct the named Page, creative, billing, or configuration condition before retrying |
 | "No payment method" | Meta requires billing before it will create the final ad, even if that ad is `PAUSED`; add a method only if you accept that financial-account change |
+| `effective_status: PENDING_REVIEW` or `IN_PROCESS` | Meta is processing/reviewing a paused draft. Use `ads status … --wait` for a bounded read or retry later; it does not spend or activate anything |

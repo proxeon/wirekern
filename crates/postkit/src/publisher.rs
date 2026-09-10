@@ -1,6 +1,7 @@
 use crate::ads::{
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreview, CreativePreviewRequest, UploadAdImageRequest, UploadedAdImage,
+    AdReviewStatus, AdReviewStatusRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
+    CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest, UploadAdImageRequest,
+    UploadedAdImage,
 };
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
@@ -177,6 +178,22 @@ pub trait Publisher: Send + Sync {
         Err(Error::UnsupportedCapability {
             site: self.site().clone(),
             need: Capability::ReadAdPreviews,
+        })
+    }
+
+    /// Inspect a paused draft's configured and effective state. This stays a
+    /// distinct capability from creative previews: a connector must opt in to
+    /// the exact lifecycle fields and issue parsing it can truthfully support.
+    async fn ad_review_status(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _request: &AdReviewStatusRequest,
+        _deadline: Deadline,
+    ) -> Result<AdReviewStatus, Error> {
+        Err(Error::UnsupportedCapability {
+            site: self.site().clone(),
+            need: Capability::ReadAdReviewStatus,
         })
     }
 
