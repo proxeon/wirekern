@@ -33,9 +33,12 @@ pub(crate) mod form;
 
 #[cfg(feature = "oauth")]
 mod oauth;
+// `new_state` included deliberately: it is oauth's public feature API
+// (issue 026) — without the re-export an oauth-only build reports it as
+// dead code because no connector references it there.
 #[cfg(feature = "oauth")]
 pub use oauth::{
-    authorize_url, exchange_code, extract_code, query_param, verify_state, TokenResponse,
+    authorize_url, exchange_code, extract_code, new_state, query_param, verify_state, TokenResponse,
 };
 
 #[cfg(any(feature = "threads", feature = "bluesky", feature = "meta-ads"))]
