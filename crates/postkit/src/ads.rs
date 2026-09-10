@@ -129,6 +129,45 @@ impl FromStr for LinkCallToAction {
     }
 }
 
+/// The initial preview placements are deliberately a small closed set. Meta
+/// exposes many placement names, but accepting arbitrary strings would turn a
+/// typo into a remote error and would suggest a placement is safe to review
+/// before Postkit has tested its rendering contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdPreviewFormat {
+    DesktopFeedStandard,
+    MobileFeedStandard,
+}
+
+impl AdPreviewFormat {
+    pub fn meta_value(self) -> &'static str {
+        match self {
+            Self::DesktopFeedStandard => "DESKTOP_FEED_STANDARD",
+            Self::MobileFeedStandard => "MOBILE_FEED_STANDARD",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DesktopFeedStandard => "desktop_feed_standard",
+            Self::MobileFeedStandard => "mobile_feed_standard",
+        }
+    }
+}
+
+impl FromStr for AdPreviewFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "desktop_feed_standard" => Ok(Self::DesktopFeedStandard),
+            "mobile_feed_standard" => Ok(Self::MobileFeedStandard),
+            other => Err(format!("unknown_ad_preview_format:{other}")),
+        }
+    }
+}
+
 /// A campaign draft. Status is intentionally absent: the connector adds the
 /// only allowed value, `PAUSED`, rather than trusting a caller-provided flag.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -223,6 +262,21 @@ impl CreateLinkAdCreativeRequest {
         require_text("headline", &self.creative.headline)?;
         require_https_url("destination_url", &self.creative.destination_url)?;
         Ok(())
+    }
+}
+
+/// Request a render for an existing Meta creative. An ad creative ID is
+/// globally addressable by Graph, so the preview edge has no account path or
+/// account override; the selected credential is still required to read it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CreativePreviewRequest {
+    pub creative_id: String,
+    pub ad_format: AdPreviewFormat,
+}
+
+impl CreativePreviewRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("creative_id", &self.creative_id)
     }
 }
 
@@ -333,6 +387,32 @@ pub struct CreatedAdCreative {
     pub id: String,
 }
 
+/// Meta returns preview markup as an iframe body. It stays available to
+/// library callers for writing to an explicitly chosen file, but is skipped
+/// from serialization so a CLI or log cannot accidentally dump remote HTML.
+#[derive(Clone, Eq, PartialEq, Serialize)]
+pub struct CreativePreview {
+    pub site: Site,
+    pub creative_id: String,
+    pub ad_format: AdPreviewFormat,
+    #[serde(skip_serializing)]
+    pub body: String,
+}
+
+impl std::fmt::Debug for CreativePreview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // An iframe's source can be short-lived and account-scoped. Match the
+        // token types' redaction rule so a `{:?}` from an embedding program
+        // cannot bypass the intentional JSON/CLI omission above.
+        f.debug_struct("CreativePreview")
+            .field("site", &self.site)
+            .field("creative_id", &self.creative_id)
+            .field("ad_format", &self.ad_format)
+            .field("body", &"[redacted]")
+            .finish()
+    }
+}
+
 fn require_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
         Err("missing_name".into())
@@ -428,6 +508,16 @@ mod tests {
             LinkCallToAction::from_str("shop_now").unwrap_err(),
             "unknown_link_call_to_action:shop_now"
         );
+        assert_eq!(
+            AdPreviewFormat::from_str("desktop_feed_standard")
+                .unwrap()
+                .meta_value(),
+            "DESKTOP_FEED_STANDARD"
+        );
+        assert_eq!(
+            AdPreviewFormat::from_str("instagram_standard").unwrap_err(),
+            "unknown_ad_preview_format:instagram_standard"
+        );
 
         let valid_image = UploadAdImageRequest {
             account: Some("act_123".into()),
@@ -448,6 +538,43 @@ mod tests {
             ..valid_image
         };
         assert_eq!(empty_image.validate().unwrap_err(), "image_file_empty");
+
+        assert!(CreativePreviewRequest {
+            creative_id: "789".into(),
+            ad_format: AdPreviewFormat::MobileFeedStandard,
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            CreativePreviewRequest {
+                creative_id: "not-an-id".into(),
+                ad_format: AdPreviewFormat::DesktopFeedStandard,
+            }
+            .validate()
+            .unwrap_err(),
+            "bad_creative_id:not-an-id"
+        );
+        // The raw iframe is intentionally available in-process for a caller
+        // to write to a file, but its derived JSON form must never become a
+        // surprise terminal/log payload.
+        let serialized = serde_json::to_value(CreativePreview {
+            site: Site::new("meta_ads"),
+            creative_id: "789".into(),
+            ad_format: AdPreviewFormat::DesktopFeedStandard,
+            body: "<iframe secret-ish-preview-url>".into(),
+        })
+        .unwrap();
+        assert!(serialized.get("body").is_none());
+        assert!(!format!(
+            "{:?}",
+            CreativePreview {
+                site: Site::new("meta_ads"),
+                creative_id: "789".into(),
+                ad_format: AdPreviewFormat::DesktopFeedStandard,
+                body: "<iframe secret-ish-preview-url>".into(),
+            }
+        )
+        .contains("secret-ish-preview-url"));
 
         let valid_creative = CreateLinkAdCreativeRequest {
             account: Some("123".into()),

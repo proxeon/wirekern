@@ -1,6 +1,6 @@
 use crate::ads::{
     CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    UploadAdImageRequest, UploadedAdImage,
+    CreativePreview, CreativePreviewRequest, UploadAdImageRequest, UploadedAdImage,
 };
 use crate::apps::AppStore;
 use crate::error::Error;
@@ -329,6 +329,51 @@ impl Client {
                 self.vault.put(key, &new)?;
                 publisher
                     .create_link_ad_creative(&app, &new, &request, deadline)
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    /// Read the platform's rendering of an existing creative. Unlike the
+    /// creative/upload methods above this has no policy decision: it is a
+    /// GET-only review operation and cannot affect delivery, budget, billing,
+    /// or the creative itself.
+    pub async fn preview_ad_creative(
+        &self,
+        key: &AccountKey,
+        request: CreativePreviewRequest,
+        deadline: Deadline,
+    ) -> Result<CreativePreview, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        let publisher = self.publisher(&key.site)?;
+        if !publisher
+            .capabilities()
+            .contains(&Capability::ReadAdPreviews)
+        {
+            return Err(Error::UnsupportedCapability {
+                site: key.site.clone(),
+                need: Capability::ReadAdPreviews,
+            });
+        }
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let mut creds = self.vault.get(key)?;
+        creds = self.maybe_refresh(&*publisher, &app, key, creds).await?;
+        match publisher
+            .preview_ad_creative(&app, &creds, &request, deadline)
+            .await
+        {
+            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
+                let new = publisher.refresh(&app, &creds).await?;
+                self.vault.put(key, &new)?;
+                publisher
+                    .preview_ad_creative(&app, &new, &request, deadline)
                     .await
             }
             other => other,

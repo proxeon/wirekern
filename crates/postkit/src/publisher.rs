@@ -1,6 +1,6 @@
 use crate::ads::{
     CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    UploadAdImageRequest, UploadedAdImage,
+    CreativePreview, CreativePreviewRequest, UploadAdImageRequest, UploadedAdImage,
 };
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
@@ -161,6 +161,22 @@ pub trait Publisher: Send + Sync {
         Err(Error::UnsupportedCapability {
             site: self.site().clone(),
             need: Capability::CreateAdCreative,
+        })
+    }
+
+    /// Render a stored ad creative without creating an ad. A connector must
+    /// opt in explicitly because preview response bodies are remote HTML and
+    /// their parsing/output contract must be reviewed per platform.
+    async fn preview_ad_creative(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _request: &CreativePreviewRequest,
+        _deadline: Deadline,
+    ) -> Result<CreativePreview, Error> {
+        Err(Error::UnsupportedCapability {
+            site: self.site().clone(),
+            need: Capability::ReadAdPreviews,
         })
     }
 

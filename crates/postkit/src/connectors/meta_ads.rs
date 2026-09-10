@@ -8,7 +8,7 @@
 
 use crate::ads::{
     CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    PausedAdCreate, UploadAdImageRequest, UploadedAdImage,
+    CreativePreview, CreativePreviewRequest, PausedAdCreate, UploadAdImageRequest, UploadedAdImage,
 };
 use crate::error::Error;
 use crate::form::form;
@@ -86,6 +86,7 @@ impl Publisher for MetaAds {
         &[
             Capability::ReadMetrics,
             Capability::ReadAdAccounts,
+            Capability::ReadAdPreviews,
             Capability::CreatePausedAds,
             Capability::CreateAdCreative,
         ]
@@ -393,6 +394,17 @@ impl Publisher for MetaAds {
         )
         .await
     }
+
+    async fn preview_ad_creative(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &CreativePreviewRequest,
+        deadline: Deadline,
+    ) -> Result<CreativePreview, Error> {
+        let token = access_token(creds)?;
+        preview_ad_creative(&self.http, &self.base, &self.site, token, request, deadline).await
+    }
 }
 
 /// Submit the one intentionally narrow Tier B form. `status=PAUSED` lives in
@@ -593,6 +605,47 @@ async fn create_link_ad_creative(
         site: site.clone(),
         account_id: format!("act_{account}"),
         id,
+    })
+}
+
+/// Ask Meta to render an already-stored creative in one reviewed placement.
+/// This is a Graph read edge, not `generatepreviews`: no campaign, ad set, or
+/// final ad is created, and the body is kept opaque until the CLI writes it to
+/// the operator-selected preview file.
+async fn preview_ad_creative(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    token: &str,
+    request: &CreativePreviewRequest,
+    deadline: Deadline,
+) -> Result<CreativePreview, Error> {
+    // Graph accepts user tokens on this read edge as a query parameter. The
+    // shared HTTP layer deliberately redacts request URLs from transport
+    // errors, preventing this credential from reaching terminal output.
+    let params = form(&[
+        ("ad_format", request.ad_format.meta_value()),
+        ("access_token", token),
+    ]);
+    let url = format!("{base}/{}/previews?{params}", request.creative_id);
+    let response = http.send(http.get(&url), deadline, site).await?;
+    let response = read_json(response, site).await?;
+    let body = response
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| value_string(item.get("body")))
+        .filter(|body| !body.trim().is_empty())
+        .ok_or_else(|| Error::Platform {
+            site: site.clone(),
+            code: "missing_preview_body".into(),
+            message: "creative preview returned no body".into(),
+        })?;
+    Ok(CreativePreview {
+        site: site.clone(),
+        creative_id: request.creative_id.clone(),
+        ad_format: request.ad_format,
+        body,
     })
 }
 
@@ -1109,8 +1162,9 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
 mod tests {
     use super::*;
     use crate::ads::{
-        CampaignObjective, CreateLinkAdCreativeRequest, LinkAdCreative, LinkCallToAction, PausedAd,
-        PausedAdset, PausedCampaign, UploadAdImageRequest,
+        AdPreviewFormat, CampaignObjective, CreateLinkAdCreativeRequest, CreativePreviewRequest,
+        LinkAdCreative, LinkCallToAction, PausedAd, PausedAdset, PausedCampaign,
+        UploadAdImageRequest,
     };
     use crate::insights::{AttributionWindow, InsightsLevel};
     use httpmock::prelude::*;
@@ -1430,6 +1484,59 @@ mod tests {
         creative.assert();
         assert_eq!(created.id, "500");
         assert_eq!(created.account_id, "act_123");
+    }
+
+    #[tokio::test]
+    async fn creative_preview_reads_one_closed_format_and_keeps_the_body_opaque() {
+        let server = MockServer::start();
+        let preview = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/500/previews")
+                .query_param("ad_format", "MOBILE_FEED_STANDARD")
+                .query_param("access_token", "tok");
+            then.status(200)
+                .json_body(json!({ "data": [{ "body": "<iframe src=\"https://meta.test/preview\"></iframe>" }] }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let response = connector
+            .preview_ad_creative(
+                &empty_app(),
+                &token_creds("123"),
+                &CreativePreviewRequest {
+                    creative_id: "500".into(),
+                    ad_format: AdPreviewFormat::MobileFeedStandard,
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        preview.assert();
+        assert_eq!(response.creative_id, "500");
+        assert_eq!(response.ad_format, AdPreviewFormat::MobileFeedStandard);
+        assert!(response.body.contains("iframe"));
+
+        let missing_body = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/501/previews")
+                .query_param("ad_format", "DESKTOP_FEED_STANDARD");
+            then.status(200).json_body(json!({ "data": [{}] }));
+        });
+        let err = connector
+            .preview_ad_creative(
+                &empty_app(),
+                &token_creds("123"),
+                &CreativePreviewRequest {
+                    creative_id: "501".into(),
+                    ad_format: AdPreviewFormat::DesktopFeedStandard,
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        missing_body.assert();
+        assert!(
+            matches!(err, Error::Platform { code, message, .. } if code == "missing_preview_body" && message == "creative preview returned no body")
+        );
     }
 
     #[tokio::test]

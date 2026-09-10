@@ -22,3 +22,6 @@ serde_json = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 rpassword = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

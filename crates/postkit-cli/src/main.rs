@@ -4,15 +4,19 @@ use clap::{Parser, Subcommand};
 use output::{emit_err, emit_ok, emit_raw, human_line};
 use postkit::connectors::threads::validate_text;
 use postkit::{
-    app_source, extract_code, valid_name, verify_state, AccountKey, AdAccount, AppConfig, AppStore,
-    AttributionWindow, AuthReply, BidStrategy, Body, Breakdown, CampaignObjective, Client,
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative, DateRange,
-    Deadline, Error, FileAppStore, FileVault, InsightRow, InsightsLevel, InsightsQuery, Intent,
-    LinkAdCreative, LinkCallToAction, Metric, OAuthApp, PausedAd, PausedAdCreate, PausedAdset,
-    PausedCampaign, PostRequest, Registry, Site, UploadAdImageRequest, UploadedAdImage, Vault,
+    app_source, extract_code, valid_name, verify_state, AccountKey, AdAccount, AdPreviewFormat,
+    AppConfig, AppStore, AttributionWindow, AuthReply, BidStrategy, Body, Breakdown,
+    CampaignObjective, Client, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
+    CreatedAdCreative, CreativePreviewRequest, DateRange, Deadline, Error, FileAppStore, FileVault,
+    InsightRow, InsightsLevel, InsightsQuery, Intent, LinkAdCreative, LinkCallToAction, Metric,
+    OAuthApp, PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PostRequest, Registry, Site,
+    UploadAdImageRequest, UploadedAdImage, Vault,
 };
-use std::io::{self, BufRead, IsTerminal, Read};
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::io::{self, BufRead, IsTerminal, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -135,6 +139,20 @@ enum AccountsCmd {
 enum AdsCmd {
     /// List Meta ad accounts visible to the selected credential.
     Accounts { site: String },
+    /// Render a saved Meta creative locally. This is a read-only review and
+    /// cannot create, activate, fund, or otherwise change an ad.
+    PreviewCreative {
+        site: String,
+        /// Existing Meta ad-creative ID.
+        #[arg(long)]
+        creative_id: String,
+        /// desktop_feed_standard | mobile_feed_standard.
+        #[arg(long)]
+        ad_format: String,
+        /// New local HTML file to receive Meta's iframe preview.
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Upload a local image for use by a later Meta link creative. Uploading
     /// media creates no ad and cannot start delivery.
     UploadImage {
@@ -383,6 +401,24 @@ async fn dispatch(
                 }
                 Err(e) => Err(fail(&e, json)),
             }
+        }
+        Commands::Ads(AdsCmd::PreviewCreative {
+            site,
+            creative_id,
+            ad_format,
+            output,
+        }) => {
+            let request = build_creative_preview_request(&site, &creative_id, &ad_format)
+                .map_err(|e| fail(&e, json))?;
+            one_creative_preview(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                output,
+                deadline,
+                json,
+            )
+            .await
         }
         Commands::Ads(AdsCmd::UploadImage {
             site,
@@ -1100,6 +1136,47 @@ async fn one_link_creative(
     }
 }
 
+/// Preview markup is intentionally not passed to `emit_ok`: an iframe body
+/// is useful only as a local artifact and could be unwieldy or unsafe in an
+/// agent log. The success reply records just enough to locate and review it.
+async fn one_creative_preview(
+    client: &Client,
+    key: &AccountKey,
+    request: CreativePreviewRequest,
+    output: PathBuf,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.preview_ad_creative(key, request, deadline).await {
+        Ok(preview) => {
+            write_preview_output(&output, &preview.body).map_err(|error| {
+                fail(
+                    &ads_input_error(key.site.as_str(), preview_output_reason(&error)),
+                    json,
+                )
+            })?;
+            let output = output.to_string_lossy().into_owned();
+            if json {
+                emit_raw(&serde_json::json!({
+                    "site": preview.site,
+                    "creative_id": preview.creative_id,
+                    "ad_format": preview.ad_format.as_str(),
+                    "output": output,
+                }));
+            } else {
+                human_line(format!(
+                    "creative {} preview={} output={}",
+                    preview.creative_id,
+                    preview.ad_format.as_str(),
+                    output
+                ));
+            }
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
 /// `--json` prints `{ "results": [...] }`; human mode one line per result,
 /// on stderr per the output-stream contract.
 fn print_results(results: &[serde_json::Value], json: bool) {
@@ -1258,6 +1335,52 @@ fn build_link_ad_creative_request(
         .validate()
         .map_err(|reason| ads_input_error(site, reason))?;
     Ok(request)
+}
+
+/// `--ad-format` stays a CLI string only until this builder. Converting to a
+/// closed type here keeps a misspelled placement from looking like a valid
+/// preview request to a library caller or a remote Marketing API endpoint.
+fn build_creative_preview_request(
+    site: &str,
+    creative_id: &str,
+    ad_format: &str,
+) -> Result<CreativePreviewRequest, Error> {
+    let ad_format =
+        AdPreviewFormat::from_str(ad_format).map_err(|reason| ads_input_error(site, reason))?;
+    let request = CreativePreviewRequest {
+        creative_id: creative_id.into(),
+        ad_format,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+/// Save the opaque iframe as a new owner-only file. `create_new` is
+/// deliberate: a typo cannot silently overwrite an earlier reviewed preview
+/// or an unrelated local file. The operator chooses a different path to make
+/// another artifact.
+fn write_preview_output(path: &Path, body: &str) -> std::io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        // Preview markup may carry a short-lived, account-scoped iframe URL,
+        // so do not create it readable by other local users.
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(body.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn preview_output_reason(error: &std::io::Error) -> &'static str {
+    match error.kind() {
+        std::io::ErrorKind::AlreadyExists => "preview_output_exists",
+        _ => "preview_output_unwritable",
+    }
 }
 
 fn build_paused_adset_request(
@@ -1593,6 +1716,67 @@ mod tests {
         assert!(
             matches!(cli.command, Commands::Ads(AdsCmd::Accounts { site }) if site == "meta_ads")
         );
+    }
+
+    #[test]
+    fn creative_preview_command_requires_a_closed_format_and_new_output_file() {
+        let preview = Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "preview-creative",
+            "meta_ads",
+            "--creative-id",
+            "500",
+            "--ad-format",
+            "desktop_feed_standard",
+            "--output",
+            "preview.html",
+        ])
+        .unwrap();
+        assert!(matches!(
+            preview.command,
+            Commands::Ads(AdsCmd::PreviewCreative { site, creative_id, ad_format, output })
+                if site == "meta_ads" && creative_id == "500" && ad_format == "desktop_feed_standard" && output == Path::new("preview.html")
+        ));
+
+        let missing_output = Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "preview-creative",
+            "meta_ads",
+            "--creative-id",
+            "500",
+            "--ad-format",
+            "desktop_feed_standard",
+        ]);
+        assert!(missing_output.is_err());
+
+        let request =
+            build_creative_preview_request("meta_ads", "500", "mobile_feed_standard").unwrap();
+        assert_eq!(request.ad_format, AdPreviewFormat::MobileFeedStandard);
+        let bad_format =
+            build_creative_preview_request("meta_ads", "500", "instagram_standard").unwrap_err();
+        assert!(
+            matches!(bad_format, Error::InvalidQuery { reason, .. } if reason == "unknown_ad_preview_format:instagram_standard")
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("preview.html");
+        write_preview_output(&output, "<iframe src=\"https://meta.test\"></iframe>").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&output).unwrap(),
+            "<iframe src=\"https://meta.test\"></iframe>"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&output).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+        let exists = write_preview_output(&output, "different").unwrap_err();
+        assert_eq!(preview_output_reason(&exists), "preview_output_exists");
     }
 
     #[test]

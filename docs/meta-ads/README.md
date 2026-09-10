@@ -1,6 +1,6 @@
 # meta_ads runbook
 
-Spend/performance insights plus paused-first management through the Meta Marketing API (Graph `v26.0`, pinned). Scope: `ads_read,ads_management`. Tier B can upload an account image, create a Page image-link creative, and create campaigns, ad sets, and ads; every delivery object form hard-codes `status=PAUSED`. There is no activation, budget-update, or delete command; policy refuses those future spend-shaped actions by default.
+Spend/performance insights plus paused-first management through the Meta Marketing API (Graph `v26.0`, pinned). Scope: `ads_read,ads_management`. Tier B can upload an account image, create a Page image-link creative, preview that creative locally, and create campaigns, ad sets, and ads; every delivery object form hard-codes `status=PAUSED`. There is no activation, budget-update, or delete command; policy refuses those future spend-shaped actions by default.
 
 ## One-time setup (operator)
 
@@ -104,6 +104,12 @@ postkit ads create-link-creative meta_ads --ad-account act_123 \
   --headline 'Learn more' --destination-url https://example.com/offer \
   --call-to-action learn_more --json
 
+# A preview is a read of the saved creative, not an ad creation. Meta returns
+# iframe markup, so postkit writes it only to the chosen owner-only file; open
+# that file locally to review the Page identity, copy, image, link, and CTA.
+postkit ads preview-creative meta_ads --creative-id <CREATIVE_ID> \
+  --ad-format desktop_feed_standard --output preview.html --json
+
 # The final dependency is still a structurally paused ad.
 postkit ads create-ad meta_ads --ad-account act_123 \
   --name 'Postkit validation ad — do not activate' --adset-id <ADSET_ID> \
@@ -132,6 +138,15 @@ postkit ads create-ad meta_ads --ad-account act_123 \
 - `--page-id`, `--image-hash`, `--message`, `--headline`, destination HTTPS
   URL, and `--call-to-action learn_more` are all required. Postkit intentionally
   has no Page, copy, tracking, or CTA defaults.
+- `preview-creative` accepts only `desktop_feed_standard` and
+  `mobile_feed_standard` until other placement contracts have explicit types
+  and tests. The Creative ID is globally addressed by Meta, so no
+  `--ad-account` flag is accepted for this read. `--output` must name a new
+  file; Postkit will not overwrite an earlier preview.
+- A preview is visual QA only. It never creates an ad, changes a draft, adds
+  funds, or enables delivery. Meta preview iframe URLs may be short-lived, so
+  regenerate a preview rather than treating the saved file as a permanent
+  share link.
 
 ### Live validation without spend
 

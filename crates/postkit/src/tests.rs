@@ -1,6 +1,7 @@
 use crate::ads::{
-    CampaignObjective, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
-    CreatedAdCreative, PausedAdCreate, PausedCampaign, UploadAdImageRequest, UploadedAdImage,
+    AdPreviewFormat, CampaignObjective, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
+    CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest, PausedAdCreate,
+    PausedCampaign, UploadAdImageRequest, UploadedAdImage,
 };
 use crate::apps::{AppStore, MemoryAppStore};
 use crate::client::Client;
@@ -35,6 +36,7 @@ struct MockPub {
     paused_creates: AtomicUsize,
     image_uploads: AtomicUsize,
     creative_creates: AtomicUsize,
+    creative_previews: AtomicUsize,
 }
 
 impl MockPub {
@@ -53,6 +55,7 @@ impl MockPub {
             paused_creates: AtomicUsize::new(0),
             image_uploads: AtomicUsize::new(0),
             creative_creates: AtomicUsize::new(0),
+            creative_previews: AtomicUsize::new(0),
         }
     }
 
@@ -80,6 +83,13 @@ impl MockPub {
     fn creative_assets(site: &str) -> Self {
         Self {
             caps: vec![Capability::CreateAdCreative],
+            ..Self::text(site)
+        }
+    }
+
+    fn creative_previews(site: &str) -> Self {
+        Self {
+            caps: vec![Capability::ReadAdPreviews],
             ..Self::text(site)
         }
     }
@@ -250,6 +260,30 @@ impl Publisher for MockPub {
             site: self.site.clone(),
             account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
             id: format!("creative-{n}"),
+        })
+    }
+
+    async fn preview_ad_creative(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &CreativePreviewRequest,
+        _deadline: Deadline,
+    ) -> Result<CreativePreview, Error> {
+        let n = self.creative_previews.fetch_add(1, Ordering::SeqCst);
+        // Reuse the mock's one-shot expiry switch so this read path proves it
+        // gets the same token-refresh recovery as existing insights reads.
+        if self.fail_auth_once && n == 0 {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "token_expired".into(),
+            });
+        }
+        Ok(CreativePreview {
+            site: self.site.clone(),
+            creative_id: request.creative_id.clone(),
+            ad_format: request.ad_format,
+            body: format!("<iframe data-preview=\"{n}\"></iframe>"),
         })
     }
 
@@ -1116,6 +1150,68 @@ async fn client_creative_assets_route_and_refuse_before_vault_access() {
         .unwrap_err();
     assert!(
         matches!(err, Error::InvalidQuery { reason, .. } if reason == "destination_url_must_be_https")
+    );
+}
+
+/// Previewing is a separately declared read: it neither reuses a creative
+/// write capability nor touches `AdsPolicy`, because a GET cannot change an
+/// auction, draft, budget, or payment state.
+#[tokio::test]
+async fn client_creative_preview_routes_validates_and_retries_expired_tokens() {
+    let mut preview_connector = MockPub::creative_previews("meta_ads");
+    preview_connector.fail_auth_once = true;
+    let (client, key) = setup(preview_connector);
+    let preview = client
+        .preview_ad_creative(
+            &key,
+            CreativePreviewRequest {
+                creative_id: "123".into(),
+                ad_format: AdPreviewFormat::DesktopFeedStandard,
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(preview.creative_id, "123");
+    assert_eq!(preview.ad_format, AdPreviewFormat::DesktopFeedStandard);
+    assert!(preview.body.contains("data-preview=\"1\""));
+
+    let (no_preview_capability, key) = setup(MockPub::text("meta_ads"));
+    let err = no_preview_capability
+        .preview_ad_creative(
+            &key,
+            CreativePreviewRequest {
+                creative_id: "123".into(),
+                ad_format: AdPreviewFormat::MobileFeedStandard,
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadAdPreviews)
+    );
+
+    // Request validation is the first operation. An invalid creative ID must
+    // not reveal whether a vault alias exists or attempt a connector read.
+    let empty = Client::new(
+        Registry::new(),
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let err = empty
+        .preview_ad_creative(
+            &AccountKey::new("meta_ads", "default"),
+            CreativePreviewRequest {
+                creative_id: "bad-id".into(),
+                ad_format: AdPreviewFormat::DesktopFeedStandard,
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidQuery { reason, .. } if reason == "bad_creative_id:bad-id")
     );
 }
 
