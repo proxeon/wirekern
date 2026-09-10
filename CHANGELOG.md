@@ -14,6 +14,23 @@ same detail by subject.
 
 ### Added
 
+- Meta Ads Tier A+ read surface: remote ad-account discovery, explicit account
+  selection, campaign/ad-set/ad entity filters, typed country/platform/age
+  breakdowns, purchase value, and derived ROAS. These remain read-only.
+- Meta Ads Tier B paused-first management: image upload, Page-backed image
+  link creative creation, local desktop/mobile creative previews, and typed
+  campaign/ad-set/ad creation. Delivery-object forms structurally hard-code
+  `PAUSED`; there is no CLI activation, budget-update, delete, billing, or
+  available-funds verb.
+- Meta Ads review-status inspection: `postkit ads status meta_ads` reports an
+  object's configured and effective lifecycle states plus structured Meta
+  review issues. Its opt-in `--wait` poll is bounded by `--deadline` and
+  returns an explicit `pending_review` result; it only makes GET requests.
+- Meta Ads capabilities and safety seams: `read.ad_accounts`,
+  `read.ad_previews`, `read.ad_review_status`, `create.paused_ads`,
+  `create.ad_creative`, and the injected `PausedOnlyAdsPolicy`. The default
+  policy approves only non-delivering assets and structurally paused creates,
+  refusing future activation and budget mutation before credentials or HTTP.
 - Meta Ads insights (read-only, design 026 Tier A): `meta_ads` connector
   with the `read.metrics` capability — spend/performance metrics from the
   Marketing API (Graph `v26.0`, pinned) as daily rows by
@@ -94,6 +111,9 @@ same detail by subject.
 
 ### Fixed
 
+- Meta Marketing API errors now prefer the operator-facing
+  `error_user_msg` over a generic summary such as `Invalid parameter`, so
+  billing, Page, creative, and configuration corrections are actionable.
 - OAuth `state` is generated from the OS CSPRNG (128 bits of lowercase
   hex) instead of time nanoseconds, and pasted redirects are now
   verified against it.
