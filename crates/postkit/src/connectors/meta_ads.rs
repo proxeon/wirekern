@@ -1045,9 +1045,15 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
         .and_then(|e| e.get("code"))
         .and_then(|c| c.as_i64())
         .unwrap_or(0);
+    // Meta's generic `message` is often only "Invalid parameter". When the
+    // API includes its operator-facing `error_user_msg`, prefer that safely
+    // structured detail so callers can correct billing, Page, or creative
+    // configuration without repeating the request through a raw HTTP client.
     let message = err
-        .and_then(|e| e.get("message"))
+        .and_then(|e| e.get("error_user_msg"))
         .and_then(|m| m.as_str())
+        .filter(|message| !message.trim().is_empty())
+        .or_else(|| err.and_then(|e| e.get("message")).and_then(|m| m.as_str()))
         .or_else(|| v.get("error_message").and_then(|m| m.as_str()))
         .unwrap_or(body);
     let lower = message.to_ascii_lowercase();
@@ -1214,6 +1220,26 @@ mod tests {
         assert!(matches!(err, Error::RateLimited { .. }));
         let err = map_graph_error(500, "");
         assert!(matches!(err, Error::Network { ref message, .. } if message == "http_500"));
+    }
+
+    #[test]
+    fn graph_error_prefers_meta_operator_message_over_generic_summary() {
+        // Regression for the paused-ad validation: code 100's generic
+        // "Invalid parameter" hid Meta's actionable billing requirement.
+        let err = map_graph_error(
+            400,
+            r#"{"error":{"code":100,"message":"Invalid parameter","error_user_msg":"Update payment method: add a valid payment method."}}"#,
+        );
+        assert!(
+            matches!(err, Error::Platform { code, message, .. } if code == "100" && message == "Update payment method: add a valid payment method.")
+        );
+
+        // Empty optional detail must fall back to the regular Meta message.
+        let err = map_graph_error(
+            400,
+            r#"{"error":{"code":100,"message":"Invalid parameter","error_user_msg":"   "}}"#,
+        );
+        assert!(matches!(err, Error::Platform { message, .. } if message == "Invalid parameter"));
     }
 
     #[tokio::test]

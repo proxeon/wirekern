@@ -146,7 +146,10 @@ postkit insights meta_ads --from 2026-06-12 --to 2026-09-09 \
 ```
 
 No delivery is required for this check. Until an activated campaign has both
-spend and attributed purchase value, `roas` is expected to be `null`.
+spend and attributed purchase value, `roas` is expected to be `null`. Meta may
+still require a valid payment method before it permits creation of the final
+paused **ad** object. Adding a payment method is a financial-account change;
+it does not itself activate a paused campaign, ad set, or ad.
 
 ## Token lifetime
 
@@ -163,3 +166,5 @@ The long-lived user token lasts ~60 days. `postkit` re-issues it via `fb_exchang
 | `paging_exceeded` | cursor loop past 50 pages — not legitimate for ≤90-day daily ranges; report it |
 | `policy_denied` | the application policy refused a spend-shaped operation; Tier B's built-in policy only permits paused creates |
 | Meta code 10 / permission error | token lacks `ads_management`; re-run `postkit auth meta_ads` and approve the expanded scope |
+| Meta code 100 with a detailed message | postkit preserves Meta's `error_user_msg` when present; correct the named Page, creative, billing, or configuration condition before retrying |
+| "No payment method" | Meta requires billing before it will create the final ad, even if that ad is `PAUSED`; add a method only if you accept that financial-account change |
