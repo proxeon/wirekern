@@ -2,7 +2,10 @@ Copyright (c) 2026 postkit contributors
 
 Licensed under either of
 
-- Apache License, Version 2.0
-- MIT license
+- Apache License, Version 2.0 (LICENSE-APACHE)
+- MIT license (LICENSE-MIT)
 
 at your option.
+
+Both full texts ship alongside this notice in the repository and in
+every published crate.

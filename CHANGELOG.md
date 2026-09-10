@@ -14,6 +14,11 @@ same detail by subject.
 
 ### Fixed
 
+- The dual license now ships its texts (issue 004): `LICENSE-APACHE` and
+  `LICENSE-MIT` at the repository root, symlinked into both crates so
+  `cargo package` includes them in every published `.crate` — recipients
+  previously got the SPDX notice with no terms to comply with.
+
 - Idempotency check-and-record is now atomic (issue 023): `Client::publish`
   claims the key before publishing and releases it on every exit path, so
   two concurrent same-key callers can no longer both pass the ledger check
