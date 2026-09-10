@@ -739,11 +739,20 @@ async fn dispatch(
                 // `--wait` polls the *read* path only, bounded by the
                 // global --deadline; a still-pending review stays an
                 // explicit, retryable result rather than an error.
-                if !wait || !reply.pending || deadline.remaining().is_zero() {
+                if !wait || !reply.pending {
                     emit_draft_status(&reply, json);
                     return Ok(());
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // Deadline exit must emit the last observed state, never
+                // start a poll that dies inside the connector as a raw
+                // timeout. Sleeping no more than the remaining time makes
+                // the next loop-top check authoritative.
+                let remaining = deadline.remaining();
+                if remaining.is_zero() {
+                    emit_draft_status(&reply, json);
+                    return Ok(());
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2).min(remaining)).await;
             }
         }
         Commands::Ads(AdsCmd::AdoptDraftStep {

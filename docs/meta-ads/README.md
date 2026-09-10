@@ -266,6 +266,33 @@ zero creates. `status-draft --wait` is GET-only and bounded by `--deadline`.
 A successful run ends with every delivery object `PAUSED`; nothing activates,
 nothing spends.
 
+## Live validation record (2026-09-10)
+
+Full no-spend validation against the dedicated **Postkit MYR Test** account
+(`act_1414222080648203`, MYR), Page `Postkit Validation`:
+
+- **Interruption path:** one manifest ran image → campaign → ad set, then the
+  creative failed *definitively* (Page scopes missing on the token — see
+  below). State parked at `adset_created` with no `in_flight`; `resume-draft`
+  re-attempted only the creative. Zero duplicate writes (identical hash/IDs).
+- **Full path:** fresh manifest completed all five writes in one command —
+  image `20b5a184…`, campaign `120250309282020633`, ad set `120250309282200633`,
+  creative `2466984410455893`, ad `120250309282900633`. All three delivery
+  objects confirmed `PAUSED` configured *and* effective (`status-draft --wait`
+  observed the ad settle from `PENDING_REVIEW` to `PAUSED`). Both preview
+  formats rendered. Campaign-filtered insights over the window: empty rows —
+  zero spend, zero impressions.
+- **Found and fixed during validation:** the token's scope list lacked
+  `pages_show_list,pages_manage_ads`, making `/me/accounts` empty and the
+  Page-backed creative unreachable — Tier B could never have completed on a
+  fresh token. Existing tokens keep their original scopes: re-run
+  `auth meta_ads` after scope changes. Also fixed the `status-draft --wait`
+  deadline race (expiry now emits the last observed state instead of a raw
+  timeout).
+- Deliberately **not** live-tested: killing a process around a live request
+  (ambiguous-write adoption) — deferred until the reconciliation runbook has
+  an approved manual procedure, per the plan.
+
 ## Token lifetime
 
 The long-lived user token lasts ~60 days. `postkit` re-issues it via `fb_exchange_token` automatically (refresh within 7 days of expiry, ≥ 24h since the last) whenever the app file exists — the exchange needs the client secret, so `apps set meta_ads …` (or env vars) must remain configured for refresh to work. Re-run `auth meta_ads` when adding `ads_management` to an older read-only token, or if the session dies.
