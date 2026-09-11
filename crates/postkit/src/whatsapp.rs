@@ -1110,6 +1110,63 @@ impl WhatsAppFlowDraft {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppWaba {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppSystemUser {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppPhoneNumber {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_phone_number: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_rating: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messaging_limit_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_verification_status: Option<String>,
+}
+
+pub fn validate_two_step_pin(pin: &str) -> Result<(), String> {
+    if pin.len() != 6 || !pin.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("whatsapp_pin_invalid".into());
+    }
+    Ok(())
+}
+
+/// Embedded Signup is Facebook Login for Business, not Cloud API messaging.
+/// Builds the documented start URL only; it does not run OAuth.
+pub fn embedded_signup_url(
+    app_id: &str,
+    config_id: &str,
+    redirect_uri: &str,
+) -> Result<String, String> {
+    if app_id.is_empty()
+        || !app_id.bytes().all(|b| b.is_ascii_digit())
+        || config_id.is_empty()
+        || !redirect_uri.starts_with("https://")
+    {
+        return Err("embedded_signup_params_invalid".into());
+    }
+    Ok(format!(
+        "https://www.facebook.com/v26.0/dialog/oauth?client_id={app_id}&config_id={config_id}&response_type=code&override_default_response_type=true&redirect_uri={redirect_uri}"
+    ))
+}
+
 fn validate_create_button(button: &TemplateCreateButton) -> Result<(), String> {
     match button {
         TemplateCreateButton::QuickReply { text }
@@ -1244,7 +1301,7 @@ pub struct InboundUnsupported {
 /// The small, closed set of outbound delivery states Postkit can interpret.
 /// Keeping this enum closed makes a new Meta state an explicit compatibility
 /// decision instead of silently reporting an unreviewed string as delivery.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryStatusKind {
     Sent,
@@ -2094,6 +2151,16 @@ mod tests {
             reply_to_message_id: None,
         };
         assert_eq!(too_many_rows.validate().unwrap_err(), "list_rows_count");
+        assert!(validate_two_step_pin("123456").is_ok());
+        assert_eq!(
+            validate_two_step_pin("abc").unwrap_err(),
+            "whatsapp_pin_invalid"
+        );
+        assert!(embedded_signup_url("123", "cfg_1", "https://example.com/x").is_ok());
+        assert_eq!(
+            embedded_signup_url("123", "cfg", "http://insecure.example/x").unwrap_err(),
+            "embedded_signup_params_invalid"
+        );
         assert!(WhatsAppFlowDraft {
             name: "booking".into(),
             categories: vec!["OTHER".into()],

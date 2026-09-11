@@ -18,6 +18,8 @@ mod types;
 mod vault;
 #[cfg(feature = "whatsapp-cloud")]
 mod whatsapp;
+#[cfg(feature = "whatsapp-cloud")]
+mod whatsapp_ops;
 
 #[cfg(feature = "vault-file")]
 mod keys;
@@ -77,7 +79,9 @@ pub use draft::{
 };
 pub use error::{Error, WireError};
 #[cfg(feature = "whatsapp-cloud")]
-pub use facets::{WhatsAppAssets, WhatsAppFlows, WhatsAppSender, WhatsAppTemplates};
+pub use facets::{
+    WhatsAppAccount, WhatsAppAssets, WhatsAppFlows, WhatsAppSender, WhatsAppTemplates,
+};
 pub use facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 pub use insights::{
     AdAccount, AdAccountsReply, AttributionWindow, Breakdown, DateRange, InsightRow, InsightsLevel,
@@ -105,8 +109,17 @@ pub use whatsapp::{
     LimitedTimeOffer, ParameterFormat, RecipientType, TemplateButton, TemplateCreateButton,
     TemplateCreateComponent, TemplateHeader, WhatsAppTemplateDraft, WhatsAppTemplateList,
     WhatsAppFlowDraft, WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppTemplateQuery,
-    WhatsAppTemplateRecord, ProductSection,
+    WhatsAppTemplateRecord, ProductSection, WhatsAppPhoneNumber, WhatsAppSystemUser,
+    WhatsAppWaba, embedded_signup_url, validate_two_step_pin,
 };
+#[cfg(feature = "whatsapp-cloud")]
+pub use whatsapp_ops::{
+    customer_window_open, ingest_parsed, verify_webhook_challenge, ConsentKind, ConsentRecord,
+    LedgerApply, MemoryWhatsAppConsent, MemoryWhatsAppLedger, ThroughputQueue, WhatsAppConsent,
+    WhatsAppLedger, WhatsAppLedgerRecord, CUSTOMER_WINDOW_SECS, DEFAULT_THROUGHPUT_PER_SEC,
+};
+#[cfg(all(feature = "whatsapp-cloud", feature = "vault-file"))]
+pub use whatsapp_ops::{FileWhatsAppConsent, FileWhatsAppLedger};
 
 #[cfg(feature = "vault-file")]
 pub use keys::{CreatedKey, FileKeyStore, KeyMeta, KEY_PREFIX};

@@ -5,14 +5,17 @@
 //! number and the later webhook delivery state are all part of the contract.
 
 use crate::error::Error;
-use crate::facets::{WhatsAppAssets, WhatsAppFlows, WhatsAppSender, WhatsAppTemplates};
+use crate::facets::{
+    WhatsAppAccount, WhatsAppAssets, WhatsAppFlows, WhatsAppSender, WhatsAppTemplates,
+};
 use crate::http::Http;
 use crate::publisher::{AuthKind, Publisher};
 use crate::registry::Connector;
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::whatsapp::{
     validate_media_upload, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppTemplateDraft,
-    WhatsAppFlowDraft, WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppTemplateList,
+    WhatsAppFlowDraft, WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppPhoneNumber,
+    WhatsAppSystemUser, WhatsAppTemplateList, WhatsAppWaba,
     WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
     DeliveryConversation, DeliveryError, DeliveryPricing, DeliveryStatus, DeliveryStatusKind,
     InboundContact, InboundInteractive, InboundLocation, InboundMedia, InboundMessage,
@@ -61,7 +64,8 @@ impl WhatsAppCloud {
             .whatsapp(this.clone())
             .whatsapp_assets(this.clone())
             .whatsapp_templates(this.clone())
-            .whatsapp_flows(this)
+            .whatsapp_flows(this.clone())
+            .whatsapp_account(this)
     }
 
     /// Verify and parse raw `messages` webhook bytes. This is intentionally a
@@ -75,6 +79,24 @@ impl WhatsAppCloud {
         raw_body: &[u8],
     ) -> Result<InboundMessages, Error> {
         Self::parse_signed_webhook_with(app, signature, raw_body, WebhookParseOptions::default())
+    }
+
+    /// GET `hub.verify_token` handshake. Returns the raw `hub.challenge`
+    /// string Meta expects as the HTTP body (never JSON).
+    pub fn verify_callback_challenge(
+        app: &AppConfig,
+        mode: &str,
+        token: &str,
+        challenge: &str,
+    ) -> Result<String, Error> {
+        let stored = app
+            .extra
+            .get("verify_token")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| webhook_error("webhook_verify_token_missing"))?;
+        crate::whatsapp_ops::verify_webhook_challenge(stored, mode, token, challenge)
+            .map_err(|reason| webhook_error(&reason))
     }
 
     pub fn parse_signed_webhook_with(
@@ -104,7 +126,7 @@ impl WhatsAppCloud {
         if body.get("object").and_then(Value::as_str) != Some("whatsapp_business_account") {
             return Err(webhook_error("webhook_object_invalid"));
         }
-        let expected_phone_number_id = phone_number_id(app)?;
+        let expected_phone_ids = configured_phone_ids(app)?;
         let entries = body
             .get("entry")
             .and_then(Value::as_array)
@@ -135,7 +157,7 @@ impl WhatsAppCloud {
                 // that it belongs to the Postkit-configured sender. Refusing
                 // a mismatched number prevents accidental cross-number data
                 // handling in a multi-WABA webhook endpoint.
-                if phone_number_id != expected_phone_number_id {
+                if !expected_phone_ids.iter().any(|id| id == &phone_number_id) {
                     return Err(webhook_error("webhook_phone_number_mismatch"));
                 }
                 if let Some(delivery_statuses) = value.get("statuses") {
@@ -191,6 +213,8 @@ impl Publisher for WhatsAppCloud {
             Capability::SendFlow,
             Capability::ReadFlows,
             Capability::ManageFlows,
+            Capability::ReadWhatsAppAccount,
+            Capability::ManageWhatsAppPhone,
             Capability::ReadWebhookMessages,
             Capability::ReadWebhookStatuses,
         ]
@@ -845,6 +869,319 @@ impl WhatsAppFlows for WhatsAppCloud {
             categories: vec![],
         })
     }
+}
+
+#[async_trait]
+impl WhatsAppAccount for WhatsAppCloud {
+    async fn list_wabas(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<Vec<WhatsAppWaba>, Error> {
+        let token = access_token(creds)?;
+        if let Some(business_id) = extra_digits(app, "business_id") {
+            let response = self
+                .http
+                .send(
+                    self.http
+                        .get(&format!(
+                            "{}/{business_id}/owned_whatsapp_business_accounts?fields=id,name",
+                            self.base
+                        ))
+                        .bearer_auth(token),
+                    deadline,
+                    &self.site,
+                )
+                .await?;
+            let body = read_json(response, &self.site).await?;
+            return parse_waba_list(&body);
+        }
+        let waba = waba_id(app)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .get(&format!("{}/{waba}?fields=id,name", self.base))
+                    .bearer_auth(token),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        Ok(vec![parse_waba(&body)?])
+    }
+
+    async fn list_phone_numbers(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<Vec<WhatsAppPhoneNumber>, Error> {
+        let waba = waba_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .get(&format!(
+                        "{}/{waba}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,messaging_limit_tier,code_verification_status",
+                        self.base
+                    ))
+                    .bearer_auth(token),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        let rows = body
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::Platform {
+                site: self.site.clone(),
+                code: "phone_list_invalid".into(),
+                message: "WhatsApp phone list returned no data array".into(),
+            })?;
+        rows.iter().map(parse_phone_number).collect()
+    }
+
+    async fn phone_health(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<WhatsAppPhoneNumber, Error> {
+        let phone = phone_number_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .get(&format!(
+                        "{}/{phone}?fields=id,display_phone_number,verified_name,quality_rating,messaging_limit_tier,code_verification_status",
+                        self.base
+                    ))
+                    .bearer_auth(token),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        parse_phone_number(&body)
+    }
+
+    async fn subscribe_apps(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        let waba = waba_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .post(&format!("{}/{waba}/subscribed_apps", self.base))
+                    .bearer_auth(token)
+                    .json(&json!({})),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        if body.get("success").and_then(Value::as_bool) != Some(true) {
+            return Err(Error::Platform {
+                site: self.site.clone(),
+                code: "subscribe_failed".into(),
+                message: "WhatsApp subscribed_apps did not return success".into(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn register_phone(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        pin: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        crate::whatsapp::validate_two_step_pin(pin).map_err(|reason| Error::InvalidPost {
+            site: self.site.clone(),
+            reason,
+            limit: None,
+        })?;
+        let phone = phone_number_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .post(&format!("{}/{phone}/register", self.base))
+                    .bearer_auth(token)
+                    .json(&json!({
+                        "messaging_product": "whatsapp",
+                        "pin": pin,
+                    })),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        if body.get("success").and_then(Value::as_bool) != Some(true) {
+            return Err(Error::Platform {
+                site: self.site.clone(),
+                code: "register_failed".into(),
+                message: "WhatsApp phone register did not return success".into(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn set_two_step_pin(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        pin: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        crate::whatsapp::validate_two_step_pin(pin).map_err(|reason| Error::InvalidPost {
+            site: self.site.clone(),
+            reason,
+            limit: None,
+        })?;
+        let phone = phone_number_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .post(&format!("{}/{phone}", self.base))
+                    .bearer_auth(token)
+                    .json(&json!({ "pin": pin })),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        if body.get("success").and_then(Value::as_bool) != Some(true) {
+            return Err(Error::Platform {
+                site: self.site.clone(),
+                code: "two_step_failed".into(),
+                message: "WhatsApp two-step PIN did not return success".into(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn list_system_users(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<Vec<WhatsAppSystemUser>, Error> {
+        let business_id = extra_digits(app, "business_id").ok_or_else(|| Error::Auth {
+            site: self.site.clone(),
+            reason: "missing_business_id".into(),
+        })?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .get(&format!(
+                        "{}/{business_id}/system_users?fields=id,name,role",
+                        self.base
+                    ))
+                    .bearer_auth(token),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        let rows = body
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::Platform {
+                site: self.site.clone(),
+                code: "system_user_list_invalid".into(),
+                message: "System user list returned no data array".into(),
+            })?;
+        rows.iter()
+            .map(|v| {
+                let id = v
+                    .get("id")
+                    .and_then(value_string)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| Error::Platform {
+                        site: self.site.clone(),
+                        code: "missing_system_user_id".into(),
+                        message: "System user row had no id".into(),
+                    })?;
+                Ok(WhatsAppSystemUser {
+                    id,
+                    name: v.get("name").and_then(value_string),
+                    role: v.get("role").and_then(value_string),
+                })
+            })
+            .collect()
+    }
+}
+
+fn extra_digits(app: &AppConfig, key: &str) -> Option<String> {
+    app.extra
+        .get(key)
+        .and_then(value_string)
+        .filter(|id| !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn parse_waba_list(body: &Value) -> Result<Vec<WhatsAppWaba>, Error> {
+    let rows = body
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Platform {
+            site: Site::new(SITE),
+            code: "waba_list_invalid".into(),
+            message: "WhatsApp WABA list returned no data array".into(),
+        })?;
+    rows.iter().map(parse_waba).collect()
+}
+
+fn parse_waba(value: &Value) -> Result<WhatsAppWaba, Error> {
+    let id = value
+        .get("id")
+        .and_then(value_string)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| Error::Platform {
+            site: Site::new(SITE),
+            code: "missing_waba_id".into(),
+            message: "WhatsApp WABA response had no id".into(),
+        })?;
+    Ok(WhatsAppWaba {
+        id,
+        name: value.get("name").and_then(value_string),
+    })
+}
+
+fn parse_phone_number(value: &Value) -> Result<WhatsAppPhoneNumber, Error> {
+    let id = value
+        .get("id")
+        .and_then(value_string)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| Error::Platform {
+            site: Site::new(SITE),
+            code: "missing_phone_number_id".into(),
+            message: "WhatsApp phone response had no id".into(),
+        })?;
+    Ok(WhatsAppPhoneNumber {
+        id,
+        display_phone_number: value.get("display_phone_number").and_then(value_string),
+        verified_name: value.get("verified_name").and_then(value_string),
+        quality_rating: value.get("quality_rating").and_then(value_string),
+        messaging_limit_tier: value.get("messaging_limit_tier").and_then(value_string),
+        code_verification_status: value.get("code_verification_status").and_then(value_string),
+    })
 }
 
 fn parse_flow_record(value: &Value, missing: &str) -> Result<WhatsAppFlowRecord, Error> {
@@ -1576,6 +1913,35 @@ fn template_draft_payload(draft: &WhatsAppTemplateDraft) -> Value {
         "parameter_format": draft.parameter_format.as_str(),
         "components": components,
     })
+}
+
+fn configured_phone_ids(app: &AppConfig) -> Result<Vec<String>, Error> {
+    let mut ids = Vec::new();
+    if let Ok(primary) = phone_number_id(app) {
+        ids.push(primary);
+    }
+    if let Some(senders) = app.extra.get("senders").and_then(Value::as_array) {
+        for sender in senders {
+            if let Some(id) = sender
+                .get("phone_number_id")
+                .and_then(value_string)
+                .filter(|id| {
+                    !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_digit())
+                })
+            {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+    }
+    if ids.is_empty() {
+        return Err(Error::Auth {
+            site: Site::new(SITE),
+            reason: "missing_phone_number_id".into(),
+        });
+    }
+    Ok(ids)
 }
 
 fn phone_number_id(app: &AppConfig) -> Result<String, Error> {
@@ -2787,6 +3153,80 @@ mod tests {
         assert_eq!(list.hits(), 1);
         assert_eq!(create.hits(), 1);
         assert_eq!(publish.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn account_list_subscribe_register_and_health_use_waba_paths() {
+        let server = MockServer::start();
+        let phones = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/102290129340398/phone_numbers");
+            then.status(200).json_body(json!({
+                "data": [{
+                    "id": "123456789",
+                    "display_phone_number": "+60 12",
+                    "quality_rating": "GREEN",
+                    "messaging_limit_tier": "TIER_1K"
+                }]
+            }));
+        });
+        let health = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/123456789");
+            then.status(200).json_body(json!({
+                "id": "123456789",
+                "quality_rating": "YELLOW",
+                "messaging_limit_tier": "TIER_250"
+            }));
+        });
+        let sub = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/102290129340398/subscribed_apps");
+            then.status(200).json_body(json!({ "success": true }));
+        });
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/123456789/register");
+            then.status(200).json_body(json!({ "success": true }));
+        });
+        let pin = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/123456789");
+            then.status(200).json_body(json!({ "success": true }));
+        });
+        let waba = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/102290129340398");
+            then.status(200).json_body(json!({ "id": "102290129340398", "name": "Test" }));
+        });
+        let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let listed = connector
+            .list_phone_numbers(&app(), &creds(), Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(listed[0].quality_rating.as_deref(), Some("GREEN"));
+        let health_row = connector
+            .phone_health(&app(), &creds(), Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(health_row.quality_rating.as_deref(), Some("YELLOW"));
+        connector
+            .subscribe_apps(&app(), &creds(), Deadline::from_secs(30))
+            .await
+            .unwrap();
+        connector
+            .register_phone(&app(), &creds(), "123456", Deadline::from_secs(30))
+            .await
+            .unwrap();
+        connector
+            .set_two_step_pin(&app(), &creds(), "654321", Deadline::from_secs(30))
+            .await
+            .unwrap();
+        let wabas = connector
+            .list_wabas(&app(), &creds(), Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(wabas[0].id, "102290129340398");
+        assert_eq!(phones.hits(), 1);
+        assert_eq!(health.hits(), 1);
+        assert_eq!(sub.hits(), 1);
+        assert_eq!(register.hits(), 1);
+        assert_eq!(pin.hits(), 1);
+        assert_eq!(waba.hits(), 1);
     }
 
     #[tokio::test]

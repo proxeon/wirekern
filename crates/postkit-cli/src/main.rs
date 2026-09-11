@@ -405,6 +405,9 @@ enum WhatsAppCmd {
         /// Needed only by `whatsapp webhook parse`; it is never printed.
         #[arg(long)]
         app_secret: Option<String>,
+        /// Meta GET `hub.verify_token`. Distinct from the app secret HMAC.
+        #[arg(long)]
+        verify_token: Option<String>,
     },
     /// In-window service text with no `context`. Meta only delivers this
     /// while a customer-service window is open; `--allow-send` acknowledges
@@ -648,8 +651,9 @@ async fn run(cli: Cli) -> Result<(), i32> {
             phone_number_id,
             waba_id,
             app_secret,
+            verify_token,
         }) => {
-            let cfg = whatsapp_app_config(phone_number_id, waba_id, app_secret)
+            let cfg = whatsapp_app_config(phone_number_id, waba_id, app_secret, verify_token)
                 .map_err(|e| fail(&e, json))?;
             let apps = FileAppStore::new(&home).map_err(|e| fail(&e, json))?;
             apps.put(&cfg).map_err(|e| fail(&e, json))?;
@@ -1779,10 +1783,11 @@ mod tests {
 
     #[test]
     fn whatsapp_config_is_phone_only_and_never_needs_oauth_fields() {
-        let cfg = whatsapp_app_config("123456789".into(), None, Some("app-secret".into())).unwrap();
+        let cfg =
+            whatsapp_app_config("123456789".into(), None, Some("app-secret".into()), None).unwrap();
         assert!(cfg.oauth.is_none());
         assert_eq!(cfg.extra["phone_number_id"].as_str(), Some("123456789"));
-        assert!(whatsapp_app_config("+6012".into(), None, None).is_err());
+        assert!(whatsapp_app_config("+6012".into(), None, None, None).is_err());
     }
 
     #[test]

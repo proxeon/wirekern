@@ -6,7 +6,7 @@
 //! serve cannot register a different connector set than `postkit post`.
 
 use axum::body::Bytes;
-use axum::extract::{Query, State};
+use axum::extract::{Path as PathParam, Query, State};
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -104,6 +104,14 @@ pub fn router(client: Arc<Client>, whatsapp: Arc<Client>, keys: Arc<FileKeyStore
         .route("/v1/posts", post(posts))
         .route("/v1/whatsapp", post(whatsapp_send))
         .route("/v1/whatsapp/webhook", post(whatsapp_webhook))
+        // Meta-facing callback: no pk_live_ key. GET is the verify-token
+        // handshake; POST is HMAC + HTTP 200 ACK. Authenticated parse stays
+        // on /v1/whatsapp/webhook for BYO receivers.
+        .route(
+            "/v1/whatsapp/callback",
+            get(whatsapp_callback_get).post(whatsapp_callback_post),
+        )
+        .route("/v1/whatsapp/events/{wamid}", get(whatsapp_event_get))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/accounts", get(accounts))
         .route("/v1/whoami", get(whoami))
@@ -221,6 +229,73 @@ async fn whatsapp_webhook(
         },
     ) {
         Ok(out) => (StatusCode::OK, Json(out)).into_response(),
+        Err(e) => wire_response(e),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct HubChallenge {
+    #[serde(rename = "hub.mode")]
+    mode: Option<String>,
+    #[serde(rename = "hub.verify_token")]
+    verify_token: Option<String>,
+    #[serde(rename = "hub.challenge")]
+    challenge: Option<String>,
+}
+
+/// Meta webhook verification. Response body is the raw challenge string.
+async fn whatsapp_callback_get(
+    State(state): State<AppState>,
+    Query(hub): Query<HubChallenge>,
+) -> Response {
+    match state.client.verify_whatsapp_callback_challenge(
+        hub.mode.as_deref().unwrap_or(""),
+        hub.verify_token.as_deref().unwrap_or(""),
+        hub.challenge.as_deref().unwrap_or(""),
+    ) {
+        Ok(challenge) => (StatusCode::OK, challenge).into_response(),
+        Err(_) => StatusCode::FORBIDDEN.into_response(),
+    }
+}
+
+/// Meta event delivery. HMAC over the raw body; HTTP 200 ACK even when the
+/// payload cannot be reduced, so Meta does not disable the callback. Invalid
+/// signatures are 403.
+async fn whatsapp_callback_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let signature = headers
+        .get("x-hub-signature-256")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    match state.client.ingest_whatsapp_webhook(
+        signature,
+        &body,
+        postkit::WebhookParseOptions {
+            include_status_extras: true,
+        },
+    ) {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(Error::InvalidQuery { reason, .. }) if reason == "webhook_signature_invalid" => {
+            StatusCode::FORBIDDEN.into_response()
+        }
+        Err(_) => StatusCode::OK.into_response(),
+    }
+}
+
+async fn whatsapp_event_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    PathParam(wamid): PathParam<String>,
+) -> Response {
+    if let Err(e) = authorize(&state, &headers).await {
+        return wire_response(e);
+    }
+    match state.client.whatsapp_ledger_get(&wamid) {
+        Ok(Some(row)) => (StatusCode::OK, Json(row)).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => wire_response(e),
     }
 }
@@ -497,11 +572,14 @@ mod tests {
                 extra: serde_json::json!({
                     "phone_number_id": "123456789",
                     "app_secret": "webhook-secret",
+                    "verify_token": "verify-me",
                 }),
             },
         )
         .unwrap();
-        let deny = Client::new(registry, vault.clone(), apps.clone());
+        let ledger = Arc::new(postkit::MemoryWhatsAppLedger::new());
+        let deny = Client::new(registry, vault.clone(), apps.clone())
+            .with_whatsapp_ledger(ledger.clone());
         let mut registry_allow = Registry::new();
         registry_allow
             .register_connector(Connector::from_publisher(mock.clone()).whatsapp(mock.clone()));
@@ -748,6 +826,70 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["messages"][0]["id"], "wamid.in");
         assert!(v.get("ok").is_none());
+    }
+
+    #[tokio::test]
+    async fn meta_callback_get_echoes_challenge_without_bearer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (app, _, _) = test_router(tmp.path());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/whatsapp/callback?hub.mode=subscribe&hub.verify_token=verify-me&hub.challenge=1158")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(&bytes[..], b"1158");
+    }
+
+    #[tokio::test]
+    async fn meta_callback_post_acks_200_and_rejects_bad_hmac() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (app, token, _) = test_router(tmp.path());
+        let raw = br#"{"object":"whatsapp_business_account","entry":[{"changes":[{"field":"messages","value":{"metadata":{"phone_number_id":"123456789"},"messages":[{"from":"1","id":"wamid.in","type":"text","text":{"body":"hi"}}]}}]}]}"#;
+        let forbidden = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/whatsapp/callback")
+                    .header("x-hub-signature-256", "sha256=00")
+                    .body(Body::from(raw.as_ref()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        let ok = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/whatsapp/callback")
+                    .header("x-hub-signature-256", webhook_sig(raw))
+                    .body(Body::from(raw.as_ref()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let got = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/whatsapp/events/wamid.in")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(got.status(), StatusCode::OK);
     }
 
     #[test]

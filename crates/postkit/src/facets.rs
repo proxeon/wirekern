@@ -21,6 +21,7 @@ use crate::types::{AccountCreds, AppConfig, Deadline};
 #[cfg(feature = "whatsapp-cloud")]
 use crate::whatsapp::{
     WhatsAppFlowDraft, WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppMediaMeta,
+    WhatsAppPhoneNumber, WhatsAppSystemUser, WhatsAppWaba,
     WhatsAppMediaUpload, WhatsAppSendRequest, WhatsAppTemplateDraft, WhatsAppTemplateList,
     WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
 };
@@ -252,4 +253,60 @@ pub trait WhatsAppFlows: Send + Sync {
         flow_id: &str,
         deadline: Deadline,
     ) -> Result<WhatsAppFlowRecord, Error>;
+}
+
+/// WABA/phone reads and Cloud API registration. Distinct from sending.
+#[cfg(feature = "whatsapp-cloud")]
+#[async_trait]
+pub trait WhatsAppAccount: Send + Sync {
+    async fn list_wabas(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<Vec<WhatsAppWaba>, Error>;
+
+    async fn list_phone_numbers(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<Vec<WhatsAppPhoneNumber>, Error>;
+
+    async fn phone_health(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<WhatsAppPhoneNumber, Error>;
+
+    async fn subscribe_apps(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<(), Error>;
+
+    async fn register_phone(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        pin: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error>;
+
+    async fn set_two_step_pin(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        pin: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error>;
+
+    async fn list_system_users(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<Vec<WhatsAppSystemUser>, Error>;
 }

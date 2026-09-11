@@ -88,6 +88,7 @@ pub(crate) fn whatsapp_app_config(
     phone_number_id: String,
     waba_id: Option<String>,
     app_secret: Option<String>,
+    verify_token: Option<String>,
 ) -> Result<AppConfig, Error> {
     if phone_number_id.is_empty()
         || phone_number_id.len() > 32
@@ -122,6 +123,7 @@ pub(crate) fn whatsapp_app_config(
             "phone_number_id": phone_number_id,
             "waba_id": waba_id,
             "app_secret": app_secret,
+            "verify_token": verify_token,
         }),
     })
 }

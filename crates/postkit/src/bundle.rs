@@ -64,6 +64,17 @@ impl Client {
         let apps = Arc::new(FileAppStore::new(home)?);
         let client = Client::new(registry, vault, apps);
         #[cfg(feature = "whatsapp-cloud")]
+        let client = {
+            let client = match crate::whatsapp_ops::FileWhatsAppLedger::new(home) {
+                Ok(ledger) => client.with_whatsapp_ledger(Arc::new(ledger)),
+                Err(_) => client,
+            };
+            match crate::whatsapp_ops::FileWhatsAppConsent::new(home) {
+                Ok(consent) => client.with_whatsapp_consent(Arc::new(consent)),
+                Err(_) => client,
+            }
+        };
+        #[cfg(feature = "whatsapp-cloud")]
         if allow_whatsapp_send {
             return Ok(
                 client.with_whatsapp_policy(Arc::new(crate::policy::AllowWhatsAppSendsPolicy))

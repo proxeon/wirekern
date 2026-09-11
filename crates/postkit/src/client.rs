@@ -47,6 +47,10 @@ pub struct Client {
     ads_policy: Arc<dyn AdsPolicy>,
     #[cfg(feature = "whatsapp-cloud")]
     whatsapp_policy: Arc<dyn WhatsAppPolicy>,
+    #[cfg(feature = "whatsapp-cloud")]
+    whatsapp_ledger: Option<Arc<dyn crate::whatsapp_ops::WhatsAppLedger>>,
+    #[cfg(feature = "whatsapp-cloud")]
+    whatsapp_consent: Option<Arc<dyn crate::whatsapp_ops::WhatsAppConsent>>,
 }
 
 impl Client {
@@ -58,6 +62,10 @@ impl Client {
             ads_policy: Arc::new(PausedOnlyAdsPolicy),
             #[cfg(feature = "whatsapp-cloud")]
             whatsapp_policy: Arc::new(NoWhatsAppSendsPolicy),
+            #[cfg(feature = "whatsapp-cloud")]
+            whatsapp_ledger: None,
+            #[cfg(feature = "whatsapp-cloud")]
+            whatsapp_consent: None,
         }
     }
 
@@ -74,6 +82,24 @@ impl Client {
     #[cfg(feature = "whatsapp-cloud")]
     pub fn with_whatsapp_policy(mut self, whatsapp_policy: Arc<dyn WhatsAppPolicy>) -> Self {
         self.whatsapp_policy = whatsapp_policy;
+        self
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn with_whatsapp_ledger(
+        mut self,
+        ledger: Arc<dyn crate::whatsapp_ops::WhatsAppLedger>,
+    ) -> Self {
+        self.whatsapp_ledger = Some(ledger);
+        self
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn with_whatsapp_consent(
+        mut self,
+        consent: Arc<dyn crate::whatsapp_ops::WhatsAppConsent>,
+    ) -> Self {
+        self.whatsapp_consent = Some(consent);
         self
     }
 
@@ -292,6 +318,110 @@ impl Client {
         crate::connectors::whatsapp_cloud::WhatsAppCloud::parse_signed_webhook_with(
             &app, signature, raw_body, options,
         )
+    }
+
+    /// Meta GET handshake. Echoes `hub.challenge` when the verify token matches.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn verify_whatsapp_callback_challenge(
+        &self,
+        mode: &str,
+        token: &str,
+        challenge: &str,
+    ) -> Result<String, Error> {
+        let app = self.apps.get(&Site::new("whatsapp_cloud"))?;
+        crate::connectors::whatsapp_cloud::WhatsAppCloud::verify_callback_challenge(
+            &app, mode, token, challenge,
+        )
+    }
+
+    /// Parse a signed webhook and, if a ledger is attached, persist wamids.
+    /// HMAC failures stay errors so Meta can retry; parse failures after a
+    /// valid signature should be ACK'd by the host and recorded as dead letters.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn ingest_whatsapp_webhook(
+        &self,
+        signature: &str,
+        raw_body: &[u8],
+        options: crate::whatsapp::WebhookParseOptions,
+    ) -> Result<crate::whatsapp::InboundMessages, Error> {
+        match self.parse_whatsapp_webhook(signature, raw_body, options) {
+            Ok(parsed) => {
+                if let Some(ledger) = &self.whatsapp_ledger {
+                    crate::whatsapp_ops::ingest_parsed(ledger.as_ref(), &parsed)?;
+                }
+                Ok(parsed)
+            }
+            Err(error) => {
+                if let Some(ledger) = &self.whatsapp_ledger {
+                    let sha = crate::whatsapp_ops::sha256_hex(raw_body);
+                    let reason = match &error {
+                        Error::InvalidQuery { reason, .. } => reason.as_str(),
+                        _ => "webhook_ingest_failed",
+                    };
+                    let _ = ledger.put_dead_letter(reason, &sha);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn whatsapp_ledger_get(
+        &self,
+        wamid: &str,
+    ) -> Result<Option<crate::whatsapp_ops::WhatsAppLedgerRecord>, Error> {
+        match &self.whatsapp_ledger {
+            Some(ledger) => ledger.get(wamid),
+            None => Err(Error::InvalidQuery {
+                site: Site::new("whatsapp_cloud"),
+                reason: "whatsapp_ledger_disabled".into(),
+            }),
+        }
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn whatsapp_window_open(&self, wa_id: &str) -> Result<bool, Error> {
+        let Some(ledger) = &self.whatsapp_ledger else {
+            return Err(Error::InvalidQuery {
+                site: Site::new("whatsapp_cloud"),
+                reason: "whatsapp_ledger_disabled".into(),
+            });
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Ok(ledger
+            .last_inbound_at(wa_id)?
+            .is_some_and(|at| crate::whatsapp_ops::customer_window_open(at, now)))
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn put_whatsapp_consent(
+        &self,
+        record: crate::whatsapp_ops::ConsentRecord,
+    ) -> Result<(), Error> {
+        match &self.whatsapp_consent {
+            Some(store) => store.put(&record),
+            None => Err(Error::InvalidQuery {
+                site: Site::new("whatsapp_cloud"),
+                reason: "whatsapp_consent_disabled".into(),
+            }),
+        }
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn get_whatsapp_consent(
+        &self,
+        wa_id: &str,
+    ) -> Result<Option<crate::whatsapp_ops::ConsentRecord>, Error> {
+        match &self.whatsapp_consent {
+            Some(store) => store.get(wa_id),
+            None => Err(Error::InvalidQuery {
+                site: Site::new("whatsapp_cloud"),
+                reason: "whatsapp_consent_disabled".into(),
+            }),
+        }
     }
 
     /// Upload bytes to Cloud API media. Not a customer send: no `--allow-send`.
@@ -533,6 +663,158 @@ impl Client {
             .unwrap_or_else(|_| empty_app(&key.site));
         let creds = self.vault.get(key)?;
         flows.publish_flow(&app, &creds, flow_id, deadline).await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn list_whatsapp_wabas(
+        &self,
+        key: &AccountKey,
+        deadline: Deadline,
+    ) -> Result<Vec<crate::whatsapp::WhatsAppWaba>, Error> {
+        self.require_capability(&key.site, Capability::ReadWhatsAppAccount)?;
+        let account = self.whatsapp_account(&key.site, Capability::ReadWhatsAppAccount)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        account.list_wabas(&app, &creds, deadline).await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn list_whatsapp_phone_numbers(
+        &self,
+        key: &AccountKey,
+        deadline: Deadline,
+    ) -> Result<Vec<crate::whatsapp::WhatsAppPhoneNumber>, Error> {
+        self.require_capability(&key.site, Capability::ReadWhatsAppAccount)?;
+        let account = self.whatsapp_account(&key.site, Capability::ReadWhatsAppAccount)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        account.list_phone_numbers(&app, &creds, deadline).await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn whatsapp_phone_health(
+        &self,
+        key: &AccountKey,
+        deadline: Deadline,
+    ) -> Result<crate::whatsapp::WhatsAppPhoneNumber, Error> {
+        self.require_capability(&key.site, Capability::ReadWhatsAppAccount)?;
+        let account = self.whatsapp_account(&key.site, Capability::ReadWhatsAppAccount)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        account.phone_health(&app, &creds, deadline).await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn subscribe_whatsapp_apps(
+        &self,
+        key: &AccountKey,
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        self.whatsapp_policy
+            .authorize(&key.site, WhatsAppAction::SubscribeWebhooks)?;
+        self.require_capability(&key.site, Capability::ManageWhatsAppPhone)?;
+        let account = self.whatsapp_account(&key.site, Capability::ManageWhatsAppPhone)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        account.subscribe_apps(&app, &creds, deadline).await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn register_whatsapp_phone(
+        &self,
+        key: &AccountKey,
+        pin: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        self.whatsapp_policy
+            .authorize(&key.site, WhatsAppAction::ManagePhone)?;
+        self.require_capability(&key.site, Capability::ManageWhatsAppPhone)?;
+        let account = self.whatsapp_account(&key.site, Capability::ManageWhatsAppPhone)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        account.register_phone(&app, &creds, pin, deadline).await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn set_whatsapp_two_step_pin(
+        &self,
+        key: &AccountKey,
+        pin: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        self.whatsapp_policy
+            .authorize(&key.site, WhatsAppAction::ManagePhone)?;
+        self.require_capability(&key.site, Capability::ManageWhatsAppPhone)?;
+        let account = self.whatsapp_account(&key.site, Capability::ManageWhatsAppPhone)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        account.set_two_step_pin(&app, &creds, pin, deadline).await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn list_whatsapp_system_users(
+        &self,
+        key: &AccountKey,
+        deadline: Deadline,
+    ) -> Result<Vec<crate::whatsapp::WhatsAppSystemUser>, Error> {
+        self.require_capability(&key.site, Capability::ReadWhatsAppAccount)?;
+        let account = self.whatsapp_account(&key.site, Capability::ReadWhatsAppAccount)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        account.list_system_users(&app, &creds, deadline).await
+    }
+
+    /// Bounded fan-out, not a campaign tool. More than 10 messages is refused.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn send_whatsapp_many(
+        &self,
+        key: &AccountKey,
+        requests: Vec<WhatsAppSendRequest>,
+        deadline: Deadline,
+    ) -> Result<Vec<Outcome>, Error> {
+        if requests.len() > 10 {
+            return Err(Error::InvalidPost {
+                site: key.site.clone(),
+                reason: "whatsapp_batch_too_large".into(),
+                limit: Some(10),
+            });
+        }
+        let queue = crate::whatsapp_ops::ThroughputQueue::default_cloud_api();
+        let mut now = 1u64;
+        let mut out = Vec::new();
+        for request in requests {
+            let wait = queue.wait_ns(now);
+            if wait > 0 {
+                return Err(Error::RateLimited {
+                    site: key.site.clone(),
+                    retry_after: Some(std::time::Duration::from_nanos(wait)),
+                });
+            }
+            now = now.saturating_add(1);
+            out.push(self.send_whatsapp(key, request, deadline).await?);
+        }
+        Ok(out)
     }
 
     /// Shared load + optional proactive refresh. Every network verb that
@@ -1112,6 +1394,17 @@ impl Client {
     }
 
     #[cfg(feature = "whatsapp-cloud")]
+    fn whatsapp_account(
+        &self,
+        site: &Site,
+        need: Capability,
+    ) -> Result<Arc<dyn crate::facets::WhatsAppAccount>, Error> {
+        self.registry
+            .connector(site)
+            .and_then(|c| c.whatsapp_account_facet())
+            .ok_or_else(|| Self::missing_facet(site, need))
+    }
+
     fn whatsapp_flows(
         &self,
         site: &Site,

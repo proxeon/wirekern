@@ -49,6 +49,7 @@ struct WhatsAppEnvOverride {
     phone_number_id: Option<String>,
     app_secret: Option<String>,
     waba_id: Option<String>,
+    verify_token: Option<String>,
 }
 
 impl WhatsAppEnvOverride {
@@ -57,11 +58,15 @@ impl WhatsAppEnvOverride {
             phone_number_id: std::env::var("POSTKIT_WHATSAPP_PHONE_NUMBER_ID").ok(),
             app_secret: std::env::var("POSTKIT_WHATSAPP_APP_SECRET").ok(),
             waba_id: std::env::var("POSTKIT_WHATSAPP_WABA_ID").ok(),
+            verify_token: std::env::var("POSTKIT_WHATSAPP_VERIFY_TOKEN").ok(),
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.phone_number_id.is_none() && self.app_secret.is_none() && self.waba_id.is_none()
+        self.phone_number_id.is_none()
+            && self.app_secret.is_none()
+            && self.waba_id.is_none()
+            && self.verify_token.is_none()
     }
 }
 
@@ -108,6 +113,9 @@ fn merge_whatsapp_config(
     }
     if let Some(waba_id) = from_env.waba_id {
         extra.insert("waba_id".into(), waba_id.into());
+    }
+    if let Some(verify_token) = from_env.verify_token {
+        extra.insert("verify_token".into(), verify_token.into());
     }
     config.extra = serde_json::Value::Object(extra);
     Some(config)
@@ -205,6 +213,7 @@ mod tests {
                 phone_number_id: Some("env-phone".into()),
                 app_secret: None,
                 waba_id: None,
+                verify_token: None,
             },
         )
         .unwrap();
@@ -224,6 +233,7 @@ mod tests {
                 phone_number_id: None,
                 app_secret: Some("env-secret".into()),
                 waba_id: None,
+                verify_token: None,
             },
         )
         .unwrap();
@@ -242,6 +252,7 @@ mod tests {
                 phone_number_id: None,
                 app_secret: Some("secret-without-sender".into()),
                 waba_id: None,
+                verify_token: None,
             },
         )
         .is_none());
@@ -253,6 +264,7 @@ mod tests {
                 phone_number_id: Some("env-phone".into()),
                 app_secret: Some("secret-not-for-diagnostics".into()),
                 waba_id: Some("102290129340398".into()),
+                verify_token: Some("hub-token".into()),
             },
         )
         .unwrap();

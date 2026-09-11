@@ -101,6 +101,9 @@ pub enum WhatsAppAction {
     ManageFlows,
     ReadTemplates,
     ManageTemplates,
+    ReadAccount,
+    ManagePhone,
+    SubscribeWebhooks,
 }
 
 #[cfg(feature = "whatsapp-cloud")]
@@ -123,6 +126,9 @@ impl WhatsAppAction {
             Self::ManageFlows => "manage_whatsapp_flows",
             Self::ReadTemplates => "read_whatsapp_templates",
             Self::ManageTemplates => "manage_whatsapp_templates",
+            Self::ReadAccount => "read_whatsapp_account",
+            Self::ManagePhone => "manage_whatsapp_phone",
+            Self::SubscribeWebhooks => "subscribe_whatsapp_webhooks",
         }
     }
 }

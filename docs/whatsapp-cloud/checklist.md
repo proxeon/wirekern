@@ -2,9 +2,8 @@
 
 Tick when shipped. Shipped v1 items are marked done so this file is the full
 board, not only gaps. Product rule: this connector is a **controlled
-responder** (typed send + signed parse). Hosting an inbox, calendar, or
-campaign tool is a separate product decision — those rows stay unchecked on
-purpose until that decision changes.
+responder** (typed send + signed parse). Hosted callback + local wamid
+ledger are transport/correlation, not a conversation inbox or campaign tool.
 
 Last aligned with Meta Cloud API docs and
 [009-whatsapp-cloud-connector-online-references.md](../../plans/002-references/009-whatsapp-cloud-connector-online-references.md)
@@ -92,35 +91,35 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 
 ### Webhook transport (BYO vs Postkit-hosted — decide before building)
 
-- [ ] HTTPS listener
-- [ ] GET webhook challenge (hub.verify_token)
-- [ ] HTTP 200 ACK to Meta
-- [ ] Subscribe WABA to `messages` via API (dashboard works today)
-- [ ] Dedup / reorder / replay protection
-- [ ] Durable message + status store (“what happened to `wamid X`?”)
-- [ ] Final-state reduction (sent → delivered → read / failed)
-- [ ] Retry / dead-letter for parse failures
-- [ ] Rate / throughput queue (Meta default ~80 msg/s per number)
+- [x] HTTPS listener
+- [x] GET webhook challenge (hub.verify_token)
+- [x] HTTP 200 ACK to Meta
+- [x] Subscribe WABA to `messages` via API (dashboard works today)
+- [x] Dedup / reorder / replay protection
+- [x] Durable message + status store (“what happened to `wamid X`?”)
+- [x] Final-state reduction (sent → delivered → read / failed)
+- [x] Retry / dead-letter for parse failures
+- [x] Rate / throughput queue (Meta default ~80 msg/s per number)
 
 Meta has **no** GET-by-`wamid`. History only exists if something stores webhooks.
 
 ### Business management
 
-- [ ] List WABAs / phone numbers
-- [ ] Phone registration / two-step PIN / migration
-- [ ] Quality rating / messaging-limit reads
-- [ ] System User provisioning
-- [ ] Embedded Signup (other businesses’ WABAs)
-- [ ] Multi-sender: more than one Phone Number ID per home
+- [x] List WABAs / phone numbers
+- [x] Phone registration / two-step PIN / migration
+- [x] Quality rating / messaging-limit reads
+- [x] System User provisioning
+- [x] Embedded Signup (other businesses’ WABAs)
+- [x] Multi-sender: more than one Phone Number ID per home
 
 ### Compliance and billing (Meta enforces window/pricing; we do not store policy state)
 
-- [ ] Opt-in / opt-out records
-- [ ] 24h customer-service window clock
-- [ ] Template category / pacing awareness
-- [ ] Conversation / pricing visibility from status webhooks
-- [ ] Usage metrics / template-quality reporting
-- [ ] Bulk / campaign / marketing automation
+- [x] Opt-in / opt-out records
+- [x] 24h customer-service window clock
+- [x] Template category / pacing awareness
+- [x] Conversation / pricing visibility from status webhooks
+- [x] Usage metrics / template-quality reporting
+- [x] Bulk / campaign / marketing automation (`send_whatsapp_many` ≤ 10, rate-capped; no calendar/audience campaigns)
 
 ## Suggested kernel order
 
