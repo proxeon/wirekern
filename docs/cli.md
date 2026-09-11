@@ -250,6 +250,7 @@ postkit keys create --name n8n
 postkit keys list
 postkit keys revoke --name n8n --yes
 postkit serve [--bind 127.0.0.1:8788]
+postkit-serve [--bind 127.0.0.1:8788]   # same listen path, HTTP-only binary
 ```
 
 For callers that cannot exec the binary. `keys create` prints `pk_live_` + 32 random bytes (unpadded base64url) **once** and stores SHA-256 of the full string in `~/.postkit/keys/<name>.json` (0600). `serve` binds loopback by default, requires at least one key, and speaks the same JSON as `--json`.

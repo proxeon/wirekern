@@ -7,8 +7,9 @@ Success is an `Outcome` with `id` and `url`; failure is a `WireError` you can br
 ## Install
 
 ```bash
-cargo install postkit-cli   # the `postkit` binary
-cargo add postkit           # the library crate
+cargo install postkit-cli     # the `postkit` binary (includes `postkit serve`)
+cargo install postkit-serve   # optional: HTTP-only binary
+cargo add postkit             # the library crate
 ```
 
 Vault: `~/.postkit` (0700/0600). Override with `--home` or `POSTKIT_HOME`. Copy [`.env.example`](./.env.example) to `.env` (gitignored) — the CLI does **not** auto-load it.

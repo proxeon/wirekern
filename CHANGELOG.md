@@ -14,6 +14,11 @@ same detail by subject.
 
 ### Changed
 
+- HTTP listen/router moved to the `postkit-serve` crate. `postkit serve`
+  still works; it calls that crate. Operator `Client` construction is
+  `Client::from_home` / `bundled_registry` so CLI, serve, and a later MCP
+  crate share one connector set. `postkit keys` stays on the CLI.
+
 - Product sentence is now explicit: postkit is an **official-API execution
   kernel** (send now through your apps, your vault, no calendar). Ads and
   WhatsApp stay in this crate. LinkedIn, Telegram, and video are future

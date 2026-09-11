@@ -1,11 +1,10 @@
-//! Local HTTP surface: same JSON as `--json`, Bearer `pk_live_` keys.
+//! Local HTTP surface for postkit. Same JSON as the CLI `--json` document.
 //!
-//! Bind defaults to 127.0.0.1:8788. Auth dances stay on the CLI. This module
-//! calls `Client` through `app::make_client` so serve cannot diverge from
-//! the exec path.
+//! This crate is the listen/router process. CLI and a later MCP crate call
+//! [`run`] / [`router`]; they must not copy the route table. Auth dances and
+//! `keys create` stay on the CLI. Clients come from [`Client::from_home`] so
+//! serve cannot register a different connector set than `postkit post`.
 
-use crate::app::{fail, make_client};
-use crate::output::{emit_ok, emit_raw, human_line};
 use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
@@ -17,6 +16,7 @@ use postkit::{
     WhatsAppSendRequest, WireError, KEY_PREFIX,
 };
 use serde::Deserialize;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -33,80 +33,35 @@ struct AppState {
     keys: Arc<FileKeyStore>,
 }
 
-pub fn keys_create(home: &Path, name: &str, json: bool) -> Result<(), i32> {
-    let store = FileKeyStore::new(home).map_err(|e| fail(&e, json))?;
-    let created = store.create(name).map_err(|e| fail(&e, json))?;
-    if json {
-        emit_raw(&serde_json::json!({
-            "name": created.name,
-            "token": created.token,
-        }));
-    } else {
-        eprintln!("shown once; store the hash only:");
-        human_line(&created.token);
-    }
-    Ok(())
-}
-
-pub fn keys_list(home: &Path, json: bool) -> Result<(), i32> {
-    let store = FileKeyStore::new(home).map_err(|e| fail(&e, json))?;
-    let keys = store.list().map_err(|e| fail(&e, json))?;
-    if json {
-        emit_raw(&serde_json::json!({ "keys": keys }));
-    } else {
-        for k in keys {
-            human_line(format!("{} {}", k.name, k.created_at));
-        }
-    }
-    Ok(())
-}
-
-pub fn keys_revoke(home: &Path, name: &str, yes: bool, json: bool) -> Result<(), i32> {
-    if !yes {
-        eprintln!("pass --yes to revoke key {name}");
-        return Err(2);
-    }
-    let store = FileKeyStore::new(home).map_err(|e| fail(&e, json))?;
-    store.delete(name).map_err(|e| fail(&e, json))?;
-    if json {
-        emit_raw(&serde_json::json!({ "revoked": name }));
-    } else {
-        eprintln!("revoked {name}");
-    }
-    Ok(())
-}
-
-pub async fn run(home: &Path, bind: Option<&str>, json: bool) -> Result<(), i32> {
-    let addr = parse_bind(bind).map_err(|e| fail(&e, json))?;
-    let keys = FileKeyStore::new(home).map_err(|e| fail(&e, json))?;
-    if keys.list().map_err(|e| fail(&e, json))?.is_empty() {
-        let err = Error::Auth {
+pub async fn run(home: &Path, bind: Option<&str>, json: bool) -> Result<(), Error> {
+    let addr = parse_bind(bind)?;
+    let keys = FileKeyStore::new(home)?;
+    if keys.list()?.is_empty() {
+        eprintln!("create a key first: postkit keys create --name <n>");
+        return Err(Error::Auth {
             site: Site::new(""),
             reason: "no_keys".into(),
-        };
-        eprintln!("create a key first: postkit keys create --name <n>");
-        return Err(fail(&err, json));
+        });
     }
-    let client = make_client(home, false).map_err(|e| fail(&e, json))?;
-    // Built only for the WhatsApp route. The handler still requires
-    // `allow_send: true` on each request — this client is not used by
-    // `/v1/posts`, so a forgotten flag cannot send a private message.
-    let whatsapp = make_client(home, true).map_err(|e| fail(&e, json))?;
+    // Same connector set as `postkit post`. Deny-by-default client for
+    // social routes; allowing client only for POST /v1/whatsapp.
+    let client = Client::from_home(home, false)?;
+    let whatsapp = Client::from_home(home, true)?;
     let app = router(Arc::new(client), Arc::new(whatsapp), Arc::new(keys));
-    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|_| {
-        fail(
-            &Error::Network {
-                site: Site::new(""),
-                message: "bind failed".into(),
-            },
-            json,
-        )
-    })?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|_| Error::Network {
+            site: Site::new(""),
+            message: "bind failed".into(),
+        })?;
     if json {
         // One document, then this process is the server. Scripts must read
         // this JSON and not wait for exit; request results are HTTP bodies.
-        emit_ok(&listen_document(addr), true, String::new);
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        println!(
+            "{}",
+            serde_json::to_string(&listen_document(addr)).expect("listen json")
+        );
+        let _ = std::io::stdout().flush();
     } else {
         eprintln!(
             "listening on http://{addr}  (Authorization: Bearer {KEY_PREFIX}…); process stays up until interrupt"
@@ -117,14 +72,9 @@ pub async fn run(home: &Path, bind: Option<&str>, json: bool) -> Result<(), i32>
             let _ = tokio::signal::ctrl_c().await;
         })
         .await
-        .map_err(|_| {
-            fail(
-                &Error::Network {
-                    site: Site::new(""),
-                    message: "server failed".into(),
-                },
-                json,
-            )
+        .map_err(|_| Error::Network {
+            site: Site::new(""),
+            message: "server failed".into(),
         })
 }
 
@@ -133,7 +83,7 @@ pub async fn run(home: &Path, bind: Option<&str>, json: bool) -> Result<(), i32>
 /// who passed the flag has opted in.
 /// Machine-readable listen line. `listening: true` is the contract that
 /// stdout will not get a second document; the process remains the server.
-pub(crate) fn listen_document(addr: SocketAddr) -> serde_json::Value {
+pub fn listen_document(addr: SocketAddr) -> serde_json::Value {
     serde_json::json!({
         "bind": addr.to_string(),
         "listening": true,
@@ -141,7 +91,7 @@ pub(crate) fn listen_document(addr: SocketAddr) -> serde_json::Value {
     })
 }
 
-pub(crate) fn parse_bind(bind: Option<&str>) -> Result<SocketAddr, Error> {
+pub fn parse_bind(bind: Option<&str>) -> Result<SocketAddr, Error> {
     let spec = bind.unwrap_or(DEFAULT_BIND);
     spec.parse::<SocketAddr>().map_err(|_| Error::InvalidQuery {
         site: Site::new(""),
@@ -149,7 +99,7 @@ pub(crate) fn parse_bind(bind: Option<&str>) -> Result<SocketAddr, Error> {
     })
 }
 
-fn router(client: Arc<Client>, whatsapp: Arc<Client>, keys: Arc<FileKeyStore>) -> Router {
+pub fn router(client: Arc<Client>, whatsapp: Arc<Client>, keys: Arc<FileKeyStore>) -> Router {
     Router::new()
         .route("/v1/posts", post(posts))
         .route("/v1/whatsapp", post(whatsapp_send))
@@ -240,7 +190,7 @@ async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), Error> {
     state.keys.verify(token).map(|_| ())
 }
 
-pub(crate) fn bearer_token(header: &str) -> Result<&str, Error> {
+pub fn bearer_token(header: &str) -> Result<&str, Error> {
     let header = header.trim();
     let Some((scheme, rest)) = header.split_once(char::is_whitespace) else {
         return Err(Error::Auth {
@@ -677,6 +627,19 @@ mod tests {
         // generic post is unsupported — never a private send.
         assert_eq!(v["error"], "unsupported");
         assert_eq!(mock.sends.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn serve_uses_the_kernel_file_client() {
+        // CLI and serve must not each assemble a Registry. from_home is the
+        // shared operator factory; this crate only wraps it in HTTP.
+        let tmp = tempfile::tempdir().unwrap();
+        let client = Client::from_home(tmp.path(), false).unwrap();
+        assert!(client.registry().get(&Site::new("threads")).is_some());
+        assert!(client
+            .registry()
+            .get(&Site::new("whatsapp_cloud"))
+            .is_some());
     }
 
     #[test]

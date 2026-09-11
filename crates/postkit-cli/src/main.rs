@@ -1,8 +1,8 @@
 mod ads;
 mod app;
+mod keys;
 mod output;
 mod post;
-mod serve;
 mod whatsapp;
 
 use crate::ads::*;
@@ -599,11 +599,13 @@ async fn run(cli: Cli) -> Result<(), i32> {
             }
             Ok(())
         }
-        Commands::Serve { bind } => crate::serve::run(&home, bind.as_deref(), json).await,
-        Commands::Keys(KeysCmd::Create { name }) => crate::serve::keys_create(&home, &name, json),
-        Commands::Keys(KeysCmd::List) => crate::serve::keys_list(&home, json),
+        Commands::Serve { bind } => postkit_serve::run(&home, bind.as_deref(), json)
+            .await
+            .map_err(|e| fail(&e, json)),
+        Commands::Keys(KeysCmd::Create { name }) => crate::keys::create(&home, &name, json),
+        Commands::Keys(KeysCmd::List) => crate::keys::list(&home, json),
         Commands::Keys(KeysCmd::Revoke { name, yes }) => {
-            crate::serve::keys_revoke(&home, &name, yes, json)
+            crate::keys::revoke(&home, &name, yes, json)
         }
         Commands::WhatsApp(WhatsAppCmd::Configure {
             phone_number_id,

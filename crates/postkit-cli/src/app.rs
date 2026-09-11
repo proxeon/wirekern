@@ -1,14 +1,12 @@
 //! Shared CLI process helpers: vault home, Client construction, output, fail.
 //!
-//! Surfaces (subcommand modules and later `serve`) call these instead of
-//! reaching into `main`. `make_client` is the shared Client constructor.
+//! Surfaces call these instead of reaching into `main`.
+//! `make_client` delegates to [`Client::from_home`] so CLI, serve, and MCP
+//! share one connector set.
 
 use crate::output::{emit_err, emit_raw, human_line};
-use postkit::{
-    valid_name, AllowWhatsAppSendsPolicy, Client, Error, FileAppStore, FileVault, Registry, Site,
-};
+use postkit::{valid_name, Client, Error, Site};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 pub(crate) fn print_results(results: &[serde_json::Value], json: bool) {
     if json {
@@ -58,28 +56,7 @@ pub(crate) fn make_client(
     home: &std::path::Path,
     allow_whatsapp_send: bool,
 ) -> Result<Client, Error> {
-    let mut registry = Registry::new();
-    // Publisher-only sites register the frozen seam. Extra verbs attach as
-    // facets on Connector so the next site cannot enlarge Publisher.
-    registry.register(Arc::new(postkit::connectors::threads::Threads::new()?));
-    registry.register(Arc::new(postkit::connectors::bluesky::Bluesky::new()?));
-    registry.register_connector(postkit::connectors::meta_ads::MetaAds::new()?.connector());
-    registry
-        .register_connector(postkit::connectors::facebook_pages::FacebookPages::new()?.connector());
-    registry.register_connector(postkit::connectors::instagram::Instagram::new()?.connector());
-    registry
-        .register_connector(postkit::connectors::whatsapp_cloud::WhatsAppCloud::new()?.connector());
-    let vault = Arc::new(FileVault::new(home)?);
-    let apps = Arc::new(FileAppStore::new(home)?);
-    if allow_whatsapp_send {
-        // The flag is intentionally inspected before client construction:
-        // the default client has a deny-all WhatsApp policy, so a new command
-        // cannot accidentally become a real customer-message write.
-        Ok(Client::new(registry, vault, apps)
-            .with_whatsapp_policy(Arc::new(AllowWhatsAppSendsPolicy)))
-    } else {
-        Ok(Client::new(registry, vault, apps))
-    }
+    Client::from_home(home, allow_whatsapp_send)
 }
 
 pub(crate) fn invalid_post(site: &str, reason: &str) -> postkit::Error {

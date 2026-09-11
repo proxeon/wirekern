@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/postkit", "crates/postkit-cli"]
+members = ["crates/postkit", "crates/postkit-cli", "crates/postkit-serve"]
 
 [workspace.package]
 version = "0.1.0"

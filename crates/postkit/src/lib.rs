@@ -4,6 +4,7 @@
 
 mod ads;
 mod apps;
+mod bundle;
 mod client;
 mod error;
 mod facets;
@@ -65,6 +66,7 @@ pub use ads::{
     PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, UploadAdImageRequest, UploadedAdImage,
 };
 pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
+pub use bundle::bundled_registry;
 pub use client::{refresh_is_due, Client};
 #[cfg(feature = "draft")]
 pub use draft::{

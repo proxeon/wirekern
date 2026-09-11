@@ -134,16 +134,19 @@ Same job as [threads/](./threads/) and [bluesky/](./bluesky/):
 
 Link it from [README.md](./README.md). Secrets stay in `.env` (copy [`.env.example`](../.env.example)). The CLI does **not** auto-load `.env`.
 
-### 7. Register in the CLI
+### 7. Register in the operator factory
 
-`crates/postkit-cli/src/main.rs` `make_client`:
+In-tree sites go in `crates/postkit/src/bundle.rs` (`bundled_registry` /
+`Client::from_home`). CLI, `postkit-serve`, and later MCP all call that —
+do not copy a `Registry::register` list into a surface crate.
 
 ```rust
 registry.register(Arc::new(postkit::connectors::mysite::MySite::new()?));
 // Extra verbs: registry.register_connector(MySite::new()?.connector());
 ```
 
-Enable the feature on the `postkit` dep in `crates/postkit-cli/Cargo.toml`.
+Enable the feature on the `postkit` dep in `crates/postkit-cli/Cargo.toml`
+and `crates/postkit-serve/Cargo.toml`.
 
 `postkit capabilities --json` must list the site. `unknown_site` (exit 2) means you skipped this step.
 
