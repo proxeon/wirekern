@@ -49,6 +49,49 @@ pub enum WhatsAppMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         body_parameters: Vec<String>,
     },
+    Image {
+        to: String,
+        #[serde(flatten)]
+        media: MediaRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caption: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    Document {
+        to: String,
+        #[serde(flatten)]
+        media: MediaRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caption: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    Audio {
+        to: String,
+        #[serde(flatten)]
+        media: MediaRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    Video {
+        to: String,
+        #[serde(flatten)]
+        media: MediaRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caption: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    Sticker {
+        to: String,
+        #[serde(flatten)]
+        media: MediaRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
 }
 
 impl WhatsAppMessage {
@@ -57,6 +100,11 @@ impl WhatsAppMessage {
             Self::Reply { .. } => Capability::SendReply,
             Self::Text { .. } => Capability::SendText,
             Self::Template { .. } => Capability::SendTemplate,
+            Self::Image { .. }
+            | Self::Document { .. }
+            | Self::Audio { .. }
+            | Self::Video { .. }
+            | Self::Sticker { .. } => Capability::SendMedia,
         }
     }
 
@@ -103,6 +151,59 @@ impl WhatsAppMessage {
                         return Err("template_body_parameter_too_long".into());
                     }
                 }
+            }
+            Self::Image {
+                to,
+                media,
+                caption,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                media.validate()?;
+                validate_optional_caption(caption)?;
+                validate_optional_context(reply_to_message_id)?;
+            }
+            Self::Document {
+                to,
+                media,
+                caption,
+                filename,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                media.validate()?;
+                validate_optional_caption(caption)?;
+                if let Some(name) = filename {
+                    if name.is_empty() || name.contains('/') {
+                        return Err("media_filename_invalid".into());
+                    }
+                }
+                validate_optional_context(reply_to_message_id)?;
+            }
+            Self::Audio {
+                to,
+                media,
+                reply_to_message_id,
+            }
+            | Self::Sticker {
+                to,
+                media,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                media.validate()?;
+                validate_optional_context(reply_to_message_id)?;
+            }
+            Self::Video {
+                to,
+                media,
+                caption,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                media.validate()?;
+                validate_optional_caption(caption)?;
+                validate_optional_context(reply_to_message_id)?;
             }
         }
         Ok(())
@@ -456,6 +557,22 @@ pub fn normalize_recipient(value: &str) -> Result<String, String> {
         return Err("recipient_must_be_whatsapp_id".into());
     }
     Ok(if plus { format!("+{digits}") } else { digits })
+}
+
+fn validate_optional_caption(caption: &Option<String>) -> Result<(), String> {
+    if let Some(text) = caption {
+        if text.chars().count() > 1024 {
+            return Err("caption_too_long".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_context(id: &Option<String>) -> Result<(), String> {
+    match id {
+        Some(id) => validate_context_id(id),
+        None => Ok(()),
+    }
 }
 
 fn validate_context_id(value: &str) -> Result<(), String> {

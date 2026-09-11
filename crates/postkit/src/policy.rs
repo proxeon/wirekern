@@ -88,6 +88,17 @@ pub enum WhatsAppAction {
     /// forgotten `wamid` cannot be faked as `context`.
     SendText,
     SendTemplate,
+    SendMedia,
+    SendInteractive,
+    SendLocation,
+    SendContacts,
+    SendReaction,
+    MarkRead,
+    SendTyping,
+    SendCatalog,
+    SendFlow,
+    ReadTemplates,
+    ManageTemplates,
 }
 
 #[cfg(feature = "whatsapp-cloud")]
@@ -97,6 +108,17 @@ impl WhatsAppAction {
             Self::SendReply => "send_whatsapp_reply",
             Self::SendText => "send_whatsapp_text",
             Self::SendTemplate => "send_whatsapp_template",
+            Self::SendMedia => "send_whatsapp_media",
+            Self::SendInteractive => "send_whatsapp_interactive",
+            Self::SendLocation => "send_whatsapp_location",
+            Self::SendContacts => "send_whatsapp_contacts",
+            Self::SendReaction => "send_whatsapp_reaction",
+            Self::MarkRead => "send_whatsapp_read",
+            Self::SendTyping => "send_whatsapp_typing",
+            Self::SendCatalog => "send_whatsapp_catalog",
+            Self::SendFlow => "send_whatsapp_flow",
+            Self::ReadTemplates => "read_whatsapp_templates",
+            Self::ManageTemplates => "manage_whatsapp_templates",
         }
     }
 }

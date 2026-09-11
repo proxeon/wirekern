@@ -50,11 +50,11 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 ### Media
 
 - [x] Media upload / retrieve metadata / download / delete
-- [ ] Send image (id or link, optional caption)
-- [ ] Send document (id or link, filename, caption)
-- [ ] Send audio
-- [ ] Send video (optional caption)
-- [ ] Send sticker
+- [x] Send image (id or link, optional caption)
+- [x] Send document (id or link, filename, caption)
+- [x] Send audio
+- [x] Send video (optional caption)
+- [x] Send sticker
 
 ### Interactive and other service messages
 

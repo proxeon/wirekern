@@ -160,6 +160,11 @@ async fn whatsapp_send(State(state): State<AppState>, headers: HeaderMap, body: 
             WhatsAppMessage::Reply { .. } => "send_whatsapp_reply",
             WhatsAppMessage::Text { .. } => "send_whatsapp_text",
             WhatsAppMessage::Template { .. } => "send_whatsapp_template",
+            WhatsAppMessage::Image { .. }
+            | WhatsAppMessage::Document { .. }
+            | WhatsAppMessage::Audio { .. }
+            | WhatsAppMessage::Video { .. }
+            | WhatsAppMessage::Sticker { .. } => "send_whatsapp_media",
         };
         return wire_response(Error::PolicyDenied {
             site: Site::new("whatsapp_cloud"),
@@ -398,6 +403,7 @@ mod tests {
                 Capability::SendReply,
                 Capability::SendText,
                 Capability::SendTemplate,
+                Capability::SendMedia,
             ]
         }
         fn auth_kind(&self) -> AuthKind {

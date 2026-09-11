@@ -519,7 +519,71 @@ pub fn send_payload(message: &WhatsAppMessage) -> Value {
                 "template": template,
             })
         }
+        WhatsAppMessage::Image {
+            to,
+            media,
+            caption,
+            reply_to_message_id,
+        } => media_payload(to, "image", media, caption.as_deref(), None, reply_to_message_id.as_deref()),
+        WhatsAppMessage::Document {
+            to,
+            media,
+            caption,
+            filename,
+            reply_to_message_id,
+        } => media_payload(
+            to,
+            "document",
+            media,
+            caption.as_deref(),
+            filename.as_deref(),
+            reply_to_message_id.as_deref(),
+        ),
+        WhatsAppMessage::Audio {
+            to,
+            media,
+            reply_to_message_id,
+        } => media_payload(to, "audio", media, None, None, reply_to_message_id.as_deref()),
+        WhatsAppMessage::Video {
+            to,
+            media,
+            caption,
+            reply_to_message_id,
+        } => media_payload(to, "video", media, caption.as_deref(), None, reply_to_message_id.as_deref()),
+        WhatsAppMessage::Sticker {
+            to,
+            media,
+            reply_to_message_id,
+        } => media_payload(to, "sticker", media, None, None, reply_to_message_id.as_deref()),
     }
+}
+
+fn media_payload(
+    to: &str,
+    kind: &str,
+    media: &crate::whatsapp::MediaRef,
+    caption: Option<&str>,
+    filename: Option<&str>,
+    reply_to: Option<&str>,
+) -> Value {
+    let mut asset = media.to_json();
+    if let Some(caption) = caption {
+        asset["caption"] = json!(caption);
+    }
+    if let Some(filename) = filename {
+        asset["filename"] = json!(filename);
+    }
+    let mut payload = json!({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": wire_recipient(to),
+        "type": kind,
+        kind: asset,
+    });
+    if let Some(id) = reply_to {
+        payload["context"] = json!({ "message_id": id });
+    }
+    payload
 }
 
 fn phone_number_id(app: &AppConfig) -> Result<String, Error> {
@@ -957,6 +1021,88 @@ mod tests {
         assert_eq!(outcome.id.as_deref(), Some("wamid.outbound"));
         assert!(outcome.url.is_none());
         assert_eq!(send.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn image_send_uses_media_id_and_optional_caption() {
+        let server = MockServer::start();
+        let payload = json!({
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": "60123456789",
+            "type": "image",
+            "image": { "id": "media-1", "caption": "hi" },
+        });
+        let send = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/123456789/messages")
+                .json_body(payload);
+            then.status(200)
+                .json_body(json!({ "messages": [{ "id": "wamid.img" }] }));
+        });
+        let request = WhatsAppSendRequest {
+            message: WhatsAppMessage::Image {
+                to: "60123456789".into(),
+                media: crate::whatsapp::MediaRef {
+                    id: Some("media-1".into()),
+                    link: None,
+                },
+                caption: Some("hi".into()),
+                reply_to_message_id: None,
+            },
+            idempotency_key: "img-1".into(),
+        };
+        let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let out = connector
+            .send_whatsapp(&app(), &creds(), &request, Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(out.id.as_deref(), Some("wamid.img"));
+        assert_eq!(send.hits(), 1);
+    }
+
+    #[test]
+    fn document_audio_video_sticker_payloads_are_typed() {
+        let doc = send_payload(&WhatsAppMessage::Document {
+            to: "60123456789".into(),
+            media: crate::whatsapp::MediaRef {
+                id: None,
+                link: Some("https://example.com/a.pdf".into()),
+            },
+            caption: Some("doc".into()),
+            filename: Some("a.pdf".into()),
+            reply_to_message_id: None,
+        });
+        assert_eq!(doc["type"], "document");
+        assert_eq!(doc["document"]["link"], "https://example.com/a.pdf");
+        assert_eq!(doc["document"]["filename"], "a.pdf");
+        let audio = send_payload(&WhatsAppMessage::Audio {
+            to: "60123456789".into(),
+            media: crate::whatsapp::MediaRef {
+                id: Some("a1".into()),
+                link: None,
+            },
+            reply_to_message_id: Some("wamid.in".into()),
+        });
+        assert_eq!(audio["type"], "audio");
+        assert_eq!(audio["context"]["message_id"], "wamid.in");
+        assert_eq!(send_payload(&WhatsAppMessage::Video {
+            to: "60123456789".into(),
+            media: crate::whatsapp::MediaRef {
+                id: Some("v1".into()),
+                link: None,
+            },
+            caption: None,
+            reply_to_message_id: None,
+        })["type"], "video");
+        assert_eq!(send_payload(&WhatsAppMessage::Sticker {
+            to: "60123456789".into(),
+            media: crate::whatsapp::MediaRef {
+                id: Some("s1".into()),
+                link: None,
+            },
+            reply_to_message_id: None,
+        })["type"], "sticker");
     }
 
     #[tokio::test]

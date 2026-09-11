@@ -188,6 +188,11 @@ impl Client {
             WhatsAppMessage::Reply { .. } => WhatsAppAction::SendReply,
             WhatsAppMessage::Text { .. } => WhatsAppAction::SendText,
             WhatsAppMessage::Template { .. } => WhatsAppAction::SendTemplate,
+            WhatsAppMessage::Image { .. }
+            | WhatsAppMessage::Document { .. }
+            | WhatsAppMessage::Audio { .. }
+            | WhatsAppMessage::Video { .. }
+            | WhatsAppMessage::Sticker { .. } => WhatsAppAction::SendMedia,
         };
         // Do this before registry/vault lookup. A denied send must reveal
         // neither whether an account is configured nor a bearer token to the
