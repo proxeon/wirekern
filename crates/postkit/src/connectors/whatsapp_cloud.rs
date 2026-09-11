@@ -11,8 +11,8 @@ use crate::publisher::{AuthKind, Publisher};
 use crate::registry::Connector;
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::whatsapp::{
-    DeliveryStatus, DeliveryStatusKind, InboundMessage, InboundMessages, WhatsAppMessage,
-    WhatsAppSendRequest,
+    DeliveryStatus, DeliveryStatusKind, InboundMedia, InboundMessage, InboundMessages,
+    WhatsAppMessage, WhatsAppSendRequest,
 };
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
@@ -380,6 +380,7 @@ fn inbound_message(value: &Value) -> Result<InboundMessage, Error> {
         .filter(|kind| !kind.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| webhook_error("webhook_message_type_missing"))?;
+    let media = inbound_media(&kind, value);
     Ok(InboundMessage {
         id,
         from,
@@ -394,6 +395,22 @@ fn inbound_message(value: &Value) -> Result<InboundMessage, Error> {
             .get("context")
             .and_then(|context| context.get("id"))
             .and_then(value_string),
+        media,
+    })
+}
+
+fn inbound_media(kind: &str, value: &Value) -> Option<InboundMedia> {
+    let key = match kind {
+        "image" | "audio" | "video" | "document" | "sticker" => kind,
+        _ => return None,
+    };
+    let object = value.get(key)?;
+    let id = object.get("id").and_then(value_string).filter(|id| !id.is_empty())?;
+    Some(InboundMedia {
+        id,
+        mime_type: object.get("mime_type").and_then(value_string),
+        caption: object.get("caption").and_then(value_string),
+        filename: object.get("filename").and_then(value_string),
     })
 }
 
@@ -763,6 +780,32 @@ mod tests {
         let wire = serde_json::to_value(&reply).unwrap();
         assert!(wire["statuses"][0].get("recipient_id").is_none());
         assert!(wire["statuses"][0].get("conversation").is_none());
+        assert!(reply.messages[0].media.is_none());
+    }
+
+    #[test]
+    fn signed_webhook_extracts_inbound_media_id_mime_and_caption() {
+        let raw = br#"{
+          "object":"whatsapp_business_account",
+          "entry":[{"changes":[{
+            "field":"messages",
+            "value":{
+              "metadata":{"phone_number_id":"123456789"},
+              "messages":[{
+                "from":"60123456789",
+                "id":"wamid.image",
+                "type":"image",
+                "image":{"id":"media-1","mime_type":"image/jpeg","caption":"photo"}
+              }]
+            }
+          }]}]
+        }"#;
+        let reply = WhatsAppCloud::parse_signed_webhook(&app(), &signed(raw), raw).unwrap();
+        let media = reply.messages[0].media.as_ref().expect("media");
+        assert_eq!(media.id, "media-1");
+        assert_eq!(media.mime_type.as_deref(), Some("image/jpeg"));
+        assert_eq!(media.caption.as_deref(), Some("photo"));
+        assert!(media.filename.is_none());
     }
 
     #[test]

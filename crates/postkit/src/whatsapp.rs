@@ -136,6 +136,24 @@ pub struct InboundMessage {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_message_id: Option<String>,
+    /// Present for image/audio/video/document/sticker inbound messages.
+    /// Postkit does not download the bytes; the operator's webhook host can
+    /// fetch `id` with the System User token if needed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media: Option<InboundMedia>,
+}
+
+/// Identifiers Meta returns for inbound media. Caption/filename are
+/// operator-visible; sha256 is omitted until a caller needs integrity checks.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InboundMedia {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
 }
 
 /// The small, closed set of outbound delivery states Postkit can interpret.

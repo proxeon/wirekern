@@ -32,7 +32,7 @@ Last aligned with Meta Cloud API docs and
 Do these without becoming an inbox.
 
 - [x] Session text: `type=text` **without** `context` (Meta’s 24h customer-service window send)
-- [ ] Inbound media: image/audio/video/document/sticker **ids**, mime, caption
+- [x] Inbound media: image/audio/video/document/sticker **ids**, mime, caption
 - [ ] Inbound structured: location, contacts, interactive reply, reaction, referral, order, unsupported
 - [ ] Failed status `errors[]` (code / title only)
 - [ ] Status extras (optional, privacy-gated): `recipient_id`, `conversation`, `pricing`
