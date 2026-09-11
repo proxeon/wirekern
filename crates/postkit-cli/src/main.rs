@@ -147,7 +147,9 @@ enum Commands {
     /// WhatsApp Cloud replies, approved templates, and signed webhook parsing.
     #[command(name = "whatsapp", subcommand)]
     WhatsApp(WhatsAppCmd),
-    /// Local HTTP for callers that cannot exec the binary. Same JSON as `--json`.
+    /// Local HTTP for callers that cannot exec. With --json, prints one
+    /// listen document then runs until interrupt; request results are HTTP
+    /// bodies, not a second stdout document.
     Serve {
         /// Default 127.0.0.1:8788. Passing 0.0.0.0 is an explicit LAN bind.
         #[arg(long)]

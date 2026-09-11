@@ -103,13 +103,14 @@ pub async fn run(home: &Path, bind: Option<&str>, json: bool) -> Result<(), i32>
         )
     })?;
     if json {
-        emit_ok(
-            &serde_json::json!({ "bind": addr.to_string() }),
-            true,
-            String::new,
-        );
+        // One document, then this process is the server. Scripts must read
+        // this JSON and not wait for exit; request results are HTTP bodies.
+        emit_ok(&listen_document(addr), true, String::new);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
     } else {
-        eprintln!("listening on http://{addr}  (Authorization: Bearer {KEY_PREFIX}…)");
+        eprintln!(
+            "listening on http://{addr}  (Authorization: Bearer {KEY_PREFIX}…); process stays up until interrupt"
+        );
     }
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -130,6 +131,16 @@ pub async fn run(home: &Path, bind: Option<&str>, json: bool) -> Result<(), i32>
 /// Refuse a missing/garbage bind string. Unspecified (0.0.0.0) is allowed
 /// only as an explicit `--bind` — a key is not a firewall, but the operator
 /// who passed the flag has opted in.
+/// Machine-readable listen line. `listening: true` is the contract that
+/// stdout will not get a second document; the process remains the server.
+pub(crate) fn listen_document(addr: SocketAddr) -> serde_json::Value {
+    serde_json::json!({
+        "bind": addr.to_string(),
+        "listening": true,
+        "pid": std::process::id(),
+    })
+}
+
 pub(crate) fn parse_bind(bind: Option<&str>) -> Result<SocketAddr, Error> {
     let spec = bind.unwrap_or(DEFAULT_BIND);
     spec.parse::<SocketAddr>().map_err(|_| Error::InvalidQuery {
@@ -569,6 +580,16 @@ mod tests {
         let lan = parse_bind(Some("0.0.0.0:9999")).unwrap();
         assert!(lan.ip().is_unspecified());
         assert_eq!(lan.port(), 9999);
+    }
+
+    #[test]
+    fn listen_document_says_the_process_stays_up() {
+        let addr = parse_bind(None).unwrap();
+        let doc = listen_document(addr);
+        assert_eq!(doc["bind"], addr.to_string());
+        assert_eq!(doc["listening"], true);
+        assert_eq!(doc["pid"], std::process::id());
+        assert!(doc.get("ok").is_none());
     }
 
     fn wa_body(allow_send: bool) -> String {

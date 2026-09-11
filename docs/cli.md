@@ -254,6 +254,8 @@ postkit serve [--bind 127.0.0.1:8788]
 
 For callers that cannot exec the binary. `keys create` prints `pk_live_` + 32 random bytes (unpadded base64url) **once** and stores SHA-256 of the full string in `~/.postkit/keys/<name>.json` (0600). `serve` binds loopback by default, requires at least one key, and speaks the same JSON as `--json`.
 
+`postkit serve --json` writes **one** listen document to stdout (`{"bind","listening":true,"pid"}`) and stays running. A script should parse that document and not wait for the process to exit; each later result is an HTTP response body.
+
 | HTTP | CLI |
 |------|-----|
 | `POST /v1/posts` | `postkit post --stdin --json` |
