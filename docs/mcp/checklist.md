@@ -13,12 +13,12 @@ stays **1.80**.
 
 ## Crate and protocol
 
-- [ ] Workspace member `postkit-mcp`; clap-free lib so the CLI can call `run`
-- [ ] `Client::from_home` (deny-by-default + allowing WhatsApp client)
-- [ ] Newline-delimited JSON-RPC stdio; stderr logging; 1 MiB line cap
-- [ ] `initialize` / `notifications/initialized` / `ping`
-- [ ] `tools/list` and `tools/call`; unknown method → `-32601`
-- [ ] Protocol version echo when the client asks for a known revision
+- [x] Workspace member `postkit-mcp`; clap-free lib so the CLI can call `run`
+- [x] `Client::from_home` (deny-by-default + allowing WhatsApp client)
+- [x] Newline-delimited JSON-RPC stdio; stderr logging; 1 MiB line cap
+- [x] `initialize` / `notifications/initialized` / `ping`
+- [x] `tools/list` and `tools/call`; unknown method → `-32601`
+- [x] Protocol version echo when the client asks for a known revision
 
 ## Core tools
 

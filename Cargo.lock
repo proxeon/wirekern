@@ -1468,6 +1468,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "postkit-mcp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "postkit",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "postkit-serve"
 version = "0.1.0"
 dependencies = [

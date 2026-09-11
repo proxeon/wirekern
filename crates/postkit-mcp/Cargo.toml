@@ -1,0 +1,34 @@
+[package]
+name = "postkit-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Local MCP stdio surface for postkit. Same Client as the CLI. No calendar."
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["social", "publish", "mcp"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "postkit-mcp"
+path = "src/main.rs"
+required-features = ["bin"]
+
+[features]
+default = ["bin"]
+# Clap is only for the `postkit-mcp` binary. The library (stdio loop +
+# tools) stays clap-free so `postkit mcp` does not grow a second parser.
+bin = ["dep:clap"]
+
+[dependencies]
+postkit = { version = "0.1.0", path = "../postkit", features = ["vault-file", "threads", "bluesky", "meta-ads", "facebook-pages", "instagram", "linkedin", "whatsapp-cloud"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-std", "io-util"] }
+clap = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+async-trait = { workspace = true }
