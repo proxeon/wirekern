@@ -1197,12 +1197,8 @@ async fn whatsapp_allowed_send_replays_confirmed_idempotency_outcome() {
     let mut registry = Registry::new();
     register_mock(&mut registry, publisher.clone());
     let vault = Arc::new(MemoryVault::new());
-    let client = Client::with_whatsapp_policy(
-        registry,
-        vault.clone(),
-        Arc::new(MemoryAppStore::new()),
-        Arc::new(AllowWhatsAppSendsPolicy),
-    );
+    let client = Client::new(registry, vault.clone(), Arc::new(MemoryAppStore::new()))
+        .with_whatsapp_policy(Arc::new(AllowWhatsAppSendsPolicy));
     let key = AccountKey::new("whatsapp_cloud", "default");
     vault
         .put(
@@ -1231,12 +1227,8 @@ async fn whatsapp_missing_vault_account_releases_its_idempotency_claim() {
     let mut registry = Registry::new();
     register_mock(&mut registry, publisher.clone());
     let vault = Arc::new(MemoryVault::new());
-    let client = Client::with_whatsapp_policy(
-        registry,
-        vault.clone(),
-        Arc::new(MemoryAppStore::new()),
-        Arc::new(AllowWhatsAppSendsPolicy),
-    );
+    let client = Client::new(registry, vault.clone(), Arc::new(MemoryAppStore::new()))
+        .with_whatsapp_policy(Arc::new(AllowWhatsAppSendsPolicy));
     let key = AccountKey::new("whatsapp_cloud", "default");
     let first = client
         .send_whatsapp(&key, whatsapp_request("reply-1"), Deadline::from_secs(30))
@@ -1258,6 +1250,53 @@ async fn whatsapp_missing_vault_account_releases_its_idempotency_claim() {
         .await
         .unwrap();
     assert_eq!(publisher.whatsapp_sends.load(Ordering::SeqCst), 1);
+}
+
+/// Ads and WhatsApp policies are independent: installing one must not
+/// reset the other. A library user can deny ads activation while allowing
+/// a typed WhatsApp send.
+#[cfg(feature = "whatsapp-cloud")]
+#[tokio::test]
+async fn ads_and_whatsapp_policies_compose() {
+    let mut mock = MockPub::whatsapp("meta_ads");
+    mock.caps = vec![
+        Capability::SendReply,
+        Capability::SendTemplate,
+        Capability::CreatePausedAds,
+    ];
+    let publisher = Arc::new(mock);
+    let mut registry = Registry::new();
+    register_mock(&mut registry, publisher.clone());
+    let vault = Arc::new(MemoryVault::new());
+    let client = Client::new(registry, vault.clone(), Arc::new(MemoryAppStore::new()))
+        .with_ads_policy(Arc::new(DenyAds))
+        .with_whatsapp_policy(Arc::new(AllowWhatsAppSendsPolicy));
+    let key = AccountKey::new("meta_ads", "default");
+    vault
+        .put(
+            &key,
+            &AccountCreds::BotToken {
+                token: "system-user-token".into(),
+            },
+        )
+        .unwrap();
+    client
+        .send_whatsapp(&key, whatsapp_request("compose-1"), Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(publisher.whatsapp_sends.load(Ordering::SeqCst), 1);
+    let denied = client
+        .create_paused_ad(
+            &key,
+            paused_campaign_request("draft"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(denied, Error::PolicyDenied { action, reason, .. } if action == "create_paused_campaign" && reason == "test_denied")
+    );
+    assert_eq!(publisher.paused_creates.load(Ordering::SeqCst), 0);
 }
 
 /// 023: while one publish under a key is in flight, a second caller with
@@ -1801,12 +1840,12 @@ async fn client_paused_create_routes_and_refuses_before_vault_access() {
     // `unknown_account` error, proving the gate is before credential access.
     let mut registry = Registry::new();
     register_mock(&mut registry, Arc::new(MockPub::paused_ads("meta_ads")));
-    let denied = Client::with_ads_policy(
+    let denied = Client::new(
         registry,
         Arc::new(MemoryVault::new()),
         Arc::new(MemoryAppStore::new()),
-        Arc::new(DenyAds),
     )
+    .with_ads_policy(Arc::new(DenyAds))
     .create_paused_ad(
         &AccountKey::new("meta_ads", "default"),
         paused_campaign_request("draft"),
@@ -1901,12 +1940,12 @@ async fn client_creative_assets_route_and_refuse_before_vault_access() {
         &mut registry,
         Arc::new(MockPub::creative_assets("meta_ads")),
     );
-    let denied = Client::with_ads_policy(
+    let denied = Client::new(
         registry,
         Arc::new(MemoryVault::new()),
         Arc::new(MemoryAppStore::new()),
-        Arc::new(DenyAds),
     )
+    .with_ads_policy(Arc::new(DenyAds))
     .upload_ad_image(
         &AccountKey::new("meta_ads", "default"),
         UploadAdImageRequest {
@@ -2956,12 +2995,8 @@ mod draft_tests {
                 },
             )
             .unwrap();
-        let client = Client::with_ads_policy(
-            reg,
-            vault,
-            Arc::new(MemoryAppStore::new()),
-            Arc::new(DenyAllAds),
-        );
+        let client = Client::new(reg, vault, Arc::new(MemoryAppStore::new()))
+            .with_ads_policy(Arc::new(DenyAllAds));
         let store = Arc::new(MemStore::default());
         let err = client
             .run_paused_draft(RunPausedDraft {

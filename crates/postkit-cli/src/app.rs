@@ -75,12 +75,8 @@ pub(crate) fn make_client(
         // The flag is intentionally inspected before client construction:
         // the default client has a deny-all WhatsApp policy, so a new command
         // cannot accidentally become a real customer-message write.
-        Ok(Client::with_whatsapp_policy(
-            registry,
-            vault,
-            apps,
-            Arc::new(AllowWhatsAppSendsPolicy),
-        ))
+        Ok(Client::new(registry, vault, apps)
+            .with_whatsapp_policy(Arc::new(AllowWhatsAppSendsPolicy)))
     } else {
         Ok(Client::new(registry, vault, apps))
     }

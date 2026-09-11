@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: ["", "oauth", "client", "bluesky", "threads", "meta-ads", "facebook-pages", "instagram", "draft"]
+        features: ["", "oauth", "client", "bluesky", "threads", "meta-ads", "facebook-pages", "instagram", "draft", "whatsapp-cloud", "vault-file"]
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

@@ -47,7 +47,8 @@ impl AdsAction {
 
 /// Approves or refuses an advertising action before token lookup or HTTP.
 /// Applications may provide a stricter implementation with
-/// [`Client::with_ads_policy`](crate::Client::with_ads_policy).
+/// [`Client::with_ads_policy`](crate::Client::with_ads_policy). Chain it with
+/// `with_whatsapp_policy` when both domains need a custom decision.
 pub trait AdsPolicy: Send + Sync {
     fn authorize(&self, site: &Site, action: AdsAction) -> Result<(), Error>;
 }

@@ -51,46 +51,30 @@ pub struct Client {
 
 impl Client {
     pub fn new(registry: Registry, vault: Arc<dyn Vault>, apps: Arc<dyn AppStore>) -> Self {
-        Self::with_ads_policy(registry, vault, apps, Arc::new(PausedOnlyAdsPolicy))
-    }
-
-    /// Construct a client with an explicitly chosen advertising policy. The
-    /// normal constructor installs `PausedOnlyAdsPolicy`; callers can only
-    /// loosen that contract by passing an intentional policy object here.
-    pub fn with_ads_policy(
-        registry: Registry,
-        vault: Arc<dyn Vault>,
-        apps: Arc<dyn AppStore>,
-        ads_policy: Arc<dyn AdsPolicy>,
-    ) -> Self {
-        Self {
-            registry,
-            vault,
-            apps,
-            ads_policy,
-            #[cfg(feature = "whatsapp-cloud")]
-            whatsapp_policy: Arc::new(NoWhatsAppSendsPolicy),
-        }
-    }
-
-    /// Build a client that may send a WhatsApp reply/template after the
-    /// caller explicitly selects a policy. Ads retain their normal
-    /// paused-only posture; the two policy domains are intentionally
-    /// independent.
-    #[cfg(feature = "whatsapp-cloud")]
-    pub fn with_whatsapp_policy(
-        registry: Registry,
-        vault: Arc<dyn Vault>,
-        apps: Arc<dyn AppStore>,
-        whatsapp_policy: Arc<dyn WhatsAppPolicy>,
-    ) -> Self {
         Self {
             registry,
             vault,
             apps,
             ads_policy: Arc::new(PausedOnlyAdsPolicy),
-            whatsapp_policy,
+            #[cfg(feature = "whatsapp-cloud")]
+            whatsapp_policy: Arc::new(NoWhatsAppSendsPolicy),
         }
+    }
+
+    /// Replace only the advertising policy. Chain with
+    /// [`Self::with_whatsapp_policy`] — the two domains are independent and
+    /// must not reset each other.
+    pub fn with_ads_policy(mut self, ads_policy: Arc<dyn AdsPolicy>) -> Self {
+        self.ads_policy = ads_policy;
+        self
+    }
+
+    /// Replace only the WhatsApp send policy. Ads stay whatever they were
+    /// (paused-only by default).
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn with_whatsapp_policy(mut self, whatsapp_policy: Arc<dyn WhatsAppPolicy>) -> Self {
+        self.whatsapp_policy = whatsapp_policy;
+        self
     }
 
     pub fn registry(&self) -> &Registry {
