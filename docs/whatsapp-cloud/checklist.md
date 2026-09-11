@@ -73,12 +73,12 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 
 ### Templates (beyond body text)
 
-- [ ] Header: text
-- [ ] Header: image / video / document
+- [x] Header: text
+- [x] Header: image / video / document
 - [ ] Footer
-- [ ] Buttons (quick reply / URL / phone / copy code)
-- [ ] Named body parameters (vs ordered only)
-- [ ] Limited-time offer / coupon components
+- [x] Buttons (quick reply / URL / phone / copy code)
+- [x] Named body parameters (vs ordered only)
+- [x] Limited-time offer / coupon components
 - [ ] Template list / get / status / quality (read)
 - [ ] Template create / edit / delete / review submit (write — Business Management API)
 

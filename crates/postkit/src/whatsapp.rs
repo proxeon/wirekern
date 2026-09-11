@@ -42,12 +42,27 @@ pub enum WhatsAppMessage {
         #[serde(default)]
         preview_url: bool,
     },
+    /// Approved template send. Footer text is baked into the template at
+    /// create time (Business Management API) — Cloud API send has no footer
+    /// component. Header/buttons/named body/LTO are send-time substitutions.
     Template {
         to: String,
         name: String,
         language: String,
+        /// Positional body `{{1}}`, `{{2}}`, … Mutually exclusive with
+        /// `named_body_parameters`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         body_parameters: Vec<String>,
+        /// Named body `{{first_name}}`. Requires a template created with
+        /// `parameter_format: named`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        named_body_parameters: Vec<NamedBodyParameter>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<TemplateHeader>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        buttons: Vec<TemplateButton>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limited_time_offer: Option<LimitedTimeOffer>,
     },
     Image {
         to: String,
@@ -229,6 +244,50 @@ impl std::str::FromStr for RecipientType {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NamedBodyParameter {
+    pub parameter_name: String,
+    pub text: String,
+}
+
+/// Send-time header substitution. Text headers support one variable; media
+/// headers take a Cloud API media id or HTTPS link (same `MediaRef` XOR).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TemplateHeader {
+    Text { text: String },
+    Image {
+        #[serde(flatten)]
+        media: MediaRef,
+    },
+    Video {
+        #[serde(flatten)]
+        media: MediaRef,
+    },
+    Document {
+        #[serde(flatten)]
+        media: MediaRef,
+    },
+}
+
+/// Send-time button parameters. Phone-number buttons are static on the
+/// template; we still emit the index so the caller can name the slot.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "sub_type", rename_all = "snake_case")]
+pub enum TemplateButton {
+    QuickReply { index: u8, payload: String },
+    Url { index: u8, text: String },
+    PhoneNumber { index: u8 },
+    CopyCode { index: u8, coupon_code: String },
+}
+
+/// Limited-time offer send component. `expiration_time_ms` is Unix epoch
+/// milliseconds as required by Cloud API LTO templates.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LimitedTimeOffer {
+    pub expiration_time_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OutboundContact {
     pub formatted_name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -315,11 +374,20 @@ impl WhatsAppMessage {
                 name,
                 language,
                 body_parameters,
+                named_body_parameters,
+                header,
+                buttons,
+                limited_time_offer,
             } => {
                 validate_destination(to, recipient_type)?;
                 validate_template_name(name)?;
                 validate_language(language)?;
-                if body_parameters.len() > MAX_BODY_PARAMETERS {
+                if !body_parameters.is_empty() && !named_body_parameters.is_empty() {
+                    return Err("template_body_parameters_mixed".into());
+                }
+                if body_parameters.len() > MAX_BODY_PARAMETERS
+                    || named_body_parameters.len() > MAX_BODY_PARAMETERS
+                {
                     return Err("template_body_parameters_too_many".into());
                 }
                 for parameter in body_parameters {
@@ -332,6 +400,24 @@ impl WhatsAppMessage {
                     if parameter.chars().count() > MAX_REPLY_TEXT {
                         return Err("template_body_parameter_too_long".into());
                     }
+                }
+                for parameter in named_body_parameters {
+                    validate_named_parameter(parameter)?;
+                }
+                if let Some(header) = header {
+                    validate_template_header(header)?;
+                }
+                if buttons.len() > 10 {
+                    return Err("template_buttons_too_many".into());
+                }
+                for button in buttons {
+                    validate_template_button(button)?;
+                }
+                if limited_time_offer
+                    .as_ref()
+                    .is_some_and(|o| o.expiration_time_ms == 0)
+                {
+                    return Err("template_lto_expiration_invalid".into());
                 }
             }
             Self::Image {
@@ -1003,6 +1089,68 @@ fn validate_reply_text(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_named_parameter(parameter: &NamedBodyParameter) -> Result<(), String> {
+    if parameter.parameter_name.is_empty()
+        || parameter.parameter_name.len() > 64
+        || !parameter
+            .parameter_name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return Err("template_named_parameter_invalid".into());
+    }
+    if parameter.text.trim().is_empty() {
+        return Err("template_body_parameter_empty".into());
+    }
+    if parameter.text.chars().count() > MAX_REPLY_TEXT {
+        return Err("template_body_parameter_too_long".into());
+    }
+    Ok(())
+}
+
+fn validate_template_header(header: &TemplateHeader) -> Result<(), String> {
+    match header {
+        TemplateHeader::Text { text } => {
+            if text.trim().is_empty() || text.chars().count() > 60 {
+                return Err("template_header_text_invalid".into());
+            }
+        }
+        TemplateHeader::Image { media }
+        | TemplateHeader::Video { media }
+        | TemplateHeader::Document { media } => media.validate()?,
+    }
+    Ok(())
+}
+
+fn validate_template_button(button: &TemplateButton) -> Result<(), String> {
+    let index = match button {
+        TemplateButton::QuickReply { index, payload } => {
+            if payload.is_empty() || payload.len() > 128 {
+                return Err("template_button_payload_invalid".into());
+            }
+            *index
+        }
+        TemplateButton::Url { index, text } => {
+            if text.is_empty() || text.len() > 2048 {
+                return Err("template_button_url_invalid".into());
+            }
+            *index
+        }
+        TemplateButton::PhoneNumber { index } => *index,
+        TemplateButton::CopyCode { index, coupon_code } => {
+            let n = coupon_code.chars().count();
+            if !(4..=15).contains(&n) {
+                return Err("template_coupon_code_invalid".into());
+            }
+            *index
+        }
+    };
+    if index > 9 {
+        return Err("template_button_index_invalid".into());
+    }
+    Ok(())
+}
+
 fn validate_template_name(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MAX_TEMPLATE_NAME
@@ -1099,6 +1247,10 @@ mod tests {
                 name: "Order_Update".into(),
                 language: "en_US".into(),
                 body_parameters: vec![],
+                named_body_parameters: vec![],
+                header: None,
+                buttons: vec![],
+                limited_time_offer: None,
             }
             .validate()
             .unwrap_err(),
@@ -1306,6 +1458,59 @@ mod tests {
             .validate_for(RecipientType::Group)
             .unwrap_err(),
             "group_id_invalid"
+        );
+    }
+
+    #[test]
+    fn template_send_components_validate_named_header_and_buttons() {
+        let ok = WhatsAppMessage::Template {
+            to: "60123456789".into(),
+            name: "order_update".into(),
+            language: "en_US".into(),
+            body_parameters: vec![],
+            named_body_parameters: vec![NamedBodyParameter {
+                parameter_name: "first_name".into(),
+                text: "Ada".into(),
+            }],
+            header: Some(TemplateHeader::Text {
+                text: "Hello".into(),
+            }),
+            buttons: vec![
+                TemplateButton::QuickReply {
+                    index: 0,
+                    payload: "yes".into(),
+                },
+                TemplateButton::Url {
+                    index: 1,
+                    text: "ada".into(),
+                },
+                TemplateButton::CopyCode {
+                    index: 2,
+                    coupon_code: "SAVE10".into(),
+                },
+            ],
+            limited_time_offer: Some(LimitedTimeOffer {
+                expiration_time_ms: 1_700_000_000_000,
+            }),
+        };
+        assert!(ok.validate().is_ok());
+        assert_eq!(
+            WhatsAppMessage::Template {
+                to: "60123456789".into(),
+                name: "order_update".into(),
+                language: "en_US".into(),
+                body_parameters: vec!["Ada".into()],
+                named_body_parameters: vec![NamedBodyParameter {
+                    parameter_name: "first_name".into(),
+                    text: "Ada".into(),
+                }],
+                header: None,
+                buttons: vec![],
+                limited_time_offer: None,
+            }
+            .validate()
+            .unwrap_err(),
+            "template_body_parameters_mixed"
         );
     }
 }

@@ -531,19 +531,53 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
             name,
             language,
             body_parameters,
+            named_body_parameters,
+            header,
+            buttons,
+            limited_time_offer,
         } => {
             let mut template = json!({
                 "name": name,
                 "language": { "code": language },
             });
+            let mut components = Vec::new();
+            if let Some(header) = header {
+                components.push(template_header_component(header));
+            }
             if !body_parameters.is_empty() {
-                template["components"] = json!([{
+                components.push(json!({
                     "type": "body",
                     "parameters": body_parameters.iter().map(|text| json!({
                         "type": "text",
                         "text": text,
                     })).collect::<Vec<_>>(),
-                }]);
+                }));
+            } else if !named_body_parameters.is_empty() {
+                components.push(json!({
+                    "type": "body",
+                    "parameters": named_body_parameters.iter().map(|p| json!({
+                        "type": "text",
+                        "parameter_name": p.parameter_name,
+                        "text": p.text,
+                    })).collect::<Vec<_>>(),
+                }));
+            }
+            if let Some(offer) = limited_time_offer {
+                components.push(json!({
+                    "type": "limited_time_offer",
+                    "parameters": [{
+                        "type": "limited_time_offer",
+                        "limited_time_offer": {
+                            "expiration_time_ms": offer.expiration_time_ms,
+                        },
+                    }],
+                }));
+            }
+            for button in buttons {
+                components.push(template_button_component(button));
+            }
+            if !components.is_empty() {
+                template["components"] = json!(components);
             }
             json!({
                 "messaging_product": "whatsapp",
@@ -784,6 +818,57 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
         payload["recipient_type"] = json!(recipient_type.as_str());
     }
     payload
+}
+
+fn template_header_component(header: &crate::whatsapp::TemplateHeader) -> Value {
+    use crate::whatsapp::TemplateHeader;
+    match header {
+        TemplateHeader::Text { text } => json!({
+            "type": "header",
+            "parameters": [{ "type": "text", "text": text }],
+        }),
+        TemplateHeader::Image { media } => json!({
+            "type": "header",
+            "parameters": [{ "type": "image", "image": media.to_json() }],
+        }),
+        TemplateHeader::Video { media } => json!({
+            "type": "header",
+            "parameters": [{ "type": "video", "video": media.to_json() }],
+        }),
+        TemplateHeader::Document { media } => json!({
+            "type": "header",
+            "parameters": [{ "type": "document", "document": media.to_json() }],
+        }),
+    }
+}
+
+fn template_button_component(button: &crate::whatsapp::TemplateButton) -> Value {
+    use crate::whatsapp::TemplateButton;
+    match button {
+        TemplateButton::QuickReply { index, payload } => json!({
+            "type": "button",
+            "sub_type": "quick_reply",
+            "index": index.to_string(),
+            "parameters": [{ "type": "payload", "payload": payload }],
+        }),
+        TemplateButton::Url { index, text } => json!({
+            "type": "button",
+            "sub_type": "url",
+            "index": index.to_string(),
+            "parameters": [{ "type": "text", "text": text }],
+        }),
+        TemplateButton::PhoneNumber { index } => json!({
+            "type": "button",
+            "sub_type": "phone_number",
+            "index": index.to_string(),
+        }),
+        TemplateButton::CopyCode { index, coupon_code } => json!({
+            "type": "button",
+            "sub_type": "copy_code",
+            "index": index.to_string(),
+            "parameters": [{ "type": "coupon_code", "coupon_code": coupon_code }],
+        }),
+    }
 }
 
 fn interactive_payload(
@@ -1762,6 +1847,10 @@ mod tests {
                 name: "order_update".into(),
                 language: "en_US".into(),
                 body_parameters: vec!["A-42".into(), "tomorrow".into()],
+                named_body_parameters: vec![],
+                header: None,
+                buttons: vec![],
+                limited_time_offer: None,
             },
             idempotency_key: "template-1".into(),
             recipient_type: RecipientType::Individual,
@@ -1773,6 +1862,52 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.id.as_deref(), Some("wamid.template"));
         assert_eq!(send.hits(), 1);
+    }
+
+    #[test]
+    fn template_header_named_body_buttons_and_lto_match_cloud_api() {
+        use crate::whatsapp::{
+            LimitedTimeOffer, NamedBodyParameter, TemplateButton, TemplateHeader,
+        };
+        let payload = send_payload(&WhatsAppMessage::Template {
+            to: "60123456789".into(),
+            name: "fall_sale".into(),
+            language: "en_US".into(),
+            body_parameters: vec![],
+            named_body_parameters: vec![NamedBodyParameter {
+                parameter_name: "first_name".into(),
+                text: "Ada".into(),
+            }],
+            header: Some(TemplateHeader::Image {
+                media: crate::whatsapp::MediaRef {
+                    id: Some("media-1".into()),
+                    link: None,
+                },
+            }),
+            buttons: vec![
+                TemplateButton::CopyCode {
+                    index: 0,
+                    coupon_code: "SAVE10".into(),
+                },
+                TemplateButton::Url {
+                    index: 1,
+                    text: "promo".into(),
+                },
+                TemplateButton::PhoneNumber { index: 2 },
+            ],
+            limited_time_offer: Some(LimitedTimeOffer {
+                expiration_time_ms: 1_700_000_000_000,
+            }),
+        });
+        let components = &payload["template"]["components"];
+        assert_eq!(components[0]["type"], "header");
+        assert_eq!(components[0]["parameters"][0]["type"], "image");
+        assert_eq!(components[1]["parameters"][0]["parameter_name"], "first_name");
+        assert_eq!(components[2]["type"], "limited_time_offer");
+        assert_eq!(components[3]["sub_type"], "copy_code");
+        assert_eq!(components[3]["parameters"][0]["coupon_code"], "SAVE10");
+        assert_eq!(components[4]["sub_type"], "url");
+        assert_eq!(components[5]["sub_type"], "phone_number");
     }
 
     #[tokio::test]

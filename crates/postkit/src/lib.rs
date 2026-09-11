@@ -101,7 +101,8 @@ pub use whatsapp::{
     InboundContact, InboundInteractive, InboundLocation, InboundMedia, InboundMessage,
     InboundMessages, InboundOrder, InboundReaction, InboundReferral, InboundUnsupported,
     WebhookParseOptions, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppMessage,
-    WhatsAppSendRequest, WhatsAppUploadedMedia, MAX_REPLY_TEXT, MediaRef, RecipientType,
+    WhatsAppSendRequest, WhatsAppUploadedMedia, MAX_REPLY_TEXT, MediaRef, NamedBodyParameter,
+    LimitedTimeOffer, RecipientType, TemplateButton, TemplateHeader,
 };
 
 #[cfg(feature = "vault-file")]
