@@ -257,11 +257,16 @@ For callers that cannot exec the binary. `keys create` prints `pk_live_` + 32 ra
 | HTTP | CLI |
 |------|-----|
 | `POST /v1/posts` | `postkit post --stdin --json` |
+| `POST /v1/whatsapp` | `postkit whatsapp reply\|template … --allow-send --json` |
 | `GET /v1/capabilities` | `postkit capabilities --json` |
 | `GET /v1/accounts?site=` | `postkit accounts list --json` |
 | `GET /v1/whoami?site=&account=` | `postkit whoami --json` |
 
-`Authorization: Bearer pk_live_…`. Optional `Idempotency-Key` and `X-Postkit-Deadline` (seconds, default 30). Auth dances and `--token` stay on the CLI. HTTP status tracks `WireError`: 404 unknown site/account, 401 auth, 422 usage, 429 rate/idempotency, 502 platform, 503 network/timeout. No `"ok": true`.
+`Authorization: Bearer pk_live_…`. Optional `Idempotency-Key` and `X-Postkit-Deadline` (seconds, default 30). Auth dances and `--token` stay on the CLI.
+
+`POST /v1/whatsapp` is the HTTP twin of `--allow-send`: the JSON body must include `"allow_send": true` plus a typed `message` and `idempotency_key`. Omitted or false is `policy_denied` before vault access. `/v1/posts` cannot send WhatsApp (`unsupported` / `use_whatsapp_command`).
+
+HTTP status tracks `WireError`: 404 unknown site/account, 401 auth, 422 usage, 429 rate/idempotency, 502 platform, 503 network/timeout. No `"ok": true`.
 
 ## Output document and exit codes
 

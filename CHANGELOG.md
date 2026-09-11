@@ -23,7 +23,8 @@ same detail by subject.
 
 - `postkit serve` and `postkit keys`: localhost HTTP for callers that cannot
   exec, authenticated with `pk_live_` keys hashed in `~/.postkit/keys/`. Same
-  JSON as `--json`. Default bind `127.0.0.1:8788`.
+  JSON as `--json`. Default bind `127.0.0.1:8788`. `POST /v1/whatsapp` requires
+  `"allow_send": true` (the HTTP twin of `--allow-send`).
 
 - WhatsApp Cloud business messaging: the new `whatsapp_cloud` connector uses
   a configured Phone number ID and a verified static System User token, not a
