@@ -7,11 +7,12 @@ send names one recipient, requires an idempotency key, and needs an explicit
 consent and billing consequences.
 
 The connector sends typed Cloud API messages (text, media, interactive,
-templates, catalog/order, Flows) and parses **signed inbound webhooks**. It
-does not provide an inbox API or a server. WhatsApp delivers inbound messages
-and final sent/delivered/read/failed status to your HTTPS webhook; Postkit can
-verify and parse the exact raw body that endpoint receives. Every customer
-send still needs `--allow-send` and an idempotency key.
+templates, catalog/order, Flows) and parses **signed inbound webhooks**.
+`postkit serve` provides the challenge/acknowledgement callback and a small
+local delivery ledger; it is not a conversation inbox. The server is plain
+HTTP and must sit behind your own public HTTPS reverse proxy or tunnel before
+Meta can reach it. Every customer send still needs `--allow-send` and an
+idempotency key.
 
 Meta's current Cloud API requirements and message examples are in its
 [official WhatsApp Cloud API collection](https://www.postman.com/meta/whatsapp-business-platform/documentation/wlk6lh4/whatsapp-cloud-api?entity=request-13382743-f2eb9575-f109-4767-ab47-4cf74c14444f).
@@ -29,9 +30,8 @@ In the Meta developer/business setup for the legitimate business:
 4. Copy the Meta app secret if this Postkit instance will parse inbound
    webhooks. It verifies `X-Hub-Signature-256`; it is not sent to Graph.
 5. In Meta, configure a public HTTPS webhook endpoint and subscribe it to the
-   WhatsApp `messages` field. Your own endpoint must perform Meta's webhook
-   verification challenge and acknowledge deliveries promptly. Postkit does
-   not host that endpoint.
+   WhatsApp `messages` field. Point it at a TLS reverse proxy or tunnel that
+   forwards unchanged bytes to Postkit's local callback route below.
 
 Do not use a personal WhatsApp login password or a scraped WhatsApp Web
 session. Cloud API is a business platform and needs these business assets.
@@ -43,7 +43,8 @@ Keep the token out of committed files. You may configure the sender interactivel
 ```bash
 postkit whatsapp configure \
   --phone-number-id 123456789012345 \
-  --app-secret '<META_APP_SECRET>'
+  --app-secret '<META_APP_SECRET>' \
+  --verify-token '<RANDOM_CALLBACK_VERIFY_TOKEN>'
 
 postkit auth whatsapp_cloud --token '<SYSTEM_USER_ACCESS_TOKEN>'
 postkit whoami whatsapp_cloud --json
@@ -61,6 +62,7 @@ the Postkit vault.
 ```bash
 export POSTKIT_WHATSAPP_PHONE_NUMBER_ID=123456789012345
 export POSTKIT_WHATSAPP_APP_SECRET='<META_APP_SECRET>' # only needed for webhook parsing
+export POSTKIT_WHATSAPP_VERIFY_TOKEN='<RANDOM_CALLBACK_VERIFY_TOKEN>'
 postkit auth whatsapp_cloud --token '<SYSTEM_USER_ACCESS_TOKEN>'
 ```
 
@@ -69,7 +71,8 @@ replacing the whole file: setting only `POSTKIT_WHATSAPP_PHONE_NUMBER_ID`
 keeps an app secret previously saved by `whatsapp configure`. Set
 `POSTKIT_WHATSAPP_APP_SECRET` only when you deliberately want to replace that
 secret. `apps show` redacts the app secret and reports only whether webhook
-signing is configured.
+signing is configured. `--verify-token` / `POSTKIT_WHATSAPP_VERIFY_TOKEN` is
+the separate value Meta sends only during the public GET callback challenge.
 
 ## 3. Send a reply
 
@@ -113,7 +116,7 @@ postkit --json whatsapp text \
   --allow-send
 ```
 
-Parse a forwarded webhook over HTTP (not a listener):
+Parse a forwarded webhook with your own receiver:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8788/v1/whatsapp/webhook \
@@ -125,9 +128,9 @@ curl -sS -X POST http://127.0.0.1:8788/v1/whatsapp/webhook \
 ## 4. Send an approved template
 
 Create and obtain Meta approval for the exact template in WhatsApp Manager
-first. Postkit does not create, edit, inspect approval status, or send a raw
-template payload. V1 supports only a lowercase template name, language code,
-and ordered text variables for the template body.
+first. The CLI sends an approved template with a lowercase name, language, and
+ordered text variables. The library also has typed template-management APIs
+and richer typed components; those management verbs are not CLI commands yet.
 
 ```bash
 postkit --json whatsapp template \
@@ -145,11 +148,30 @@ per-conversation/template pricing are Meta business decisions. Review them in
 WhatsApp Manager before adding `--allow-send`. A Postkit success means Meta
 accepted the request; monitor signed status webhooks for delivery/failure.
 
-## 5. Parse inbound messages and delivery statuses safely
+## 5. Receive webhooks safely
 
-Forward the **unchanged raw bytes** and exact signature header from your HTTPS
-webhook application to this command. Do not parse/reformat JSON before passing
-it along—the HMAC is over the raw body.
+For a Postkit-managed callback, run the HTTP listener on loopback and terminate
+TLS before it. Do not expose `postkit serve` directly to the internet: it does
+not own certificates or HTTPS.
+
+```text
+Meta HTTPS -> your TLS reverse proxy/tunnel -> http://127.0.0.1:8788/v1/whatsapp/callback
+```
+
+```bash
+postkit keys create --name whatsapp-callback-read
+postkit serve --bind 127.0.0.1:8788
+```
+
+Configure the public `https://…/v1/whatsapp/callback` URL in Meta. The GET
+request validates `hub.verify_token` and returns the raw challenge; the POST
+request verifies `X-Hub-Signature-256`, records correlation state, and returns
+HTTP 200. The proxy must forward the body byte-for-byte and preserve that
+signature header. `GET /v1/whatsapp/events/{wamid}` requires a `pk_live_` key.
+
+For a bring-your-own receiver, forward the **unchanged raw bytes** and exact
+signature header to the parser. Do not parse/reformat JSON before passing it
+along—the HMAC is over the raw body.
 
 ```bash
 postkit --json whatsapp webhook parse \
@@ -181,11 +203,31 @@ outbound status callbacks in Meta's payload order:
 
 Human output prints only the count to avoid copying customer phone numbers and
 message text or message IDs into terminal scrollback. `--json` intentionally
-returns that personal data and opaque `wamid` to the explicit caller. Postkit
-does not persist, deduplicate, reorder, or infer a final status from events;
-your application needs durable state for that. It exposes only `sent`,
-`delivered`, `read`, and `failed`; recipient IDs, failure bodies, conversation
-and pricing fields, and unsupported statuses are deliberately excluded.
+returns that personal data and opaque `wamid` to the explicit caller. The
+callback ledger deduplicates/reduces events and keeps only correlation metadata
+(`wamid`, sender ID, type, timestamps, reply context, final status, and limited
+conversation/pricing fields). It drops text, captions, media, location,
+contacts, interactive/reaction/referral/order content, and raw webhook bodies.
+
+The ledger has no implicit retention period: the embedding application chooses
+one and calls `Client::purge_whatsapp_ledger_before(unix_timestamp)`. This
+purges message/status/window records and hashed dead-letter audit entries, but
+deliberately does not erase consent records, which can have a separate
+legal-retention basis.
+
+## Consent, window, and pacing boundaries
+
+Postkit stores opt-in/opt-out records and computes a 24-hour window from its
+local callback history, but neither is automatic permission to send or a
+replacement for Meta's policy decision. Incomplete callback history must not
+be mistaken for a complete customer record. Review consent, template approval,
+pricing, and the customer-service window before passing `--allow-send`; Meta
+remains the delivery authority.
+
+Postkit paces outbound Cloud API requests at a process-local default of roughly
+80 messages/second per configured account. Batches are capped at 10 items and
+wait for the next slot within the caller's deadline. This is local pacing, not
+a distributed quota service or a Meta throughput guarantee.
 
 ## Idempotency and uncertain outcomes
 
@@ -210,20 +252,18 @@ an intentional operational decision.
 | `webhook_phone_number_mismatch` | The signed event belongs to another phone number. Route it to the Postkit configuration for that sender. |
 | `webhook_status_unsupported` | Meta sent a delivery state this version does not model. Preserve the raw signed payload in your own webhook system and upgrade Postkit after reviewing it. |
 
-## Deliberate v1 boundary
+## Current boundaries
 
-Implemented: static System User token validation, explicit sender
-configuration, text replies, in-window session text (no `context`),
-approved text-template sends, mandatory idempotency, deny-by-default
-messaging policy, and verified inbound-message and delivery-status webhook
-extraction.
+The library and typed HTTP send surface are wider than the command-line UX:
+the CLI currently exposes configuration, text, reply, basic template sends,
+and raw webhook parsing. The HTTP send endpoint supports the other typed
+message variants; template/Flow/media/account operations and ledger retention
+remain library integrations until CLI or HTTP-management parity is designed.
 
-Not implemented: webhook HTTP hosting/challenge/acknowledgement, inbox or
-status persistence, template CRUD/review, pricing/billing surfaces, recipient
-discovery, opt-in tracking, conversation-window storage, media, interactive
-messages, catalogs, Flows, bulk/campaign sends, multi-phone/WABA discovery,
-retries, delivery-status actions, and direct-send beta features. Each has its
-own consent, privacy, billing, or payload contract and must be designed before
-it is added.
+Postkit does not terminate TLS, paginate large Meta collections, select an
+outbound sender from multiple configured Phone Number IDs, run distributed rate
+limits, replay dead letters, or provide a hosted inbox/billing dashboard. A
+successful send is still only Meta acceptance; use signed statuses for the
+final delivery result.
 
 Track remaining work as checkboxes in [checklist.md](./checklist.md).

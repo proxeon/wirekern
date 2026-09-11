@@ -137,9 +137,10 @@ postkit capabilities --json
 ## `whatsapp` (WhatsApp Cloud)
 
 ```text
-postkit whatsapp configure --phone-number-id <numeric-id> [--app-secret <Meta-app-secret>]
+postkit whatsapp configure --phone-number-id <numeric-id> [--waba-id <numeric-id>] [--app-secret <Meta-app-secret>] [--verify-token <random-callback-token>]
 postkit auth whatsapp_cloud --token <System-User-token>
 postkit whoami whatsapp_cloud --json
+postkit whatsapp text --to <digits> --text <text> --idempotency <key> --allow-send
 postkit whatsapp reply --to <digits> --reply-to <inbound-wamid> --text <text> --idempotency <key> --allow-send
 postkit whatsapp template --to <digits> --name <approved_name> --language <locale> [--body-param <value>]... --idempotency <key> --allow-send
 postkit whatsapp webhook parse --signature <X-Hub-Signature-256> < raw-webhook.json
@@ -155,8 +156,10 @@ the environment also supplies a replacement secret.
 
 `whatsapp webhook parse` performs no HTTP request and returns verified inbound
 messages plus `sent`, `delivered`, `read`, and `failed` callbacks for the
-outbound `wamid`. It does not host a webhook, persist/deduplicate events, or
-infer a final delivery state; those need application-owned storage.
+outbound `wamid`. It is the BYO-receiver adapter. `postkit serve` also exposes
+the challenge/acknowledgement callback and persists a minimal local delivery
+ledger, but serves **HTTP only**; deploy it behind a public HTTPS reverse proxy
+or tunnel before configuring Meta.
 
 `reply` and `template` are intentionally not `post` subcommands. They are
 private, recipient-specific writes: both require an idempotency key and exact
@@ -168,16 +171,18 @@ Use signed status webhooks for that state.
 `reply` only sends plain text and requires a WhatsApp ID (digits with country
 code, no `+`) and the `wamid` of a known inbound message. `template` sends an
 already approved lowercase template name with a language code and optional
-ordered text body substitutions; it cannot create templates, accept arbitrary
-JSON components, or bypass Meta's window/consent/pricing policy.
+ordered text body substitutions. The library and typed `POST /v1/whatsapp`
+surface also support the broader typed media/interactive/catalog/Flow message
+set. Template, Flow, media, and account management facets are library APIs;
+that is intentionally not a JSON escape hatch and CLI parity remains separate
+work.
 
 `webhook parse` reads one bounded raw body from stdin and verifies the exact
 `sha256=` HMAC header before JSON parsing. It also refuses a callback whose
 Phone number ID differs from the configured sender. Human output reports only
-the message count; `--json` emits the explicit caller's inbound PII. This is
-an adapter for your HTTPS endpoint, **not** a listener, challenge responder,
-acknowledger, status store, or inbox. Full setup and limitations: [WhatsApp
-Cloud runbook](./whatsapp-cloud/README.md).
+the message count; `--json` emits the explicit caller's inbound PII. Full
+callback, privacy, and deployment boundaries: [WhatsApp Cloud
+runbook](./whatsapp-cloud/README.md).
 
 ## `pages` (facebook_pages)
 
@@ -268,8 +273,10 @@ For callers that cannot exec the binary. `keys create` prints `pk_live_` + 32 ra
 | HTTP | CLI |
 |------|-----|
 | `POST /v1/posts` | `postkit post --stdin --json` |
-| `POST /v1/whatsapp` | `postkit whatsapp reply\|template\|text … --allow-send --json` |
+| `POST /v1/whatsapp` | Typed WhatsApp send (`"allow_send": true`) |
 | `POST /v1/whatsapp/webhook` | `postkit whatsapp webhook parse --signature …` (raw body, HMAC; not a listener) |
+| `GET\|POST /v1/whatsapp/callback` | Meta webhook challenge / signed event acknowledgement; requires external HTTPS termination |
+| `GET /v1/whatsapp/events/{wamid}` | Read a locally recorded delivery row |
 | `GET /v1/capabilities` | `postkit capabilities --json` |
 | `GET /v1/accounts?site=` | `postkit accounts list --json` |
 | `GET /v1/whoami?site=&account=` | `postkit whoami --json` |
@@ -280,7 +287,12 @@ For callers that cannot exec the binary. `keys create` prints `pk_live_` + 32 ra
 
 `POST /v1/whatsapp/webhook` parses one signed raw body (`X-Hub-Signature-256`) for BYO receivers (requires `pk_live_`). Optional `?status_extras=true` or `X-Postkit-Status-Extras: true` includes recipient/conversation/pricing.
 
-Meta-facing transport is `GET|POST /v1/whatsapp/callback` (no bearer): GET echoes `hub.challenge` when `hub.verify_token` matches; POST HMAC-verifies, ACKs HTTP 200, and records wamids on the local ledger. Query `GET /v1/whatsapp/events/{wamid}` with a key.
+Meta-facing transport is `GET|POST /v1/whatsapp/callback` (no bearer): GET
+echoes `hub.challenge` when `hub.verify_token` matches; POST HMAC-verifies,
+ACKs HTTP 200, and records correlation metadata on the local ledger. Query
+`GET /v1/whatsapp/events/{wamid}` with a key. `postkit serve` is plain HTTP,
+so Meta must reach it through an HTTPS reverse proxy or tunnel that preserves
+the raw body and `X-Hub-Signature-256` header.
 
 WhatsApp idempotency: a confirmed success is not resent. If the request left the machine and the response was lost, Postkit does not retry — reconcile via the delivery webhook first.
 

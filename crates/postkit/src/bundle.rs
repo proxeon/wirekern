@@ -18,8 +18,7 @@ use std::path::Path;
     feature = "meta-ads",
     feature = "facebook-pages",
     feature = "instagram",
-    feature = "linkedin",
-    feature = "whatsapp-cloud"
+    feature = "linkedin"
 ))]
 use std::sync::Arc;
 

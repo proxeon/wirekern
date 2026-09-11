@@ -24,9 +24,13 @@ use crate::types::{
 use crate::vault::{Claim, Vault};
 #[cfg(feature = "whatsapp-cloud")]
 use crate::whatsapp::{WhatsAppMessage, WhatsAppSendRequest};
+#[cfg(feature = "whatsapp-cloud")]
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+#[cfg(feature = "whatsapp-cloud")]
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// One credentialed attempt. Boxed so `with_creds` can call the same
@@ -51,6 +55,11 @@ pub struct Client {
     whatsapp_ledger: Option<Arc<dyn crate::whatsapp_ops::WhatsAppLedger>>,
     #[cfg(feature = "whatsapp-cloud")]
     whatsapp_consent: Option<Arc<dyn crate::whatsapp_ops::WhatsAppConsent>>,
+    #[cfg(feature = "whatsapp-cloud")]
+    // Pacing belongs to the Client, not an individual batch. Otherwise two
+    // callers can both believe they own the next process-local send slot.
+    whatsapp_throughput:
+        Arc<Mutex<HashMap<AccountKey, Arc<crate::whatsapp_ops::ThroughputQueue>>>>,
 }
 
 impl Client {
@@ -66,6 +75,8 @@ impl Client {
             whatsapp_ledger: None,
             #[cfg(feature = "whatsapp-cloud")]
             whatsapp_consent: None,
+            #[cfg(feature = "whatsapp-cloud")]
+            whatsapp_throughput: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -288,6 +299,11 @@ impl Client {
         // would be blocked behind an abandoned idempotency key.
         let sender = self.whatsapp_sender(&key.site, need)?;
         let attempt = async {
+            // Every Cloud API message, including a one-off send, shares this
+            // sender's local pacing queue. A batch is only a loop over this
+            // operation, so its second item waits instead of being rejected
+            // with a synthetic local rate-limit error.
+            self.wait_for_whatsapp_slot(key, deadline).await?;
             let creds = self.vault.get(key)?;
             sender.send_whatsapp(&app, &creds, &request, deadline).await
         }
@@ -411,6 +427,9 @@ impl Client {
         &self,
         record: crate::whatsapp_ops::ConsentRecord,
     ) -> Result<(), Error> {
+        // This is an operator-owned audit signal, not a surrogate for Meta's
+        // consent/window decision. `AllowWhatsAppSendsPolicy` stays explicit
+        // so incomplete local callback history cannot become a false deny.
         match &self.whatsapp_consent {
             Some(store) => store.put(&record),
             None => Err(Error::InvalidQuery {
@@ -430,6 +449,22 @@ impl Client {
             None => Err(Error::InvalidQuery {
                 site: Site::new("whatsapp_cloud"),
                 reason: "whatsapp_consent_disabled".into(),
+            }),
+        }
+    }
+
+    /// Remove local delivery records older than `before_unix`.
+    ///
+    /// This deliberately affects the delivery ledger only. Consent records
+    /// can have a separate legal-retention basis, so expiring message history
+    /// must never silently erase an explicit opt-out.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn purge_whatsapp_ledger_before(&self, before_unix: u64) -> Result<usize, Error> {
+        match &self.whatsapp_ledger {
+            Some(ledger) => ledger.purge_before(before_unix),
+            None => Err(Error::InvalidQuery {
+                site: Site::new("whatsapp_cloud"),
+                reason: "whatsapp_ledger_disabled".into(),
             }),
         }
     }
@@ -794,6 +829,8 @@ impl Client {
     }
 
     /// Bounded fan-out, not a campaign tool. More than 10 messages is refused.
+    /// Every item uses the shared, deadline-aware pacing path from
+    /// [`Self::send_whatsapp`], never a batch-local rate-limit shortcut.
     #[cfg(feature = "whatsapp-cloud")]
     pub async fn send_whatsapp_many(
         &self,
@@ -808,23 +845,51 @@ impl Client {
                 limit: Some(10),
             });
         }
-        let queue = crate::whatsapp_ops::ThroughputQueue::default_cloud_api();
         let mut out = Vec::new();
         for request in requests {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0);
-            let wait = queue.wait_ns(now);
-            if wait > 0 {
-                return Err(Error::RateLimited {
-                    site: key.site.clone(),
-                    retry_after: Some(std::time::Duration::from_nanos(wait)),
-                });
-            }
             out.push(self.send_whatsapp(key, request, deadline).await?);
         }
         Ok(out)
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    fn whatsapp_throughput_for(
+        &self,
+        key: &AccountKey,
+    ) -> Arc<crate::whatsapp_ops::ThroughputQueue> {
+        let mut queues = self.whatsapp_throughput.lock().expect("whatsapp throughput");
+        queues
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(crate::whatsapp_ops::ThroughputQueue::default_cloud_api()))
+            .clone()
+    }
+
+    /// Wait for a process-local slot without exceeding the caller's existing
+    /// deadline. The queue returns a duration instead of sleeping itself so
+    /// this async client never blocks a Tokio worker.
+    #[cfg(feature = "whatsapp-cloud")]
+    async fn wait_for_whatsapp_slot(&self, key: &AccountKey, deadline: Deadline) -> Result<(), Error> {
+        let queue = self.whatsapp_throughput_for(key);
+        loop {
+            deadline.check(&key.site)?;
+            let now_ns = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let wait = std::time::Duration::from_nanos(queue.wait_ns(now_ns));
+            if wait.is_zero() {
+                return Ok(());
+            }
+            // Do not begin a sleep that cannot finish before the request
+            // deadline. A caller gets the normal timeout, not a misleading
+            // local RateLimited result caused by another batch item.
+            if wait >= deadline.remaining() {
+                return Err(Error::DeadlineExceeded {
+                    site: key.site.clone(),
+                });
+            }
+            tokio::time::sleep(wait).await;
+        }
     }
 
     /// Shared load + optional proactive refresh. Every network verb that

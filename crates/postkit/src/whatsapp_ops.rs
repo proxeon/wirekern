@@ -3,8 +3,8 @@
 //!
 //! This is not an inbox. The ledger answers "what happened to `wamid X`?"
 //! Meta has no GET-by-wamid; history exists only if the operator stores
-//! callbacks. Message bodies are optional on inbound rows so a status log
-//! does not become a hosted conversation product.
+//! callbacks. Inbound rows keep only correlation metadata, so a status log
+//! does not become a hosted conversation product or retain message content.
 
 use crate::error::Error;
 use crate::whatsapp::{DeliveryStatusKind, InboundMessage, InboundMessages};
@@ -87,6 +87,10 @@ pub trait WhatsAppLedger: Send + Sync {
     fn put_dead_letter(&self, reason: &str, body_sha256: &str) -> Result<(), Error>;
     fn last_inbound_at(&self, from: &str) -> Result<Option<u64>, Error>;
     fn remember_inbound_from(&self, from: &str, at: u64) -> Result<(), Error>;
+    /// Apply the operator's chosen retention cutoff to delivery state and
+    /// return the number of wamid rows removed. This never touches consent
+    /// because an opt-out can require separate storage.
+    fn purge_before(&self, before_unix: u64) -> Result<usize, Error>;
 }
 
 /// Apply one signed parse into the ledger. Duplicate inbound `wamid`s are
@@ -114,9 +118,20 @@ pub fn ingest_parsed(
             pricing_category: None,
             updated_at: now_secs(),
         });
-        // Correlation only: do not persist message bodies in the ledger.
+        // Correlation only: retain just the identifiers needed to relate an
+        // event to its conversation window. Media captions, locations,
+        // contacts, interactive titles, referrals and order data are all
+        // customer content and must never leak into the delivery ledger.
         let mut stored = message.clone();
         stored.text = None;
+        stored.media = None;
+        stored.location = None;
+        stored.contacts = None;
+        stored.interactive = None;
+        stored.reaction = None;
+        stored.referral = None;
+        stored.order = None;
+        stored.unsupported = None;
         record.inbound = Some(stored);
         record.updated_at = now_secs();
         ledger.put(&record)?;
@@ -244,7 +259,16 @@ pub trait WhatsAppConsent: Send + Sync {
 pub struct MemoryWhatsAppLedger {
     inner: Mutex<HashMap<String, WhatsAppLedgerRecord>>,
     from: Mutex<HashMap<String, u64>>,
-    dlq: Mutex<Vec<(String, String)>>,
+    dlq: Mutex<Vec<MemoryDeadLetter>>,
+}
+
+/// Private in-memory equivalent of the file dead-letter audit record. Keep a
+/// timestamp here too so retention behaves the same for embedded callers.
+#[derive(Clone)]
+struct MemoryDeadLetter {
+    reason: String,
+    body_sha256: String,
+    at: u64,
 }
 
 impl MemoryWhatsAppLedger {
@@ -253,7 +277,12 @@ impl MemoryWhatsAppLedger {
     }
 
     pub fn dead_letters(&self) -> Vec<(String, String)> {
-        self.dlq.lock().expect("ledger").clone()
+        self.dlq
+            .lock()
+            .expect("ledger")
+            .iter()
+            .map(|entry| (entry.reason.clone(), entry.body_sha256.clone()))
+            .collect()
     }
 }
 
@@ -271,10 +300,11 @@ impl WhatsAppLedger for MemoryWhatsAppLedger {
     }
 
     fn put_dead_letter(&self, reason: &str, body_sha256: &str) -> Result<(), Error> {
-        self.dlq
-            .lock()
-            .expect("ledger")
-            .push((reason.into(), body_sha256.into()));
+        self.dlq.lock().expect("ledger").push(MemoryDeadLetter {
+            reason: reason.into(),
+            body_sha256: body_sha256.into(),
+            at: now_secs(),
+        });
         Ok(())
     }
 
@@ -289,6 +319,26 @@ impl WhatsAppLedger for MemoryWhatsAppLedger {
             *entry = at;
         }
         Ok(())
+    }
+
+    fn purge_before(&self, before_unix: u64) -> Result<usize, Error> {
+        let mut removed = 0;
+        self.inner.lock().expect("ledger").retain(|_, record| {
+            let keep = record.updated_at >= before_unix;
+            removed += usize::from(!keep);
+            keep
+        });
+        // The window clock is delivery metadata too; retaining a stale clock
+        // would incorrectly report an open customer-service window.
+        self.from
+            .lock()
+            .expect("ledger")
+            .retain(|_, at| *at >= before_unix);
+        self.dlq
+            .lock()
+            .expect("ledger")
+            .retain(|entry| entry.at >= before_unix);
+        Ok(removed)
     }
 }
 
@@ -375,6 +425,23 @@ impl FileWhatsAppLedger {
         }
         Ok(self.root.join("ledger").join(format!("{wamid}.json")))
     }
+
+    /// Phone numbers are necessary inside the record for the 24-hour window,
+    /// but they must not become discoverable just by listing a directory.
+    fn inbound_path(&self, from: &str) -> Result<PathBuf, Error> {
+        valid_wa_id(from)?;
+        Ok(self
+            .root
+            .join("inbound")
+            .join(format!("{}.json", sha256_hex(from.as_bytes()))))
+    }
+
+    // Read pre-hardening records once so upgrading does not falsely close a
+    // valid service window. New writes always use the hashed path above.
+    fn legacy_inbound_path(&self, from: &str) -> Result<PathBuf, Error> {
+        valid_wa_id(from)?;
+        Ok(self.root.join("inbound").join(format!("{from}.json")))
+    }
 }
 
 #[cfg(feature = "vault-file")]
@@ -412,25 +479,16 @@ impl WhatsAppLedger for FileWhatsAppLedger {
     }
 
     fn last_inbound_at(&self, from: &str) -> Result<Option<u64>, Error> {
-        if from.is_empty() || from.contains('/') {
-            return Err(Error::InvalidName(from.into()));
-        }
-        let path = self.root.join("inbound").join(format!("{from}.json"));
-        match fs::read(&path) {
-            Ok(bytes) => {
-                let v: serde_json::Value = serde_json::from_slice(&bytes)?;
-                Ok(v.get("at").and_then(|x| x.as_u64()))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
+        let path = self.inbound_path(from)?;
+        match read_timestamp(&path) {
+            Ok(Some(at)) => Ok(Some(at)),
+            Ok(None) => read_timestamp(&self.legacy_inbound_path(from)?),
+            Err(error) => Err(error),
         }
     }
 
     fn remember_inbound_from(&self, from: &str, at: u64) -> Result<(), Error> {
-        if from.is_empty() || from.contains('/') {
-            return Err(Error::InvalidName(from.into()));
-        }
-        let path = self.root.join("inbound").join(format!("{from}.json"));
+        let path = self.inbound_path(from)?;
         let prev = self.last_inbound_at(from)?.unwrap_or(0);
         if at <= prev {
             return Ok(());
@@ -438,19 +496,66 @@ impl WhatsAppLedger for FileWhatsAppLedger {
         write_private(&path, &serde_json::to_vec(&serde_json::json!({ "at": at }))?)?;
         Ok(())
     }
+
+    fn purge_before(&self, before_unix: u64) -> Result<usize, Error> {
+        let ledger = purge_json_before(&self.root.join("ledger"), "updated_at", before_unix)?;
+        // The clock and dead-letter audit are storage sidecars, not delivery
+        // rows, so do not make the public count depend on file layout.
+        let _ = purge_json_before(&self.root.join("inbound"), "at", before_unix)?;
+        let _ = purge_json_before(&self.root.join("dlq"), "at", before_unix)?;
+        Ok(ledger)
+    }
 }
 
 #[cfg(feature = "vault-file")]
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    fs::write(path, bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(path)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(path, perms)?;
+    // `atomic_write` creates its temporary file with mode 0600 and renames
+    // it into place. Avoid fs::write + chmod, which briefly exposed PII under
+    // the process umask and let readers observe a partially written record.
+    crate::vault_file::atomic_write(path, bytes)
+}
+
+#[cfg(feature = "vault-file")]
+fn valid_wa_id(wa_id: &str) -> Result<(), Error> {
+    if wa_id.is_empty() || wa_id.contains('/') || wa_id.contains('\\') || wa_id.contains('\0') {
+        return Err(Error::InvalidName(wa_id.into()));
     }
     Ok(())
+}
+
+#[cfg(feature = "vault-file")]
+fn read_timestamp(path: &Path) -> Result<Option<u64>, Error> {
+    match fs::read(path) {
+        Ok(bytes) => {
+            let v: serde_json::Value = serde_json::from_slice(&bytes)?;
+            Ok(v.get("at").and_then(|x| x.as_u64()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(feature = "vault-file")]
+fn purge_json_before(dir: &Path, timestamp_field: &str, before_unix: u64) -> Result<usize, Error> {
+    let mut removed = 0;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file()
+            || entry.path().extension().and_then(|ext| ext.to_str()) != Some("json")
+        {
+            continue;
+        }
+        let body: serde_json::Value = serde_json::from_slice(&fs::read(entry.path())?)?;
+        if body
+            .get(timestamp_field)
+            .and_then(|value| value.as_u64())
+            .is_some_and(|at| at < before_unix)
+        {
+            fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 #[cfg(feature = "vault-file")]
@@ -465,28 +570,44 @@ impl FileWhatsAppConsent {
         crate::vault_file::ensure_dir(&root)?;
         Ok(Self { root })
     }
+
+    fn record_path(&self, wa_id: &str) -> Result<PathBuf, Error> {
+        valid_wa_id(wa_id)?;
+        // Keep the actual WhatsApp ID in the owner-only JSON for an operator
+        // who needs to inspect consent, but keep it out of directory names.
+        Ok(self
+            .root
+            .join(format!("{}.json", sha256_hex(wa_id.as_bytes()))))
+    }
+
+    fn legacy_record_path(&self, wa_id: &str) -> Result<PathBuf, Error> {
+        valid_wa_id(wa_id)?;
+        Ok(self.root.join(format!("{wa_id}.json")))
+    }
 }
 
 #[cfg(feature = "vault-file")]
 impl WhatsAppConsent for FileWhatsAppConsent {
     fn get(&self, wa_id: &str) -> Result<Option<ConsentRecord>, Error> {
-        if wa_id.is_empty() || wa_id.contains('/') {
-            return Err(Error::InvalidName(wa_id.into()));
-        }
-        let path = self.root.join(format!("{wa_id}.json"));
+        let path = self.record_path(wa_id)?;
         match fs::read(&path) {
             Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            // A one-time fallback preserves existing consent records after
+            // the privacy hardening migration; new writes use only hashes.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match fs::read(self.legacy_record_path(wa_id)?) {
+                    Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(e) => Err(e.into()),
+                }
+            }
             Err(e) => Err(e.into()),
         }
     }
 
     fn put(&self, record: &ConsentRecord) -> Result<(), Error> {
-        if record.wa_id.is_empty() || record.wa_id.contains('/') {
-            return Err(Error::InvalidName(record.wa_id.clone()));
-        }
         write_private(
-            &self.root.join(format!("{}.json", record.wa_id)),
+            &self.record_path(&record.wa_id)?,
             &serde_json::to_vec(record)?,
         )?;
         Ok(())
@@ -497,7 +618,10 @@ impl WhatsAppConsent for FileWhatsAppConsent {
 mod tests {
     use super::*;
     use crate::types::Site;
-    use crate::whatsapp::{DeliveryStatus, InboundMessage};
+    use crate::whatsapp::{
+        DeliveryStatus, InboundContact, InboundInteractive, InboundLocation, InboundMedia,
+        InboundMessage, InboundOrder, InboundReaction, InboundReferral, InboundUnsupported,
+    };
 
     fn inbound(id: &str, from: &str) -> InboundMessage {
         InboundMessage {
@@ -643,6 +767,144 @@ mod tests {
         );
         assert!(customer_window_open(now_secs() - 60, now_secs()));
         assert!(!customer_window_open(now_secs() - CUSTOMER_WINDOW_SECS, now_secs()));
+    }
+
+    #[test]
+    fn ledger_keeps_correlation_but_drops_inbound_customer_content() {
+        let ledger = MemoryWhatsAppLedger::new();
+        let parsed = InboundMessages {
+            site: Site::new("whatsapp_cloud"),
+            messages: vec![InboundMessage {
+                id: "wamid.private".into(),
+                from: "60123456789".into(),
+                kind: "image".into(),
+                timestamp: Some("100".into()),
+                text: Some("private body".into()),
+                context_message_id: Some("wamid.parent".into()),
+                media: Some(InboundMedia {
+                    id: "media-1".into(),
+                    mime_type: Some("image/jpeg".into()),
+                    caption: Some("private caption".into()),
+                    filename: Some("private.jpg".into()),
+                }),
+                location: Some(InboundLocation {
+                    latitude: "3.139".into(),
+                    longitude: "101.6869".into(),
+                    name: Some("private location".into()),
+                    address: Some("private address".into()),
+                }),
+                contacts: Some(vec![InboundContact {
+                    formatted_name: Some("private contact".into()),
+                }]),
+                interactive: Some(InboundInteractive {
+                    kind: "button_reply".into(),
+                    id: Some("yes".into()),
+                    title: Some("private title".into()),
+                }),
+                reaction: Some(InboundReaction {
+                    emoji: Some("👍".into()),
+                    message_id: Some("wamid.parent".into()),
+                }),
+                referral: Some(InboundReferral {
+                    source_type: Some("ad".into()),
+                    source_id: Some("private-source".into()),
+                    source_url: Some("https://example.test/private".into()),
+                }),
+                order: Some(InboundOrder {
+                    catalog_id: Some("private-catalog".into()),
+                }),
+                unsupported: Some(InboundUnsupported {
+                    code: Some("131051".into()),
+                    title: Some("private error".into()),
+                }),
+            }],
+            statuses: vec![],
+        };
+
+        ingest_parsed(&ledger, &parsed).unwrap();
+        let stored = ledger
+            .get("wamid.private")
+            .unwrap()
+            .unwrap()
+            .inbound
+            .unwrap();
+        assert_eq!(stored.from, "60123456789");
+        assert_eq!(stored.context_message_id.as_deref(), Some("wamid.parent"));
+        assert!(stored.text.is_none());
+        assert!(stored.media.is_none());
+        assert!(stored.location.is_none());
+        assert!(stored.contacts.is_none());
+        assert!(stored.interactive.is_none());
+        assert!(stored.reaction.is_none());
+        assert!(stored.referral.is_none());
+        assert!(stored.order.is_none());
+        assert!(stored.unsupported.is_none());
+    }
+
+    #[test]
+    fn retention_removes_old_delivery_state_but_not_newer_rows() {
+        let ledger = MemoryWhatsAppLedger::new();
+        ledger
+            .put(&WhatsAppLedgerRecord {
+                wamid: "wamid.old".into(),
+                inbound: None,
+                status: Some(DeliveryStatusKind::Delivered),
+                status_timestamp: None,
+                conversation_id: None,
+                pricing_category: None,
+                updated_at: 10,
+            })
+            .unwrap();
+        ledger
+            .put(&WhatsAppLedgerRecord {
+                wamid: "wamid.new".into(),
+                inbound: None,
+                status: Some(DeliveryStatusKind::Delivered),
+                status_timestamp: None,
+                conversation_id: None,
+                pricing_category: None,
+                updated_at: 20,
+            })
+            .unwrap();
+        ledger.remember_inbound_from("6011", 10).unwrap();
+        ledger.remember_inbound_from("6012", 20).unwrap();
+
+        assert_eq!(ledger.purge_before(20).unwrap(), 1);
+        assert!(ledger.get("wamid.old").unwrap().is_none());
+        assert!(ledger.get("wamid.new").unwrap().is_some());
+        assert!(ledger.last_inbound_at("6011").unwrap().is_none());
+        assert_eq!(ledger.last_inbound_at("6012").unwrap(), Some(20));
+    }
+
+    #[cfg(feature = "vault-file")]
+    #[test]
+    fn file_ledger_hashes_phone_filenames_and_purges_expired_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let ledger = FileWhatsAppLedger::new(temp.path()).unwrap();
+        ledger.remember_inbound_from("60123456789", 10).unwrap();
+        ledger
+            .put(&WhatsAppLedgerRecord {
+                wamid: "wamid.old".into(),
+                inbound: None,
+                status: Some(DeliveryStatusKind::Delivered),
+                status_timestamp: None,
+                conversation_id: None,
+                pricing_category: None,
+                updated_at: 10,
+            })
+            .unwrap();
+
+        let inbound_names = std::fs::read_dir(temp.path().join("whatsapp/inbound"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(inbound_names.len(), 1);
+        assert!(!inbound_names[0].contains("60123456789"));
+        assert_eq!(ledger.last_inbound_at("60123456789").unwrap(), Some(10));
+
+        assert_eq!(ledger.purge_before(20).unwrap(), 1);
+        assert!(ledger.get("wamid.old").unwrap().is_none());
+        assert!(ledger.last_inbound_at("60123456789").unwrap().is_none());
     }
 
     #[test]

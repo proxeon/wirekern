@@ -32,7 +32,9 @@ instagram = ["client", "oauth", "dep:tokio"]
 linkedin = ["client", "oauth"]
 # WhatsApp Cloud uses a static bearer token rather than an OAuth redirect.
 # HMAC-SHA256 verifies the raw inbound webhook body before it is parsed.
-whatsapp-cloud = ["client", "dep:hmac", "dep:sha2"]
+# Outbound Cloud API pacing sleeps asynchronously and must never block an
+# embedding application's executor thread.
+whatsapp-cloud = ["client", "dep:hmac", "dep:sha2", "dep:tokio"]
 draft = ["client", "dep:tokio", "dep:sha2"]
 
 [dependencies]

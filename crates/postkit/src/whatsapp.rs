@@ -612,7 +612,7 @@ impl WhatsAppMessage {
                         && section
                             .title
                             .as_ref()
-                            .is_none_or(|t| t.trim().is_empty() || t.chars().count() > 24)
+                            .map_or(true, |t| t.trim().is_empty() || t.chars().count() > 24)
                     {
                         return Err("list_section_title_invalid".into());
                     }
@@ -1019,13 +1019,15 @@ impl WhatsAppTemplateDraft {
                     example_handle,
                 } => match format.as_str() {
                     "TEXT" => {
-                        if text.as_ref().is_none_or(|t| t.is_empty() || t.chars().count() > 60)
+                        if text
+                            .as_ref()
+                            .map_or(true, |t| t.is_empty() || t.chars().count() > 60)
                         {
                             return Err("template_header_text_invalid".into());
                         }
                     }
                     "IMAGE" | "VIDEO" | "DOCUMENT" => {
-                        if example_handle.as_ref().is_none_or(|h| h.is_empty()) {
+                        if example_handle.as_ref().map_or(true, |h| h.is_empty()) {
                             return Err("template_header_handle_required".into());
                         }
                     }

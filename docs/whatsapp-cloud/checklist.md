@@ -2,8 +2,8 @@
 
 Tick when shipped. Shipped v1 items are marked done so this file is the full
 board, not only gaps. Product rule: this connector is a **controlled
-responder** (typed send + signed parse). Hosted callback + local wamid
-ledger are transport/correlation, not a conversation inbox or campaign tool.
+responder** (typed send + signed parse). The local callback + wamid ledger are
+transport/correlation, not a conversation inbox or campaign tool.
 
 Last aligned with Meta Cloud API docs and
 [009-whatsapp-cloud-connector-online-references.md](../../plans/002-references/009-whatsapp-cloud-connector-online-references.md)
@@ -89,17 +89,19 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 
 ## Receive / operate (not send verbs)
 
-### Webhook transport (BYO vs Postkit-hosted — decide before building)
+### Webhook transport
 
-- [x] HTTPS listener
+- [ ] Public HTTPS termination/deployment runbook (Postkit serves loopback HTTP; use a reverse proxy or tunnel)
 - [x] GET webhook challenge (hub.verify_token)
 - [x] HTTP 200 ACK to Meta
 - [x] Subscribe WABA to `messages` via API (dashboard works today)
 - [x] Dedup / reorder / replay protection
-- [x] Durable message + status store (“what happened to `wamid X`?”)
+- [x] Durable minimal message + status store (“what happened to `wamid X`?”)
 - [x] Final-state reduction (sent → delivered → read / failed)
-- [x] Retry / dead-letter for parse failures
-- [x] Rate / throughput queue (Meta default ~80 msg/s per number)
+- [x] Hash-only dead-letter audit record for signed parse failures
+- [ ] Replayable dead-letter workflow (raw bodies are intentionally not retained)
+- [x] Process-local pacing (default ~80 msg/s per configured account; batches wait within deadline)
+- [x] Delivery-ledger retention purge (caller selects the cutoff; consent is separate)
 
 Meta has **no** GET-by-`wamid`. History only exists if something stores webhooks.
 
@@ -110,16 +112,19 @@ Meta has **no** GET-by-`wamid`. History only exists if something stores webhooks
 - [x] Quality rating / messaging-limit reads
 - [x] System User list (`GET /{business-id}/system_users`; create stays Business Manager)
 - [x] Embedded Signup start URL (no Facebook Login dance)
-- [x] Multi-sender: more than one Phone Number ID per home
+- [x] Multiple Phone Number IDs accepted for a shared webhook
+- [ ] Selectable outbound sender (current sends use the primary Phone Number ID)
 
-### Compliance and billing (Meta enforces window/pricing; we do not store policy state)
+### Compliance and billing (operator signals; Meta still enforces delivery/window/pricing)
 
 - [x] Opt-in / opt-out records
 - [x] 24h customer-service window clock
-- [x] Template category / pacing awareness
+- [ ] Consent/window enforcement policy (records are deliberately query-only)
+- [x] Template category / pacing visibility
 - [x] Conversation / pricing visibility from status webhooks
 - [x] Usage metrics / template-quality reporting (phone health + template quality reads; no billing dashboard)
-- [x] Bulk / campaign / marketing automation (`send_whatsapp_many` ≤ 10, rate-capped; no calendar/audience campaigns)
+- [x] Bounded library fan-out (`send_whatsapp_many` ≤ 10, process-paced; no calendar/audience campaigns)
+- [ ] CLI parity for the typed library/HTTP operations
 
 ## Suggested kernel order
 

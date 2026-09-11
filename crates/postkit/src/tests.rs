@@ -1261,6 +1261,43 @@ async fn whatsapp_allowed_send_replays_confirmed_idempotency_outcome() {
     assert_eq!(publisher.whatsapp_sends.load(Ordering::SeqCst), 1);
 }
 
+/// A bounded fan-out is still made of normal private sends. Regression for a
+/// batch-local limiter that accepted item one then returned RateLimited for
+/// item two instead of waiting for the next Cloud API pacing slot.
+#[cfg(feature = "whatsapp-cloud")]
+#[tokio::test]
+async fn whatsapp_many_paces_every_item_and_returns_every_outcome() {
+    let publisher = Arc::new(MockPub::whatsapp("whatsapp_cloud"));
+    let mut registry = Registry::new();
+    register_mock(&mut registry, publisher.clone());
+    let vault = Arc::new(MemoryVault::new());
+    let client = Client::new(registry, vault.clone(), Arc::new(MemoryAppStore::new()))
+        .with_whatsapp_policy(Arc::new(AllowWhatsAppSendsPolicy));
+    let key = AccountKey::new("whatsapp_cloud", "default");
+    vault
+        .put(
+            &key,
+            &AccountCreds::BotToken {
+                token: "system-user-token".into(),
+            },
+        )
+        .unwrap();
+
+    let outcomes = client
+        .send_whatsapp_many(
+            &key,
+            vec![whatsapp_request("batch-1"), whatsapp_request("batch-2")],
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(outcomes[0].id.as_deref(), Some("wamid-0"));
+    assert_eq!(outcomes[1].id.as_deref(), Some("wamid-1"));
+    assert_eq!(publisher.whatsapp_sends.load(Ordering::SeqCst), 2);
+}
+
 #[cfg(feature = "whatsapp-cloud")]
 #[tokio::test]
 async fn whatsapp_missing_vault_account_releases_its_idempotency_claim() {
