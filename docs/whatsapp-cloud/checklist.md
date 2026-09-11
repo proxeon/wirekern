@@ -12,7 +12,8 @@ Last aligned with Meta Cloud API docs and
 ## Shipped
 
 - [x] Static System User token; `auth` verifies `GET /{phone-number-id}` before vault write
-- [x] One configured Phone Number ID (`whatsapp configure` / env merge)
+- [x] Primary configured Phone Number ID (`whatsapp configure` / env merge)
+- [x] Configured sender aliases with explicit outbound selection
 - [x] Optional app secret for webhook HMAC (redacted in `apps show`)
 - [x] Text **reply** (`context.message_id` = inbound `wamid`)
 - [x] Approved **body-text** template (name, language, ordered body params ≤ 10)
@@ -100,20 +101,21 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 - [x] Final-state reduction (sent → delivered → read / failed)
 - [x] Hash-only dead-letter audit record for signed parse failures
 - [ ] Replayable dead-letter workflow (raw bodies are intentionally not retained)
-- [x] Process-local pacing (default ~80 msg/s per configured account; batches wait within deadline)
+- [x] Process-local pacing (default ~80 msg/s per configured phone; batches wait within deadline)
 - [x] Delivery-ledger retention purge (caller selects the cutoff; consent is separate)
+- [x] Opt-in read-only live Graph contract suite (ignored unless explicitly invoked)
 
 Meta has **no** GET-by-`wamid`. History only exists if something stores webhooks.
 
 ### Business management
 
-- [x] List WABAs / phone numbers
+- [x] Paginated WABA / phone / system-user / template / Flow reads (opaque `after` cursor)
 - [x] Phone registration / two-step PIN (Cloud API register; on-prem backup migrate not typed)
 - [x] Quality rating / messaging-limit reads
 - [x] System User list (`GET /{business-id}/system_users`; create stays Business Manager)
 - [x] Embedded Signup start URL (no Facebook Login dance)
 - [x] Multiple Phone Number IDs accepted for a shared webhook
-- [ ] Selectable outbound sender (current sends use the primary Phone Number ID)
+- [x] Selectable outbound sender (configured alias; per-phone pacing/idempotency)
 
 ### Compliance and billing (operator signals; Meta still enforces delivery/window/pricing)
 
@@ -124,7 +126,7 @@ Meta has **no** GET-by-`wamid`. History only exists if something stores webhooks
 - [x] Conversation / pricing visibility from status webhooks
 - [x] Usage metrics / template-quality reporting (phone health + template quality reads; no billing dashboard)
 - [x] Bounded library fan-out (`send_whatsapp_many` ≤ 10, process-paced; no calendar/audience campaigns)
-- [ ] CLI parity for the typed library/HTTP operations
+- [x] CLI parity for typed send, media, template, Flow, account, consent, and ledger operations
 
 ## Suggested kernel order
 

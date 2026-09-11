@@ -78,11 +78,11 @@ pub use draft::{
     CONFIGURED_PAUSED, MIN_DAILY_BUDGET,
 };
 pub use error::{Error, WireError};
+pub use facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 #[cfg(feature = "whatsapp-cloud")]
 pub use facets::{
     WhatsAppAccount, WhatsAppAssets, WhatsAppFlows, WhatsAppSender, WhatsAppTemplates,
 };
-pub use facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 pub use insights::{
     AdAccount, AdAccountsReply, AttributionWindow, Breakdown, DateRange, InsightRow, InsightsLevel,
     InsightsQuery, InsightsReply, Metric, MAX_RANGE_DAYS,
@@ -101,16 +101,17 @@ pub use types::{
 pub use vault::{MemoryVault, Vault};
 #[cfg(feature = "whatsapp-cloud")]
 pub use whatsapp::{
-    DeliveryConversation, DeliveryError, DeliveryPricing, DeliveryStatus, DeliveryStatusKind,
-    InboundContact, InboundInteractive, InboundLocation, InboundMedia, InboundMessage,
-    InboundMessages, InboundOrder, InboundReaction, InboundReferral, InboundUnsupported,
-    WebhookParseOptions, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppMessage,
-    WhatsAppSendRequest, WhatsAppUploadedMedia, MAX_REPLY_TEXT, MediaRef, NamedBodyParameter,
-    LimitedTimeOffer, ParameterFormat, RecipientType, TemplateButton, TemplateCreateButton,
-    TemplateCreateComponent, TemplateHeader, WhatsAppTemplateDraft, WhatsAppTemplateList,
-    WhatsAppFlowDraft, WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppTemplateQuery,
-    WhatsAppTemplateRecord, ProductSection, WhatsAppPhoneNumber, WhatsAppSystemUser,
-    WhatsAppWaba, embedded_signup_url, validate_two_step_pin,
+    embedded_signup_url, validate_two_step_pin, DeliveryConversation, DeliveryError,
+    DeliveryPricing, DeliveryStatus, DeliveryStatusKind, InboundContact, InboundInteractive,
+    InboundLocation, InboundMedia, InboundMessage, InboundMessages, InboundOrder, InboundReaction,
+    InboundReferral, InboundUnsupported, LimitedTimeOffer, MediaRef, NamedBodyParameter,
+    ParameterFormat, ProductSection, RecipientType, TemplateButton, TemplateCreateButton,
+    TemplateCreateComponent, TemplateHeader, WebhookParseOptions, WhatsAppFlowDraft,
+    WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppMessage,
+    WhatsAppOutboundSender, WhatsAppPageQuery, WhatsAppPhoneNumber, WhatsAppPhoneNumberList,
+    WhatsAppSendRequest, WhatsAppSystemUser, WhatsAppSystemUserList, WhatsAppTemplateDraft,
+    WhatsAppTemplateList, WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
+    WhatsAppWaba, WhatsAppWabaList, MAX_REPLY_TEXT,
 };
 #[cfg(feature = "whatsapp-cloud")]
 pub use whatsapp_ops::{

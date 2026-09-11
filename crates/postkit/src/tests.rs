@@ -62,6 +62,8 @@ struct MockPub {
     media_reads: AtomicUsize,
     #[cfg(feature = "whatsapp-cloud")]
     whatsapp_sends: AtomicUsize,
+    #[cfg(feature = "whatsapp-cloud")]
+    whatsapp_phone_ids: std::sync::Mutex<Vec<String>>,
     review_status_pending_reads: usize,
 }
 
@@ -90,6 +92,8 @@ impl MockPub {
             media_reads: AtomicUsize::new(0),
             #[cfg(feature = "whatsapp-cloud")]
             whatsapp_sends: AtomicUsize::new(0),
+            #[cfg(feature = "whatsapp-cloud")]
+            whatsapp_phone_ids: std::sync::Mutex::new(Vec::new()),
             review_status_pending_reads: 0,
         }
     }
@@ -540,11 +544,20 @@ impl MediaReader for MockPub {
 impl WhatsAppSender for MockPub {
     async fn send_whatsapp(
         &self,
-        _app: &AppConfig,
+        app: &AppConfig,
         _creds: &AccountCreds,
         _request: &WhatsAppSendRequest,
         _deadline: Deadline,
     ) -> Result<Outcome, Error> {
+        // Capture the selected config in the mock so sender-routing tests
+        // prove the Client changes only the in-memory phone ID it passes to
+        // the connector, never the saved primary configuration.
+        if let Some(phone) = app.extra.get("phone_number_id").and_then(|v| v.as_str()) {
+            self.whatsapp_phone_ids
+                .lock()
+                .expect("phone ids")
+                .push(phone.to_string());
+        }
         let index = self.whatsapp_sends.fetch_add(1, Ordering::SeqCst);
         Ok(Outcome {
             site: self.site.clone(),
@@ -1261,6 +1274,74 @@ async fn whatsapp_allowed_send_replays_confirmed_idempotency_outcome() {
     assert_eq!(publisher.whatsapp_sends.load(Ordering::SeqCst), 1);
 }
 
+/// Selecting a configured sender changes both the connector's phone ID and
+/// the local idempotency namespace. The same human key can therefore be used
+/// once per business number without a wrong-sender replay.
+#[cfg(feature = "whatsapp-cloud")]
+#[tokio::test]
+async fn whatsapp_sender_alias_routes_and_scopes_idempotency() {
+    let publisher = Arc::new(MockPub::whatsapp("whatsapp_cloud"));
+    let mut registry = Registry::new();
+    register_mock(&mut registry, publisher.clone());
+    let vault = Arc::new(MemoryVault::new());
+    let apps = Arc::new(MemoryAppStore::new());
+    apps.put(&AppConfig {
+        site: Site::new("whatsapp_cloud"),
+        oauth: None,
+        extra: serde_json::json!({
+            "phone_number_id": "111111111",
+            "senders": [{ "alias": "marketing", "phone_number_id": "222222222" }],
+        }),
+    })
+    .unwrap();
+    let client = Client::new(registry, vault.clone(), apps)
+        .with_whatsapp_policy(Arc::new(AllowWhatsAppSendsPolicy));
+    let key = AccountKey::new("whatsapp_cloud", "default");
+    vault
+        .put(
+            &key,
+            &AccountCreds::BotToken {
+                token: "system-user-token".into(),
+            },
+        )
+        .unwrap();
+
+    let marketing = client
+        .send_whatsapp_from(
+            &key,
+            Some("marketing"),
+            whatsapp_request("shared-key"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    let primary = client
+        .send_whatsapp(
+            &key,
+            whatsapp_request("shared-key"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    let replay = client
+        .send_whatsapp_from(
+            &key,
+            Some("marketing"),
+            whatsapp_request("shared-key"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(marketing.id, primary.id);
+    assert_eq!(marketing.id, replay.id);
+    assert_eq!(publisher.whatsapp_sends.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *publisher.whatsapp_phone_ids.lock().expect("phone ids"),
+        vec!["222222222".to_string(), "111111111".to_string()]
+    );
+}
+
 /// A bounded fan-out is still made of normal private sends. Regression for a
 /// batch-local limiter that accepted item one then returned RateLimited for
 /// item two instead of waiting for the next Cloud API pacing slot.
@@ -1375,6 +1456,106 @@ async fn ads_and_whatsapp_policies_compose() {
         matches!(denied, Error::PolicyDenied { action, reason, .. } if action == "create_paused_campaign" && reason == "test_denied")
     );
     assert_eq!(publisher.paused_creates.load(Ordering::SeqCst), 0);
+}
+
+/// Opt-in smoke contract for a deliberately configured local WhatsApp test
+/// account. It calls only read endpoints, remains ignored in normal CI, and
+/// does not become a hidden real-send test when credentials happen to exist.
+#[cfg(all(feature = "whatsapp-cloud", feature = "vault-file"))]
+#[tokio::test]
+#[ignore = "requires POSTKIT_LIVE_WHATSAPP=1 and a local configured Cloud API test account"]
+async fn live_whatsapp_cloud_reads() {
+    assert_eq!(
+        std::env::var("POSTKIT_LIVE_WHATSAPP").as_deref(),
+        Ok("1"),
+        "set POSTKIT_LIVE_WHATSAPP=1 to explicitly authorize live Graph reads"
+    );
+    let home = std::env::var_os("POSTKIT_HOME")
+        .map(std::path::PathBuf::from)
+        .expect("set POSTKIT_HOME to the local Postkit test vault");
+    let client = Client::from_home(&home, false).expect("build file-backed test client");
+    let key = AccountKey::new("whatsapp_cloud", "default");
+    let deadline = Deadline::from_secs(30);
+
+    client.whoami(&key).await.expect("phone whoami contract");
+    client
+        .list_whatsapp_templates(
+            &key,
+            crate::whatsapp::WhatsAppTemplateQuery {
+                limit: Some(1),
+                ..Default::default()
+            },
+            deadline,
+        )
+        .await
+        .expect("template page contract");
+    client
+        .list_whatsapp_flows(
+            &key,
+            crate::whatsapp::WhatsAppPageQuery {
+                limit: Some(1),
+                ..Default::default()
+            },
+            deadline,
+        )
+        .await
+        .expect("Flow page contract");
+    client
+        .list_whatsapp_wabas(
+            &key,
+            crate::whatsapp::WhatsAppPageQuery {
+                limit: Some(1),
+                ..Default::default()
+            },
+            deadline,
+        )
+        .await
+        .expect("WABA page contract");
+    client
+        .list_whatsapp_phone_numbers(
+            &key,
+            crate::whatsapp::WhatsAppPageQuery {
+                limit: Some(1),
+                ..Default::default()
+            },
+            deadline,
+        )
+        .await
+        .expect("phone page contract");
+    client
+        .whatsapp_phone_health(&key, deadline)
+        .await
+        .expect("phone health contract");
+
+    // System-user lookup is owned by the Business Portfolio, which is
+    // optional for a single-WABA config. Only call its edge when it is
+    // explicitly configured; a missing optional identifier is not a failed
+    // Cloud API contract.
+    let config = client.apps().get(&Site::new("whatsapp_cloud")).unwrap();
+    if config
+        .extra
+        .get("business_id")
+        .and_then(|value| value.as_str())
+        .is_some()
+    {
+        client
+            .list_whatsapp_system_users(
+                &key,
+                crate::whatsapp::WhatsAppPageQuery {
+                    limit: Some(1),
+                    ..Default::default()
+                },
+                deadline,
+            )
+            .await
+            .expect("system-user page contract");
+    }
+    if let Ok(media_id) = std::env::var("POSTKIT_LIVE_WHATSAPP_MEDIA_ID") {
+        client
+            .whatsapp_media_metadata(&key, &media_id, deadline)
+            .await
+            .expect("media metadata contract");
+    }
 }
 
 /// 023: while one publish under a key is in flight, a second caller with

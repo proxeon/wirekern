@@ -271,15 +271,11 @@ pub enum WhatsAppMessage {
     /// Mark an inbound `wamid` as read. Cloud API returns `{success: true}`,
     /// not a new outbound wamid. `Outcome.id` is this inbound id so the local
     /// idempotency ledger still has a stable value.
-    MarkRead {
-        message_id: String,
-    },
+    MarkRead { message_id: String },
     /// Typing indicator. Official docs always pair it with mark-as-read on
     /// the same inbound `wamid` (`status: read` + `typing_indicator`). It
     /// dismisses after 25s or the next send, whichever is first.
-    Typing {
-        message_id: String,
-    },
+    Typing { message_id: String },
 }
 
 /// Cloud API `recipient_type`. Group `to` is a Groups API id, not a phone
@@ -331,7 +327,9 @@ pub struct NamedBodyParameter {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TemplateHeader {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Image {
         #[serde(flatten)]
         media: MediaRef,
@@ -414,9 +412,10 @@ impl WhatsAppMessage {
             Self::Reaction { .. } => Capability::SendReaction,
             Self::MarkRead { .. } => Capability::MarkRead,
             Self::Typing { .. } => Capability::SendTyping,
-            Self::Catalog { .. } | Self::Product { .. } | Self::ProductList { .. } | Self::OrderStatus { .. } => {
-                Capability::SendCatalog
-            }
+            Self::Catalog { .. }
+            | Self::Product { .. }
+            | Self::ProductList { .. }
+            | Self::OrderStatus { .. } => Capability::SendCatalog,
             Self::Flow { .. } => Capability::SendFlow,
         }
     }
@@ -824,8 +823,8 @@ impl WhatsAppMessage {
                     return Err("order_reference_invalid".into());
                 }
                 match status.as_str() {
-                    "pending" | "processing" | "partially_shipped" | "shipped"
-                    | "completed" | "canceled" => {}
+                    "pending" | "processing" | "partially_shipped" | "shipped" | "completed"
+                    | "canceled" => {}
                     _ => return Err("order_status_invalid".into()),
                 }
                 if description
@@ -928,11 +927,82 @@ pub struct WhatsAppTemplateQuery {
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// Opaque Graph cursor from the preceding page. It is deliberately not
+    /// interpreted or reconstructed by Postkit: Meta owns its format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
+impl WhatsAppTemplateQuery {
+    pub fn validate_page(&self) -> Result<(), String> {
+        WhatsAppPageQuery {
+            limit: self.limit,
+            after: self.after.clone(),
+        }
+        .validate()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WhatsAppTemplateList {
     pub templates: Vec<WhatsAppTemplateRecord>,
+    /// Cursor to pass back as `query.after`; absent when Meta has no next page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
+/// Cursor and bounded page size shared by Flow, WABA, phone, and system-user
+/// reads. A cursor is untrusted opaque data returned by Meta, so Postkit only
+/// bounds it before returning it to the corresponding Graph edge.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppPageQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
+/// One configured outbound Cloud API phone. The alias is a local operator
+/// choice, not a Meta identifier; sends select this alias instead of allowing
+/// an arbitrary phone-number ID to be slipped into a request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppOutboundSender {
+    pub alias: String,
+    pub phone_number_id: String,
+}
+
+impl WhatsAppOutboundSender {
+    pub fn validate(&self) -> Result<(), String> {
+        if !valid_name(&self.alias) || self.alias == "primary" {
+            return Err("whatsapp_sender_alias_invalid".into());
+        }
+        if self.phone_number_id.is_empty()
+            || self.phone_number_id.len() > 32
+            || !self
+                .phone_number_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+        {
+            return Err("whatsapp_sender_phone_number_id_invalid".into());
+        }
+        Ok(())
+    }
+}
+
+impl WhatsAppPageQuery {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.limit.is_some_and(|value| value == 0 || value > 100) {
+            return Err("whatsapp_page_limit_invalid".into());
+        }
+        if self
+            .after
+            .as_deref()
+            .is_some_and(|cursor| cursor.is_empty() || cursor.len() > 1_024)
+        {
+            return Err("whatsapp_page_after_invalid".into());
+        }
+        Ok(())
+    }
 }
 
 /// Typed template create/edit. Create auto-submits for Meta review — there
@@ -1084,6 +1154,8 @@ pub struct WhatsAppFlowRecord {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WhatsAppFlowList {
     pub flows: Vec<WhatsAppFlowRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 /// Create a Flow. `flow_json` must be a JSON object with a `version` field —
@@ -1103,8 +1175,8 @@ impl WhatsAppFlowDraft {
         if self.categories.is_empty() {
             return Err("flow_categories_empty".into());
         }
-        let parsed: serde_json::Value = serde_json::from_str(&self.flow_json)
-            .map_err(|_| "flow_json_invalid".to_string())?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&self.flow_json).map_err(|_| "flow_json_invalid".to_string())?;
         if !parsed.is_object() || parsed.get("version").is_none() {
             return Err("flow_json_missing_version".into());
         }
@@ -1119,6 +1191,15 @@ pub struct WhatsAppWaba {
     pub name: Option<String>,
 }
 
+/// A WABA page, rather than a bare vector, prevents a successful but partial
+/// Graph read from looking complete to CLI or embedding callers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppWabaList {
+    pub wabas: Vec<WhatsAppWaba>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WhatsAppSystemUser {
     pub id: String,
@@ -1126,6 +1207,13 @@ pub struct WhatsAppSystemUser {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppSystemUserList {
+    pub users: Vec<WhatsAppSystemUser>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1141,6 +1229,13 @@ pub struct WhatsAppPhoneNumber {
     pub messaging_limit_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_verification_status: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppPhoneNumberList {
+    pub phone_numbers: Vec<WhatsAppPhoneNumber>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 fn percent_encode(value: &str) -> String {
@@ -1521,7 +1616,9 @@ fn validate_destination(value: &str, recipient_type: RecipientType) -> Result<()
 fn validate_catalog_id(value: &str, err: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 256
-        || value.chars().any(|c| c.is_whitespace() || c == '/' || c == '\\')
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || c == '/' || c == '\\')
     {
         return Err(err.into());
     }
@@ -1558,7 +1655,9 @@ fn validate_product_sections(sections: &[ProductSection]) -> Result<(), String> 
 fn validate_group_id(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 256
-        || value.chars().any(|c| c.is_whitespace() || c == '/' || c == '\\')
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || c == '/' || c == '\\')
     {
         return Err("group_id_invalid".into());
     }
@@ -2173,12 +2272,7 @@ mod tests {
             validate_two_step_pin("abc").unwrap_err(),
             "whatsapp_pin_invalid"
         );
-        let signup = embedded_signup_url(
-            "123",
-            "cfg_1",
-            "https://example.com/cb?x=1",
-        )
-        .unwrap();
+        let signup = embedded_signup_url("123", "cfg_1", "https://example.com/cb?x=1").unwrap();
         assert!(signup.contains("redirect_uri=https%3A%2F%2Fexample.com%2Fcb%3Fx%3D1"));
         assert_eq!(
             embedded_signup_url("123", "cfg", "http://insecure.example/x").unwrap_err(),
@@ -2191,5 +2285,23 @@ mod tests {
         }
         .validate()
         .is_ok());
+        assert_eq!(
+            WhatsAppPageQuery {
+                limit: Some(0),
+                after: None,
+            }
+            .validate()
+            .unwrap_err(),
+            "whatsapp_page_limit_invalid"
+        );
+        assert_eq!(
+            WhatsAppOutboundSender {
+                alias: "primary".into(),
+                phone_number_id: "123456789".into(),
+            }
+            .validate()
+            .unwrap_err(),
+            "whatsapp_sender_alias_invalid"
+        );
     }
 }

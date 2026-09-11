@@ -21,9 +21,9 @@ use crate::types::{AccountCreds, AppConfig, Deadline};
 #[cfg(feature = "whatsapp-cloud")]
 use crate::whatsapp::{
     WhatsAppFlowDraft, WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppMediaMeta,
-    WhatsAppPhoneNumber, WhatsAppSystemUser, WhatsAppWaba,
-    WhatsAppMediaUpload, WhatsAppSendRequest, WhatsAppTemplateDraft, WhatsAppTemplateList,
-    WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
+    WhatsAppMediaUpload, WhatsAppPageQuery, WhatsAppPhoneNumber, WhatsAppPhoneNumberList,
+    WhatsAppSendRequest, WhatsAppSystemUserList, WhatsAppTemplateDraft, WhatsAppTemplateList,
+    WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia, WhatsAppWabaList,
 };
 use async_trait::async_trait;
 
@@ -227,6 +227,7 @@ pub trait WhatsAppFlows: Send + Sync {
         &self,
         app: &AppConfig,
         creds: &AccountCreds,
+        query: &WhatsAppPageQuery,
         deadline: Deadline,
     ) -> Result<WhatsAppFlowList, Error>;
 
@@ -263,15 +264,17 @@ pub trait WhatsAppAccount: Send + Sync {
         &self,
         app: &AppConfig,
         creds: &AccountCreds,
+        query: &WhatsAppPageQuery,
         deadline: Deadline,
-    ) -> Result<Vec<WhatsAppWaba>, Error>;
+    ) -> Result<WhatsAppWabaList, Error>;
 
     async fn list_phone_numbers(
         &self,
         app: &AppConfig,
         creds: &AccountCreds,
+        query: &WhatsAppPageQuery,
         deadline: Deadline,
-    ) -> Result<Vec<WhatsAppPhoneNumber>, Error>;
+    ) -> Result<WhatsAppPhoneNumberList, Error>;
 
     async fn phone_health(
         &self,
@@ -307,6 +310,7 @@ pub trait WhatsAppAccount: Send + Sync {
         &self,
         app: &AppConfig,
         creds: &AccountCreds,
+        query: &WhatsAppPageQuery,
         deadline: Deadline,
-    ) -> Result<Vec<WhatsAppSystemUser>, Error>;
+    ) -> Result<WhatsAppSystemUserList, Error>;
 }

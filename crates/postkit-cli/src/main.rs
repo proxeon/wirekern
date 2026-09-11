@@ -17,9 +17,10 @@ use output::{emit_ok, emit_raw, human_line};
 use postkit::connectors::threads::validate_text;
 use postkit::{
     app_source, extract_code, verify_state, AccountKey, AppConfig, AppStore, AuthReply, Body,
-    Client, Deadline, DraftStep, Error, FileAppStore, FileDraftStore, FileVault, Intent,
-    MediaQuery, OAuthApp, PostRequest, RunPausedDraft, Site, Vault, WhatsAppMessage,
-    WhatsAppSendRequest, DEFAULT_MEDIA_LIMIT,
+    Client, ConsentKind, ConsentRecord, Deadline, DraftStep, Error, FileAppStore, FileDraftStore,
+    FileVault, Intent, MediaQuery, OAuthApp, PostRequest, RunPausedDraft, Site, Vault,
+    WhatsAppFlowDraft, WhatsAppMessage, WhatsAppPageQuery, WhatsAppSendRequest,
+    WhatsAppTemplateDraft, WhatsAppTemplateQuery, DEFAULT_MEDIA_LIMIT,
 };
 use std::io::{self, BufRead, IsTerminal, Read};
 use std::path::PathBuf;
@@ -144,7 +145,9 @@ enum Commands {
     Accounts(AccountsCmd),
     #[command(subcommand)]
     Apps(AppsCmd),
-    /// WhatsApp Cloud replies, approved templates, and signed webhook parsing.
+    /// Typed WhatsApp Cloud sends, media, business operations, and signed
+    /// webhook parsing. Customer sends need --allow-send; management writes
+    /// need --yes.
     #[command(name = "whatsapp", subcommand)]
     WhatsApp(WhatsAppCmd),
     /// Local HTTP for callers that cannot exec. With --json, prints one
@@ -402,12 +405,21 @@ enum WhatsAppCmd {
         /// WhatsApp Business Account ID. Required for template list/create.
         #[arg(long)]
         waba_id: Option<String>,
+        /// Meta Business Portfolio ID. Enables paged owned-WABA and
+        /// system-user reads; it is distinct from the WABA ID.
+        #[arg(long)]
+        business_id: Option<String>,
         /// Needed only by `whatsapp webhook parse`; it is never printed.
         #[arg(long)]
         app_secret: Option<String>,
         /// Meta GET `hub.verify_token`. Distinct from the app secret HMAC.
         #[arg(long)]
         verify_token: Option<String>,
+        /// Extra outbound phone in `alias=phone_number_id` form. An alias is
+        /// selected explicitly by `whatsapp send --sender <alias>`; it never
+        /// replaces the primary phone used by existing commands.
+        #[arg(long = "sender", value_name = "alias=phone_number_id", action = clap::ArgAction::Append)]
+        senders: Vec<String>,
     },
     /// In-window service text with no `context`. Meta only delivers this
     /// while a customer-service window is open; `--allow-send` acknowledges
@@ -479,10 +491,225 @@ enum WhatsAppCmd {
         #[arg(long, default_value = "individual")]
         recipient_type: String,
     },
+    /// Send any other closed-schema WhatsApp message type. The JSON request
+    /// is deserialized as `WhatsAppSendRequest`; it is not arbitrary Graph
+    /// JSON, and every private send still requires --allow-send.
+    Send {
+        /// JSON file containing one WhatsAppSendRequest. Use `-` for stdin.
+        #[arg(long)]
+        request: PathBuf,
+        /// Configured sender alias, not a raw Meta phone-number ID.
+        #[arg(long)]
+        sender: Option<String>,
+        #[arg(long)]
+        allow_send: bool,
+    },
+    /// Bounded fan-out of up to ten closed-schema requests. All messages use
+    /// the same explicit sender and are paced by that phone's local queue.
+    SendBatch {
+        /// JSON file containing an array of WhatsAppSendRequest. Use `-` for stdin.
+        #[arg(long)]
+        requests: PathBuf,
+        #[arg(long)]
+        sender: Option<String>,
+        #[arg(long)]
+        allow_send: bool,
+    },
+    /// Media, template, Flow, account, and local-ledger operations use typed
+    /// subcommands instead of a raw Graph endpoint escape hatch.
+    /// Typed Cloud API media upload/read/download/delete.
+    #[command(subcommand)]
+    Media(WhatsAppMediaCmd),
+    /// WABA template list/read/create/edit/delete operations.
+    #[command(subcommand)]
+    Templates(WhatsAppTemplatesCmd),
+    /// WhatsApp Flow list/read/create/publish operations.
+    #[command(subcommand)]
+    Flows(WhatsAppFlowsCmd),
+    /// WABA, sender-phone, and System User reads and phone setup operations.
+    #[command(subcommand)]
+    Account(WhatsAppAccountCmd),
+    /// Minimal local callback-correlation ledger reads and retention purge.
+    #[command(subcommand)]
+    Ledger(WhatsAppLedgerCmd),
+    /// Local operator consent audit records; not automatic send authorization.
+    #[command(subcommand)]
+    Consent(WhatsAppConsentCmd),
     /// Parse one signed raw Cloud API webhook body from stdin. This does not
     /// run an HTTP listener or acknowledge Meta's webhook delivery.
     #[command(subcommand)]
     Webhook(WhatsAppWebhookCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum WhatsAppMediaCmd {
+    Upload {
+        #[arg(long)]
+        file: PathBuf,
+        /// Exact MIME type from Meta's supported media table.
+        #[arg(long)]
+        mime_type: String,
+    },
+    Metadata {
+        #[arg(long)]
+        media_id: String,
+    },
+    Download {
+        #[arg(long)]
+        media_id: String,
+        /// New local path. Existing files are refused rather than replaced.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    Delete {
+        #[arg(long)]
+        media_id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WhatsAppTemplatesCmd {
+    List {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        limit: Option<u32>,
+        #[arg(long)]
+        after: Option<String>,
+    },
+    Get {
+        #[arg(long)]
+        template_id: String,
+    },
+    /// Draft JSON is deserialized as the documented WhatsAppTemplateDraft
+    /// contract and submitted for Meta approval only after --yes.
+    Create {
+        #[arg(long)]
+        draft: PathBuf,
+        #[arg(long)]
+        yes: bool,
+    },
+    Edit {
+        #[arg(long)]
+        template_id: String,
+        #[arg(long)]
+        draft: PathBuf,
+        #[arg(long)]
+        yes: bool,
+    },
+    Delete {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WhatsAppFlowsCmd {
+    List {
+        #[arg(long)]
+        limit: Option<u32>,
+        #[arg(long)]
+        after: Option<String>,
+    },
+    Get {
+        #[arg(long)]
+        flow_id: String,
+    },
+    Create {
+        #[arg(long)]
+        draft: PathBuf,
+        #[arg(long)]
+        yes: bool,
+    },
+    Publish {
+        #[arg(long)]
+        flow_id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WhatsAppAccountCmd {
+    Wabas {
+        #[arg(long)]
+        limit: Option<u32>,
+        #[arg(long)]
+        after: Option<String>,
+    },
+    PhoneNumbers {
+        #[arg(long)]
+        limit: Option<u32>,
+        #[arg(long)]
+        after: Option<String>,
+    },
+    PhoneHealth,
+    SystemUsers {
+        #[arg(long)]
+        limit: Option<u32>,
+        #[arg(long)]
+        after: Option<String>,
+    },
+    SubscribeApps {
+        #[arg(long)]
+        yes: bool,
+    },
+    RegisterPhone {
+        #[arg(long)]
+        pin: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    SetTwoStepPin {
+        #[arg(long)]
+        pin: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WhatsAppLedgerCmd {
+    Get {
+        #[arg(long)]
+        wamid: String,
+    },
+    Window {
+        #[arg(long)]
+        wa_id: String,
+    },
+    Purge {
+        #[arg(long)]
+        before_unix: u64,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WhatsAppConsentCmd {
+    Get {
+        #[arg(long)]
+        wa_id: String,
+    },
+    Set {
+        #[arg(long)]
+        wa_id: String,
+        /// opt_in or opt_out. This records an operator signal; it never
+        /// bypasses Meta's policy checks.
+        #[arg(long)]
+        kind: String,
+        #[arg(long)]
+        at_unix: Option<u64>,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -656,11 +883,21 @@ async fn run(cli: Cli) -> Result<(), i32> {
         Commands::WhatsApp(WhatsAppCmd::Configure {
             phone_number_id,
             waba_id,
+            business_id,
             app_secret,
             verify_token,
+            senders,
         }) => {
-            let cfg = whatsapp_app_config(phone_number_id, waba_id, app_secret, verify_token)
-                .map_err(|e| fail(&e, json))?;
+            let configured_senders = parse_whatsapp_senders(&senders, json)?;
+            let cfg = whatsapp_app_config(
+                phone_number_id,
+                waba_id,
+                business_id,
+                app_secret,
+                verify_token,
+                configured_senders,
+            )
+            .map_err(|e| fail(&e, json))?;
             let apps = FileAppStore::new(&home).map_err(|e| fail(&e, json))?;
             apps.put(&cfg).map_err(|e| fail(&e, json))?;
             if app_source(&Site::new("whatsapp_cloud")) == "env" {
@@ -675,6 +912,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
                 emit_raw(&serde_json::json!({
                     "site": "whatsapp_cloud",
                     "phone_number_id": phone_number_id,
+                    "sender_aliases": cfg.extra["senders"].as_array().map(|items| items.iter().filter_map(|item| item.get("alias").and_then(|value| value.as_str())).collect::<Vec<_>>()).unwrap_or_default(),
                     "webhook_signing": cfg.extra["app_secret"].is_string(),
                 }));
             } else {
@@ -693,8 +931,9 @@ async fn run(cli: Cli) -> Result<(), i32> {
     }
 }
 
-/// The only commands permitted to install the allowing policy are the two
-/// typed sends, and each still requires its own explicit `--allow-send`.
+/// The only commands permitted to install the allowing policy are explicit
+/// private sends and the two sensitive phone-registration mutations. Each has
+/// its own acknowledgement (`--allow-send` or `--yes`) before dispatch.
 fn whatsapp_send_allowed(command: &Commands) -> bool {
     matches!(
         command,
@@ -707,7 +946,19 @@ fn whatsapp_send_allowed(command: &Commands) -> bool {
         }) | Commands::WhatsApp(WhatsAppCmd::Template {
             allow_send: true,
             ..
-        })
+        }) | Commands::WhatsApp(WhatsAppCmd::Send {
+            allow_send: true,
+            ..
+        }) | Commands::WhatsApp(WhatsAppCmd::SendBatch {
+            allow_send: true,
+            ..
+        }) | Commands::WhatsApp(WhatsAppCmd::Account(WhatsAppAccountCmd::RegisterPhone {
+            yes: true,
+            ..
+        })) | Commands::WhatsApp(WhatsAppCmd::Account(WhatsAppAccountCmd::SetTwoStepPin {
+            yes: true,
+            ..
+        }))
     )
 }
 
@@ -806,6 +1057,425 @@ async fn dispatch(
             )
             .await
         }
+        Commands::WhatsApp(WhatsAppCmd::Send {
+            request, sender, ..
+        }) => {
+            let request: WhatsAppSendRequest = read_whatsapp_json(&request, json)?;
+            one_whatsapp_send_from(
+                &client,
+                &AccountKey::new("whatsapp_cloud", &account),
+                sender.as_deref(),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::WhatsApp(WhatsAppCmd::SendBatch {
+            requests, sender, ..
+        }) => {
+            let requests: Vec<WhatsAppSendRequest> = read_whatsapp_json(&requests, json)?;
+            let key = AccountKey::new("whatsapp_cloud", &account);
+            match client
+                .send_whatsapp_many_from(&key, sender.as_deref(), requests, deadline)
+                .await
+            {
+                Ok(outcomes) => {
+                    if json {
+                        emit_raw(&serde_json::json!({ "outcomes": outcomes }));
+                    } else {
+                        human_line(format!(
+                            "whatsapp_cloud {} messages accepted by Meta; delivery statuses arrive via webhook",
+                            outcomes.len()
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(error) => Err(fail(&error, json)),
+            }
+        }
+        Commands::WhatsApp(WhatsAppCmd::Media(command)) => {
+            let key = AccountKey::new("whatsapp_cloud", &account);
+            match command {
+                WhatsAppMediaCmd::Upload { file, mime_type } => {
+                    let bytes = std::fs::read(&file).map_err(|_| {
+                        fail(
+                            &Error::InvalidQuery {
+                                site: Site::new("whatsapp_cloud"),
+                                reason: "whatsapp_media_unreadable".into(),
+                            },
+                            json,
+                        )
+                    })?;
+                    let filename = file
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .filter(|name| !name.is_empty())
+                        .ok_or_else(|| {
+                            fail(
+                                &Error::InvalidQuery {
+                                    site: Site::new("whatsapp_cloud"),
+                                    reason: "whatsapp_media_filename_invalid".into(),
+                                },
+                                json,
+                            )
+                        })?
+                        .to_string();
+                    match client
+                        .upload_whatsapp_media(
+                            &key,
+                            postkit::WhatsAppMediaUpload {
+                                bytes,
+                                mime_type,
+                                filename,
+                            },
+                            deadline,
+                        )
+                        .await
+                    {
+                        Ok(reply) => {
+                            emit_whatsapp_value(&reply, json, "media upload");
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+                WhatsAppMediaCmd::Metadata { media_id } => match client
+                    .whatsapp_media_metadata(&key, &media_id, deadline)
+                    .await
+                {
+                    Ok(reply) => {
+                        emit_whatsapp_value(&reply, json, "media metadata read");
+                        Ok(())
+                    }
+                    Err(error) => Err(fail(&error, json)),
+                },
+                WhatsAppMediaCmd::Download { media_id, output } => {
+                    match client
+                        .download_whatsapp_media(&key, &media_id, deadline)
+                        .await
+                    {
+                        Ok(bytes) => {
+                            write_whatsapp_download(&output, &bytes, json)?;
+                            if json {
+                                emit_raw(&serde_json::json!({
+                                    "downloaded": true,
+                                    "bytes": bytes.len(),
+                                }));
+                            } else {
+                                human_line("whatsapp_cloud media download completed");
+                            }
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+                WhatsAppMediaCmd::Delete { media_id, yes } => {
+                    require_whatsapp_yes(yes, "delete WhatsApp media", json)?;
+                    match client
+                        .delete_whatsapp_media(&key, &media_id, deadline)
+                        .await
+                    {
+                        Ok(()) => {
+                            emit_whatsapp_value(
+                                &serde_json::json!({ "deleted": true }),
+                                json,
+                                "media delete",
+                            );
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+            }
+        }
+        Commands::WhatsApp(WhatsAppCmd::Templates(command)) => {
+            let key = AccountKey::new("whatsapp_cloud", &account);
+            match command {
+                WhatsAppTemplatesCmd::List {
+                    name,
+                    status,
+                    limit,
+                    after,
+                } => match client
+                    .list_whatsapp_templates(
+                        &key,
+                        WhatsAppTemplateQuery {
+                            name,
+                            status,
+                            limit,
+                            after,
+                        },
+                        deadline,
+                    )
+                    .await
+                {
+                    Ok(reply) => {
+                        emit_whatsapp_value(&reply, json, "template list");
+                        Ok(())
+                    }
+                    Err(error) => Err(fail(&error, json)),
+                },
+                WhatsAppTemplatesCmd::Get { template_id } => match client
+                    .get_whatsapp_template(&key, &template_id, deadline)
+                    .await
+                {
+                    Ok(reply) => {
+                        emit_whatsapp_value(&reply, json, "template read");
+                        Ok(())
+                    }
+                    Err(error) => Err(fail(&error, json)),
+                },
+                WhatsAppTemplatesCmd::Create { draft, yes } => {
+                    require_whatsapp_yes(yes, "submit a template for Meta review", json)?;
+                    let draft: WhatsAppTemplateDraft = read_whatsapp_json(&draft, json)?;
+                    match client.create_whatsapp_template(&key, draft, deadline).await {
+                        Ok(reply) => {
+                            emit_whatsapp_value(&reply, json, "template create");
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+                WhatsAppTemplatesCmd::Edit {
+                    template_id,
+                    draft,
+                    yes,
+                } => {
+                    require_whatsapp_yes(yes, "edit a WhatsApp template", json)?;
+                    let draft: WhatsAppTemplateDraft = read_whatsapp_json(&draft, json)?;
+                    match client
+                        .edit_whatsapp_template(&key, &template_id, draft, deadline)
+                        .await
+                    {
+                        Ok(reply) => {
+                            emit_whatsapp_value(&reply, json, "template edit");
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+                WhatsAppTemplatesCmd::Delete { name, yes } => {
+                    require_whatsapp_yes(yes, "delete a WhatsApp template", json)?;
+                    match client.delete_whatsapp_template(&key, &name, deadline).await {
+                        Ok(()) => {
+                            emit_whatsapp_value(
+                                &serde_json::json!({ "deleted": true }),
+                                json,
+                                "template delete",
+                            );
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+            }
+        }
+        Commands::WhatsApp(WhatsAppCmd::Flows(command)) => {
+            let key = AccountKey::new("whatsapp_cloud", &account);
+            match command {
+                WhatsAppFlowsCmd::List { limit, after } => match client
+                    .list_whatsapp_flows(&key, WhatsAppPageQuery { limit, after }, deadline)
+                    .await
+                {
+                    Ok(reply) => {
+                        emit_whatsapp_value(&reply, json, "Flow list");
+                        Ok(())
+                    }
+                    Err(error) => Err(fail(&error, json)),
+                },
+                WhatsAppFlowsCmd::Get { flow_id } => {
+                    match client.get_whatsapp_flow(&key, &flow_id, deadline).await {
+                        Ok(reply) => {
+                            emit_whatsapp_value(&reply, json, "Flow read");
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+                WhatsAppFlowsCmd::Create { draft, yes } => {
+                    require_whatsapp_yes(yes, "create a WhatsApp Flow", json)?;
+                    let draft: WhatsAppFlowDraft = read_whatsapp_json(&draft, json)?;
+                    match client.create_whatsapp_flow(&key, draft, deadline).await {
+                        Ok(reply) => {
+                            emit_whatsapp_value(&reply, json, "Flow create");
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+                WhatsAppFlowsCmd::Publish { flow_id, yes } => {
+                    require_whatsapp_yes(yes, "publish a WhatsApp Flow", json)?;
+                    match client.publish_whatsapp_flow(&key, &flow_id, deadline).await {
+                        Ok(reply) => {
+                            emit_whatsapp_value(&reply, json, "Flow publish");
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+            }
+        }
+        Commands::WhatsApp(WhatsAppCmd::Account(command)) => {
+            let key = AccountKey::new("whatsapp_cloud", &account);
+            match command {
+                WhatsAppAccountCmd::Wabas { limit, after } => match client
+                    .list_whatsapp_wabas(&key, WhatsAppPageQuery { limit, after }, deadline)
+                    .await
+                {
+                    Ok(reply) => {
+                        emit_whatsapp_value(&reply, json, "WABA list");
+                        Ok(())
+                    }
+                    Err(error) => Err(fail(&error, json)),
+                },
+                WhatsAppAccountCmd::PhoneNumbers { limit, after } => match client
+                    .list_whatsapp_phone_numbers(&key, WhatsAppPageQuery { limit, after }, deadline)
+                    .await
+                {
+                    Ok(reply) => {
+                        emit_whatsapp_value(&reply, json, "phone-number list");
+                        Ok(())
+                    }
+                    Err(error) => Err(fail(&error, json)),
+                },
+                WhatsAppAccountCmd::PhoneHealth => {
+                    match client.whatsapp_phone_health(&key, deadline).await {
+                        Ok(reply) => {
+                            emit_whatsapp_value(&reply, json, "phone health read");
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+                WhatsAppAccountCmd::SystemUsers { limit, after } => match client
+                    .list_whatsapp_system_users(&key, WhatsAppPageQuery { limit, after }, deadline)
+                    .await
+                {
+                    Ok(reply) => {
+                        emit_whatsapp_value(&reply, json, "system-user list");
+                        Ok(())
+                    }
+                    Err(error) => Err(fail(&error, json)),
+                },
+                WhatsAppAccountCmd::SubscribeApps { yes } => {
+                    require_whatsapp_yes(yes, "subscribe the app to WhatsApp webhooks", json)?;
+                    match client.subscribe_whatsapp_apps(&key, deadline).await {
+                        Ok(()) => {
+                            emit_whatsapp_value(
+                                &serde_json::json!({ "subscribed": true }),
+                                json,
+                                "app subscription",
+                            );
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+                WhatsAppAccountCmd::RegisterPhone { pin, yes } => {
+                    require_whatsapp_yes(yes, "register the WhatsApp phone", json)?;
+                    match client.register_whatsapp_phone(&key, &pin, deadline).await {
+                        Ok(()) => {
+                            emit_whatsapp_value(
+                                &serde_json::json!({ "registered": true }),
+                                json,
+                                "phone registration",
+                            );
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+                WhatsAppAccountCmd::SetTwoStepPin { pin, yes } => {
+                    require_whatsapp_yes(yes, "set the WhatsApp two-step PIN", json)?;
+                    match client.set_whatsapp_two_step_pin(&key, &pin, deadline).await {
+                        Ok(()) => {
+                            emit_whatsapp_value(
+                                &serde_json::json!({ "updated": true }),
+                                json,
+                                "two-step PIN update",
+                            );
+                            Ok(())
+                        }
+                        Err(error) => Err(fail(&error, json)),
+                    }
+                }
+            }
+        }
+        Commands::WhatsApp(WhatsAppCmd::Ledger(command)) => match command {
+            WhatsAppLedgerCmd::Get { wamid } => match client.whatsapp_ledger_get(&wamid) {
+                Ok(reply) => {
+                    emit_whatsapp_value(&reply, json, "ledger read");
+                    Ok(())
+                }
+                Err(error) => Err(fail(&error, json)),
+            },
+            WhatsAppLedgerCmd::Window { wa_id } => match client.whatsapp_window_open(&wa_id) {
+                Ok(open) => {
+                    emit_whatsapp_value(&serde_json::json!({ "open": open }), json, "window read");
+                    Ok(())
+                }
+                Err(error) => Err(fail(&error, json)),
+            },
+            WhatsAppLedgerCmd::Purge { before_unix, yes } => {
+                require_whatsapp_yes(yes, "purge local WhatsApp ledger records", json)?;
+                match client.purge_whatsapp_ledger_before(before_unix) {
+                    Ok(removed) => {
+                        emit_whatsapp_value(
+                            &serde_json::json!({ "removed": removed }),
+                            json,
+                            "ledger purge",
+                        );
+                        Ok(())
+                    }
+                    Err(error) => Err(fail(&error, json)),
+                }
+            }
+        },
+        Commands::WhatsApp(WhatsAppCmd::Consent(command)) => match command {
+            WhatsAppConsentCmd::Get { wa_id } => match client.get_whatsapp_consent(&wa_id) {
+                Ok(reply) => {
+                    emit_whatsapp_value(&reply, json, "consent read");
+                    Ok(())
+                }
+                Err(error) => Err(fail(&error, json)),
+            },
+            WhatsAppConsentCmd::Set {
+                wa_id,
+                kind,
+                at_unix,
+                yes,
+            } => {
+                require_whatsapp_yes(yes, "record a WhatsApp consent decision", json)?;
+                let kind = match kind.as_str() {
+                    "opt_in" => ConsentKind::OptIn,
+                    "opt_out" => ConsentKind::OptOut,
+                    _ => {
+                        return Err(fail(
+                            &invalid_post("whatsapp_cloud", "whatsapp_consent_kind_invalid"),
+                            json,
+                        ))
+                    }
+                };
+                let at = at_unix.unwrap_or_else(|| {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|value| value.as_secs())
+                        .unwrap_or(0)
+                });
+                match client.put_whatsapp_consent(ConsentRecord { wa_id, kind, at }) {
+                    Ok(()) => {
+                        emit_whatsapp_value(
+                            &serde_json::json!({ "recorded": true }),
+                            json,
+                            "consent record",
+                        );
+                        Ok(())
+                    }
+                    Err(error) => Err(fail(&error, json)),
+                }
+            }
+        },
         Commands::WhatsApp(WhatsAppCmd::Webhook(WhatsAppWebhookCmd::Parse {
             signature,
             status_extras,
@@ -1785,15 +2455,42 @@ mod tests {
             "hi",
         ])
         .is_err());
+
+        let structured = Cli::try_parse_from([
+            "postkit",
+            "whatsapp",
+            "send",
+            "--request",
+            "request.json",
+            "--sender",
+            "marketing",
+            "--allow-send",
+        ])
+        .unwrap();
+        assert!(whatsapp_send_allowed(&structured.command));
+        assert!(matches!(
+            structured.command,
+            Commands::WhatsApp(WhatsAppCmd::Send { sender: Some(sender), .. }) if sender == "marketing"
+        ));
     }
 
     #[test]
     fn whatsapp_config_is_phone_only_and_never_needs_oauth_fields() {
-        let cfg =
-            whatsapp_app_config("123456789".into(), None, Some("app-secret".into()), None).unwrap();
+        let cfg = whatsapp_app_config(
+            "123456789".into(),
+            None,
+            None,
+            Some("app-secret".into()),
+            None,
+            vec![],
+        )
+        .unwrap();
         assert!(cfg.oauth.is_none());
         assert_eq!(cfg.extra["phone_number_id"].as_str(), Some("123456789"));
-        assert!(whatsapp_app_config("+6012".into(), None, None, None).is_err());
+        let senders = parse_whatsapp_senders(&["marketing=987654321".into()], true).unwrap();
+        assert_eq!(senders[0].alias, "marketing");
+        assert!(parse_whatsapp_senders(&["bad-value".into()], true).is_err());
+        assert!(whatsapp_app_config("+6012".into(), None, None, None, None, vec![]).is_err());
     }
 
     #[test]

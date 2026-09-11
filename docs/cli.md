@@ -137,22 +137,31 @@ postkit capabilities --json
 ## `whatsapp` (WhatsApp Cloud)
 
 ```text
-postkit whatsapp configure --phone-number-id <numeric-id> [--waba-id <numeric-id>] [--app-secret <Meta-app-secret>] [--verify-token <random-callback-token>]
+postkit whatsapp configure --phone-number-id <numeric-id> [--waba-id <numeric-id>] [--business-id <numeric-id>] [--sender <alias=numeric-phone-id>]... [--app-secret <Meta-app-secret>] [--verify-token <random-callback-token>]
 postkit auth whatsapp_cloud --token <System-User-token>
 postkit whoami whatsapp_cloud --json
 postkit whatsapp text --to <digits> --text <text> --idempotency <key> --allow-send
 postkit whatsapp reply --to <digits> --reply-to <inbound-wamid> --text <text> --idempotency <key> --allow-send
 postkit whatsapp template --to <digits> --name <approved_name> --language <locale> [--body-param <value>]... --idempotency <key> --allow-send
+postkit whatsapp send --request <typed-request.json> [--sender <configured-alias>] --allow-send
+postkit whatsapp send-batch --requests <typed-requests.json> [--sender <configured-alias>] --allow-send
+postkit whatsapp media <upload|metadata|download|delete> ...
+postkit whatsapp templates <list|get|create|edit|delete> ...
+postkit whatsapp flows <list|get|create|publish> ...
+postkit whatsapp account <wabas|phone-numbers|phone-health|system-users|subscribe-apps|register-phone|set-two-step-pin> ...
+postkit whatsapp ledger <get|window|purge> ...
+postkit whatsapp consent <get|set> ...
 postkit whatsapp webhook parse --signature <X-Hub-Signature-256> < raw-webhook.json
 ```
 
-`configure` stores the Phone number ID and optional webhook app secret in the
-owner-only app configuration; `auth` separately validates and stores the
-static System User token in the vault. The config secret is never displayed by
-`apps show`. Environment values `POSTKIT_WHATSAPP_PHONE_NUMBER_ID` and
-`POSTKIT_WHATSAPP_APP_SECRET` override only their corresponding file fields;
-for example, an environment sender ID retains a file-backed app secret unless
-the environment also supplies a replacement secret.
+`configure` stores the Phone number ID, optional WABA/Business IDs, sender
+aliases, and optional webhook app secret in the owner-only app configuration;
+`auth` separately validates and stores the static System User token in the
+vault. The config secret is never displayed by `apps show`. Environment values
+`POSTKIT_WHATSAPP_PHONE_NUMBER_ID`, `_WABA_ID`, `_BUSINESS_ID`,
+`_APP_SECRET`, and `_VERIFY_TOKEN` override only their corresponding file
+fields; for example, an environment sender ID retains a file-backed app secret
+unless the environment also supplies a replacement secret.
 
 `whatsapp webhook parse` performs no HTTP request and returns verified inbound
 messages plus `sent`, `delivered`, `read`, and `failed` callbacks for the
@@ -171,11 +180,11 @@ Use signed status webhooks for that state.
 `reply` only sends plain text and requires a WhatsApp ID (digits with country
 code, no `+`) and the `wamid` of a known inbound message. `template` sends an
 already approved lowercase template name with a language code and optional
-ordered text body substitutions. The library and typed `POST /v1/whatsapp`
-surface also support the broader typed media/interactive/catalog/Flow message
-set. Template, Flow, media, and account management facets are library APIs;
-that is intentionally not a JSON escape hatch and CLI parity remains separate
-work.
+ordered text body substitutions. `send` and `send-batch` deserialize the same
+closed `WhatsAppSendRequest` schema used by the library and HTTP surface, so
+they cover the broader typed media/interactive/catalog/Flow message set
+without becoming a raw Graph JSON escape hatch. Management writes require
+`--yes`; list commands return an opaque `after` cursor in `--json` output.
 
 `webhook parse` reads one bounded raw body from stdin and verifies the exact
 `sha256=` HMAC header before JSON parsing. It also refuses a callback whose

@@ -59,7 +59,18 @@ pub struct Client {
     // Pacing belongs to the Client, not an individual batch. Otherwise two
     // callers can both believe they own the next process-local send slot.
     whatsapp_throughput:
-        Arc<Mutex<HashMap<AccountKey, Arc<crate::whatsapp_ops::ThroughputQueue>>>>,
+        Arc<Mutex<HashMap<WhatsAppPacingKey, Arc<crate::whatsapp_ops::ThroughputQueue>>>>,
+}
+
+/// The Cloud API quota applies to a phone number, while Postkit credentials
+/// are selected by an account alias. Retaining both avoids coupling two
+/// independent sender aliases to one local queue just because they share a
+/// token, and avoids splitting queues across different stored credentials.
+#[cfg(feature = "whatsapp-cloud")]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct WhatsAppPacingKey {
+    account: AccountKey,
+    phone_number_id: String,
 }
 
 impl Client {
@@ -216,6 +227,24 @@ impl Client {
         request: WhatsAppSendRequest,
         deadline: Deadline,
     ) -> Result<Outcome, Error> {
+        self.send_whatsapp_from(key, None, request, deadline).await
+    }
+
+    /// Send through the primary configured phone or an explicitly configured
+    /// sender alias. The alias is resolved locally before Graph is called;
+    /// callers cannot use this method to target an arbitrary phone ID.
+    ///
+    /// Idempotency and pacing are namespaced by the resolved phone ID. Reusing
+    /// an idempotency key on two different senders therefore cannot replay a
+    /// delivery result from the wrong business number.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn send_whatsapp_from(
+        &self,
+        key: &AccountKey,
+        sender_alias: Option<&str>,
+        request: WhatsAppSendRequest,
+        deadline: Deadline,
+    ) -> Result<Outcome, Error> {
         request.validate().map_err(|reason| Error::InvalidPost {
             site: key.site.clone(),
             reason,
@@ -260,39 +289,41 @@ impl Client {
             });
         }
 
-        // WhatsApp sends require a key, so this follows the same atomic
-        // claim/record discipline as public publishing. Only a confirmed
-        // response is remembered; an unknown post-send failure remains
-        // intentionally ambiguous and must be reconciled via webhook/status.
-        let idem = request.idempotency_key.as_str();
-        if let Some(out) = self.vault.get_outcome(key, idem)? {
-            return Ok(out);
-        }
-        match self.vault.claim_outcome(key, idem)? {
-            Claim::Free => {}
-            Claim::Taken => {
-                return Err(Error::IdempotencyInFlight {
-                    site: key.site.clone(),
-                    key: idem.to_string(),
-                })
-            }
-        }
-        let after_claim = match self.vault.get_outcome(key, idem) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                self.release_claim(key, Some(idem));
-                return Err(error);
-            }
-        };
-        if let Some(out) = after_claim {
-            self.release_claim(key, Some(idem));
-            return Ok(out);
-        }
-
         let app = self
             .apps
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
+        let (sender_app, phone_number_id) =
+            resolve_whatsapp_outbound_sender(&app, sender_alias, &key.site)?;
+
+        // WhatsApp sends require a key, so this follows the same atomic
+        // claim/record discipline as public publishing. Only a confirmed
+        // response is remembered; an unknown post-send failure remains
+        // intentionally ambiguous and must be reconciled via webhook/status.
+        let idem = scoped_whatsapp_idempotency(&phone_number_id, &request.idempotency_key);
+        if let Some(out) = self.vault.get_outcome(key, &idem)? {
+            return Ok(out);
+        }
+        match self.vault.claim_outcome(key, &idem)? {
+            Claim::Free => {}
+            Claim::Taken => {
+                return Err(Error::IdempotencyInFlight {
+                    site: key.site.clone(),
+                    key: request.idempotency_key.clone(),
+                })
+            }
+        }
+        let after_claim = match self.vault.get_outcome(key, &idem) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.release_claim(key, Some(&idem));
+                return Err(error);
+            }
+        };
+        if let Some(out) = after_claim {
+            self.release_claim(key, Some(&idem));
+            return Ok(out);
+        }
         // Keep credential lookup inside the same guarded attempt as the HTTP
         // call. A missing/corrupt vault entry must release the claim just like
         // a rejected platform request, otherwise a later corrected command
@@ -303,20 +334,23 @@ impl Client {
             // sender's local pacing queue. A batch is only a loop over this
             // operation, so its second item waits instead of being rejected
             // with a synthetic local rate-limit error.
-            self.wait_for_whatsapp_slot(key, deadline).await?;
+            self.wait_for_whatsapp_slot(key, &phone_number_id, deadline)
+                .await?;
             let creds = self.vault.get(key)?;
-            sender.send_whatsapp(&app, &creds, &request, deadline).await
+            sender
+                .send_whatsapp(&sender_app, &creds, &request, deadline)
+                .await
         }
         .await;
         let out = match attempt {
             Ok(out) => out,
             Err(error) => {
-                self.release_claim(key, Some(idem));
+                self.release_claim(key, Some(&idem));
                 return Err(error);
             }
         };
-        let recorded = self.vault.put_outcome(key, idem, &out);
-        self.release_claim(key, Some(idem));
+        let recorded = self.vault.put_outcome(key, &idem, &out);
+        self.release_claim(key, Some(&idem));
         recorded?;
         Ok(out)
     }
@@ -647,6 +681,7 @@ impl Client {
     pub async fn list_whatsapp_flows(
         &self,
         key: &AccountKey,
+        query: crate::whatsapp::WhatsAppPageQuery,
         deadline: Deadline,
     ) -> Result<crate::whatsapp::WhatsAppFlowList, Error> {
         self.require_capability(&key.site, Capability::ReadFlows)?;
@@ -656,7 +691,7 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let creds = self.vault.get(key)?;
-        flows.list_flows(&app, &creds, deadline).await
+        flows.list_flows(&app, &creds, &query, deadline).await
     }
 
     #[cfg(feature = "whatsapp-cloud")]
@@ -714,8 +749,9 @@ impl Client {
     pub async fn list_whatsapp_wabas(
         &self,
         key: &AccountKey,
+        query: crate::whatsapp::WhatsAppPageQuery,
         deadline: Deadline,
-    ) -> Result<Vec<crate::whatsapp::WhatsAppWaba>, Error> {
+    ) -> Result<crate::whatsapp::WhatsAppWabaList, Error> {
         self.require_capability(&key.site, Capability::ReadWhatsAppAccount)?;
         let account = self.whatsapp_account(&key.site, Capability::ReadWhatsAppAccount)?;
         let app = self
@@ -723,15 +759,16 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let creds = self.vault.get(key)?;
-        account.list_wabas(&app, &creds, deadline).await
+        account.list_wabas(&app, &creds, &query, deadline).await
     }
 
     #[cfg(feature = "whatsapp-cloud")]
     pub async fn list_whatsapp_phone_numbers(
         &self,
         key: &AccountKey,
+        query: crate::whatsapp::WhatsAppPageQuery,
         deadline: Deadline,
-    ) -> Result<Vec<crate::whatsapp::WhatsAppPhoneNumber>, Error> {
+    ) -> Result<crate::whatsapp::WhatsAppPhoneNumberList, Error> {
         self.require_capability(&key.site, Capability::ReadWhatsAppAccount)?;
         let account = self.whatsapp_account(&key.site, Capability::ReadWhatsAppAccount)?;
         let app = self
@@ -739,7 +776,9 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let creds = self.vault.get(key)?;
-        account.list_phone_numbers(&app, &creds, deadline).await
+        account
+            .list_phone_numbers(&app, &creds, &query, deadline)
+            .await
     }
 
     #[cfg(feature = "whatsapp-cloud")]
@@ -816,8 +855,9 @@ impl Client {
     pub async fn list_whatsapp_system_users(
         &self,
         key: &AccountKey,
+        query: crate::whatsapp::WhatsAppPageQuery,
         deadline: Deadline,
-    ) -> Result<Vec<crate::whatsapp::WhatsAppSystemUser>, Error> {
+    ) -> Result<crate::whatsapp::WhatsAppSystemUserList, Error> {
         self.require_capability(&key.site, Capability::ReadWhatsAppAccount)?;
         let account = self.whatsapp_account(&key.site, Capability::ReadWhatsAppAccount)?;
         let app = self
@@ -825,7 +865,9 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let creds = self.vault.get(key)?;
-        account.list_system_users(&app, &creds, deadline).await
+        account
+            .list_system_users(&app, &creds, &query, deadline)
+            .await
     }
 
     /// Bounded fan-out, not a campaign tool. More than 10 messages is refused.
@@ -838,6 +880,21 @@ impl Client {
         requests: Vec<WhatsAppSendRequest>,
         deadline: Deadline,
     ) -> Result<Vec<Outcome>, Error> {
+        self.send_whatsapp_many_from(key, None, requests, deadline)
+            .await
+    }
+
+    /// Bounded multi-send through one configured sender alias. Keep one alias
+    /// for the whole batch so its pacing and idempotency scope are obvious to
+    /// the operator; mixed-sender fan-out needs a separate reviewed contract.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn send_whatsapp_many_from(
+        &self,
+        key: &AccountKey,
+        sender_alias: Option<&str>,
+        requests: Vec<WhatsAppSendRequest>,
+        deadline: Deadline,
+    ) -> Result<Vec<Outcome>, Error> {
         if requests.len() > 10 {
             return Err(Error::InvalidPost {
                 site: key.site.clone(),
@@ -847,7 +904,10 @@ impl Client {
         }
         let mut out = Vec::new();
         for request in requests {
-            out.push(self.send_whatsapp(key, request, deadline).await?);
+            out.push(
+                self.send_whatsapp_from(key, sender_alias, request, deadline)
+                    .await?,
+            );
         }
         Ok(out)
     }
@@ -856,10 +916,17 @@ impl Client {
     fn whatsapp_throughput_for(
         &self,
         key: &AccountKey,
+        phone_number_id: &str,
     ) -> Arc<crate::whatsapp_ops::ThroughputQueue> {
-        let mut queues = self.whatsapp_throughput.lock().expect("whatsapp throughput");
+        let mut queues = self
+            .whatsapp_throughput
+            .lock()
+            .expect("whatsapp throughput");
         queues
-            .entry(key.clone())
+            .entry(WhatsAppPacingKey {
+                account: key.clone(),
+                phone_number_id: phone_number_id.to_string(),
+            })
             .or_insert_with(|| Arc::new(crate::whatsapp_ops::ThroughputQueue::default_cloud_api()))
             .clone()
     }
@@ -868,8 +935,13 @@ impl Client {
     /// deadline. The queue returns a duration instead of sleeping itself so
     /// this async client never blocks a Tokio worker.
     #[cfg(feature = "whatsapp-cloud")]
-    async fn wait_for_whatsapp_slot(&self, key: &AccountKey, deadline: Deadline) -> Result<(), Error> {
-        let queue = self.whatsapp_throughput_for(key);
+    async fn wait_for_whatsapp_slot(
+        &self,
+        key: &AccountKey,
+        phone_number_id: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        let queue = self.whatsapp_throughput_for(key, phone_number_id);
         loop {
             deadline.check(&key.site)?;
             let now_ns = SystemTime::now()
@@ -1551,6 +1623,84 @@ impl Client {
             Err(e) => Err(e),
         }
     }
+}
+
+#[cfg(feature = "whatsapp-cloud")]
+fn resolve_whatsapp_outbound_sender(
+    app: &AppConfig,
+    sender_alias: Option<&str>,
+    site: &Site,
+) -> Result<(AppConfig, String), Error> {
+    let primary = app
+        .extra
+        .get("phone_number_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| {
+            !id.is_empty() && id.len() <= 32 && id.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        .map(str::to_owned);
+
+    let selected = match sender_alias {
+        // Let the connector retain the established `missing_phone_number_id`
+        // failure for an unconfigured primary sender. This also keeps Client
+        // generic enough for test/embedding connectors that do not model the
+        // WhatsApp app extension at all.
+        None => primary.unwrap_or_else(|| "primary".into()),
+        Some(alias) => {
+            if !crate::types::valid_name(alias) || alias == "primary" {
+                return Err(Error::InvalidQuery {
+                    site: site.clone(),
+                    reason: "whatsapp_sender_alias_invalid".into(),
+                });
+            }
+            let configured = app
+                .extra
+                .get("senders")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| Error::InvalidQuery {
+                    site: site.clone(),
+                    reason: "whatsapp_sender_unknown".into(),
+                })?;
+            let mut found = None;
+            for value in configured {
+                let sender: crate::whatsapp::WhatsAppOutboundSender =
+                    serde_json::from_value(value.clone()).map_err(|_| Error::InvalidQuery {
+                        site: site.clone(),
+                        reason: "whatsapp_sender_config_invalid".into(),
+                    })?;
+                sender.validate().map_err(|reason| Error::InvalidQuery {
+                    site: site.clone(),
+                    reason,
+                })?;
+                if sender.alias == alias && found.replace(sender.phone_number_id).is_some() {
+                    return Err(Error::InvalidQuery {
+                        site: site.clone(),
+                        reason: "whatsapp_sender_alias_duplicate".into(),
+                    });
+                }
+            }
+            found.ok_or_else(|| Error::InvalidQuery {
+                site: site.clone(),
+                reason: "whatsapp_sender_unknown".into(),
+            })?
+        }
+    };
+
+    // Connector wire methods still read `phone_number_id` from AppConfig.
+    // Clone only the in-memory config so selecting a sender never rewrites a
+    // user's primary sender or leaks into webhook configuration on disk.
+    let mut selected_app = app.clone();
+    if selected != "primary" {
+        selected_app.extra["phone_number_id"] = serde_json::Value::String(selected.clone());
+    }
+    Ok((selected_app, selected))
+}
+
+#[cfg(feature = "whatsapp-cloud")]
+fn scoped_whatsapp_idempotency(phone_number_id: &str, idempotency_key: &str) -> String {
+    // Both segments are locally validated to `[A-Za-z0-9._-]+`/digits. This
+    // becomes a vault-private namespace, not a Meta idempotency header.
+    format!("wa-sender-{phone_number_id}-{idempotency_key}")
 }
 
 /// Draft orchestration (plans/001/013). Everything here composes the Tier B

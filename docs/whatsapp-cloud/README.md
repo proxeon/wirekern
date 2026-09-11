@@ -43,6 +43,7 @@ Keep the token out of committed files. You may configure the sender interactivel
 ```bash
 postkit whatsapp configure \
   --phone-number-id 123456789012345 \
+  --sender marketing=987654321098765 \
   --app-secret '<META_APP_SECRET>' \
   --verify-token '<RANDOM_CALLBACK_VERIFY_TOKEN>'
 
@@ -63,6 +64,8 @@ the Postkit vault.
 export POSTKIT_WHATSAPP_PHONE_NUMBER_ID=123456789012345
 export POSTKIT_WHATSAPP_APP_SECRET='<META_APP_SECRET>' # only needed for webhook parsing
 export POSTKIT_WHATSAPP_VERIFY_TOKEN='<RANDOM_CALLBACK_VERIFY_TOKEN>'
+# Optional: enables paged owned-WABA and system-user reads.
+export POSTKIT_WHATSAPP_BUSINESS_ID=123456789012345
 postkit auth whatsapp_cloud --token '<SYSTEM_USER_ACCESS_TOKEN>'
 ```
 
@@ -73,6 +76,11 @@ keeps an app secret previously saved by `whatsapp configure`. Set
 secret. `apps show` redacts the app secret and reports only whether webhook
 signing is configured. `--verify-token` / `POSTKIT_WHATSAPP_VERIFY_TOKEN` is
 the separate value Meta sends only during the public GET callback challenge.
+
+`--sender alias=phone_number_id` adds a secondary outbound number without
+changing the primary phone. Send with `--sender alias`; Postkit accepts only a
+configured alias, then applies separate local pacing and idempotency for that
+phone. The primary sender remains the default when `--sender` is omitted.
 
 ## 3. Send a reply
 
@@ -129,8 +137,9 @@ curl -sS -X POST http://127.0.0.1:8788/v1/whatsapp/webhook \
 
 Create and obtain Meta approval for the exact template in WhatsApp Manager
 first. The CLI sends an approved template with a lowercase name, language, and
-ordered text variables. The library also has typed template-management APIs
-and richer typed components; those management verbs are not CLI commands yet.
+ordered text variables. Richer template components and lifecycle operations
+are available through the typed `whatsapp send` and `whatsapp templates`
+commands below.
 
 ```bash
 postkit --json whatsapp template \
@@ -147,6 +156,47 @@ Template categorisation, approval, messaging limits, user opt-in, and
 per-conversation/template pricing are Meta business decisions. Review them in
 WhatsApp Manager before adding `--allow-send`. A Postkit success means Meta
 accepted the request; monitor signed status webhooks for delivery/failure.
+
+## 4a. Typed command coverage
+
+The short `text`, `reply`, and `template` commands remain useful for their
+common cases. `send` provides the rest of the closed message schema (image,
+document, audio, video, sticker, interactive, catalog/order, Flow, read, and
+typing) from a local JSON document; it never passes arbitrary Graph JSON.
+
+```json
+{
+  "message": {
+    "type": "image",
+    "to": "60123456789",
+    "link": "https://example.com/receipt.jpg",
+    "caption": "Your receipt"
+  },
+  "idempotency_key": "receipt-42-v1",
+  "recipient_type": "individual"
+}
+```
+
+```bash
+postkit --json whatsapp send \
+  --request receipt.json \
+  --sender marketing \
+  --allow-send
+```
+
+Use `send-batch --requests requests.json --allow-send` for at most ten typed
+requests from one sender. It waits for the selected sender's local pacing slot;
+it is not a campaign/broadcast feature.
+
+The matching typed lifecycle commands are available under `whatsapp media`,
+`whatsapp templates`, `whatsapp flows`, `whatsapp account`, `whatsapp ledger`,
+and `whatsapp consent`. Writes require `--yes`; media download refuses to
+overwrite an existing local file. Template and Flow drafts are typed JSON
+files, such as `whatsapp templates create --draft utility.json --yes`.
+
+Collection lists accept `--limit` and `--after`. JSON output returns the next
+opaque `after` cursor when Meta has another page; supply it unchanged to the
+same list command. Do not try to construct or modify a cursor.
 
 ## 5. Receive webhooks safely
 
@@ -225,7 +275,7 @@ pricing, and the customer-service window before passing `--allow-send`; Meta
 remains the delivery authority.
 
 Postkit paces outbound Cloud API requests at a process-local default of roughly
-80 messages/second per configured account. Batches are capped at 10 items and
+80 messages/second per configured phone number. Batches are capped at 10 items and
 wait for the next slot within the caller's deadline. This is local pacing, not
 a distributed quota service or a Meta throughput guarantee.
 
@@ -254,16 +304,32 @@ an intentional operational decision.
 
 ## Current boundaries
 
-The library and typed HTTP send surface are wider than the command-line UX:
-the CLI currently exposes configuration, text, reply, basic template sends,
-and raw webhook parsing. The HTTP send endpoint supports the other typed
-message variants; template/Flow/media/account operations and ledger retention
-remain library integrations until CLI or HTTP-management parity is designed.
+The CLI now covers the typed library's messaging, media, template, Flow,
+account, consent, and ledger operations. The authenticated HTTP surface
+supports typed sends and the same optional configured `sender` alias; it does
+not expose management endpoints. Use the CLI or library for management until
+an HTTP-management authorization contract is separately designed.
 
-Postkit does not terminate TLS, paginate large Meta collections, select an
-outbound sender from multiple configured Phone Number IDs, run distributed rate
-limits, replay dead letters, or provide a hosted inbox/billing dashboard. A
-successful send is still only Meta acceptance; use signed statuses for the
-final delivery result.
+Postkit does not terminate TLS, run distributed rate limits, replay dead
+letters, or provide a hosted inbox/billing dashboard. A successful send is
+still only Meta acceptance; use signed statuses for the final delivery result.
+
+## Opt-in live contract reads
+
+Mocked tests validate wire shapes. To verify the live, read-only Graph
+contracts against a deliberately configured local test account, run the
+ignored suite with a local Postkit vault and app configuration:
+
+```bash
+POSTKIT_LIVE_WHATSAPP=1 \
+POSTKIT_HOME="$HOME/.postkit" \
+cargo test -p postkit --features whatsapp-cloud,vault-file tests::live_whatsapp_cloud_reads -- --ignored --exact
+```
+
+It calls only `whoami`, first-page template/Flow/WABA/phone/system-user reads,
+and phone health. It does not send, upload, create, publish, subscribe, or
+change account settings. Omit the environment flag to keep the suite refused.
+See [product-completion.md](./product-completion.md) for the implementation
+and safety plan.
 
 Track remaining work as checkboxes in [checklist.md](./checklist.md).

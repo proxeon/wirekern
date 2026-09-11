@@ -130,6 +130,10 @@ struct HttpWhatsAppSend {
     /// invocation without `--allow-send`.
     #[serde(default)]
     allow_send: bool,
+    /// A configured local alias. This is intentionally not a raw phone ID:
+    /// the server may only route through senders the operator configured.
+    #[serde(default)]
+    sender: Option<String>,
     #[serde(flatten)]
     request: WhatsAppSendRequest,
 }
@@ -199,7 +203,12 @@ async fn whatsapp_send(State(state): State<AppState>, headers: HeaderMap, body: 
     let key = AccountKey::new("whatsapp_cloud", &req.account);
     match state
         .whatsapp
-        .send_whatsapp(&key, req.request, deadline_from(&headers))
+        .send_whatsapp_from(
+            &key,
+            req.sender.as_deref(),
+            req.request,
+            deadline_from(&headers),
+        )
         .await
     {
         Ok(out) => (StatusCode::OK, Json(out)).into_response(),
@@ -482,6 +491,7 @@ mod tests {
     struct WaMock {
         site: Site,
         sends: AtomicUsize,
+        phone_ids: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait]
@@ -530,11 +540,18 @@ mod tests {
     impl WhatsAppSender for WaMock {
         async fn send_whatsapp(
             &self,
-            _app: &postkit::AppConfig,
+            app: &postkit::AppConfig,
             _creds: &AccountCreds,
             _request: &WhatsAppSendRequest,
             _deadline: Deadline,
         ) -> Result<Outcome, Error> {
+            if let Some(phone) = app
+                .extra
+                .get("phone_number_id")
+                .and_then(|value| value.as_str())
+            {
+                self.phone_ids.lock().expect("phone ids").push(phone.into());
+            }
             let n = self.sends.fetch_add(1, Ordering::SeqCst);
             Ok(Outcome {
                 site: self.site.clone(),
@@ -551,6 +568,7 @@ mod tests {
         let mock = Arc::new(WaMock {
             site: Site::new("whatsapp_cloud"),
             sends: AtomicUsize::new(0),
+            phone_ids: std::sync::Mutex::new(Vec::new()),
         });
         let mut registry = Registry::new();
         registry.register_connector(Connector::from_publisher(mock.clone()).whatsapp(mock.clone()));
@@ -571,6 +589,7 @@ mod tests {
                 oauth: None,
                 extra: serde_json::json!({
                     "phone_number_id": "123456789",
+                    "senders": [{ "alias": "marketing", "phone_number_id": "987654321" }],
                     "app_secret": "webhook-secret",
                     "verify_token": "verify-me",
                 }),
@@ -578,8 +597,8 @@ mod tests {
         )
         .unwrap();
         let ledger = Arc::new(postkit::MemoryWhatsAppLedger::new());
-        let deny = Client::new(registry, vault.clone(), apps.clone())
-            .with_whatsapp_ledger(ledger.clone());
+        let deny =
+            Client::new(registry, vault.clone(), apps.clone()).with_whatsapp_ledger(ledger.clone());
         let mut registry_allow = Registry::new();
         registry_allow
             .register_connector(Connector::from_publisher(mock.clone()).whatsapp(mock.clone()));
@@ -759,6 +778,40 @@ mod tests {
         assert_eq!(v["id"], "wamid-0");
         assert!(v.get("ok").is_none());
         assert_eq!(mock.sends.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn whatsapp_http_routes_a_configured_sender_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (app, token, mock) = test_router(tmp.path());
+        let body = r#"{
+            "allow_send": true,
+            "sender": "marketing",
+            "idempotency_key": "marketing-1",
+            "message": {
+                "type": "reply",
+                "to": "60123456789",
+                "reply_to_message_id": "wamid.in",
+                "text": "hi"
+            }
+        }"#;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/whatsapp")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            *mock.phone_ids.lock().expect("phone ids"),
+            vec!["987654321".to_string()]
+        );
     }
 
     #[tokio::test]

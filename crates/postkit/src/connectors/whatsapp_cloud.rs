@@ -13,14 +13,14 @@ use crate::publisher::{AuthKind, Publisher};
 use crate::registry::Connector;
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::whatsapp::{
-    validate_media_upload, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppTemplateDraft,
-    WhatsAppFlowDraft, WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppPhoneNumber,
-    WhatsAppSystemUser, WhatsAppTemplateList, WhatsAppWaba,
-    WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
-    DeliveryConversation, DeliveryError, DeliveryPricing, DeliveryStatus, DeliveryStatusKind,
-    InboundContact, InboundInteractive, InboundLocation, InboundMedia, InboundMessage,
-    InboundMessages, InboundOrder, InboundReaction, InboundReferral, InboundUnsupported,
-    WebhookParseOptions, RecipientType, WhatsAppMessage, WhatsAppSendRequest,
+    validate_media_upload, DeliveryConversation, DeliveryError, DeliveryPricing, DeliveryStatus,
+    DeliveryStatusKind, InboundContact, InboundInteractive, InboundLocation, InboundMedia,
+    InboundMessage, InboundMessages, InboundOrder, InboundReaction, InboundReferral,
+    InboundUnsupported, RecipientType, WebhookParseOptions, WhatsAppFlowDraft, WhatsAppFlowList,
+    WhatsAppFlowRecord, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppMessage, WhatsAppPageQuery,
+    WhatsAppPhoneNumber, WhatsAppPhoneNumberList, WhatsAppSendRequest, WhatsAppSystemUser,
+    WhatsAppSystemUserList, WhatsAppTemplateDraft, WhatsAppTemplateList, WhatsAppTemplateQuery,
+    WhatsAppTemplateRecord, WhatsAppUploadedMedia, WhatsAppWaba, WhatsAppWabaList,
 };
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
@@ -524,10 +524,10 @@ impl WhatsAppTemplates for WhatsAppCloud {
         query: &WhatsAppTemplateQuery,
         deadline: Deadline,
     ) -> Result<WhatsAppTemplateList, Error> {
-        if query.limit.is_some_and(|n| n == 0 || n > 100) {
+        if let Err(reason) = query.validate_page() {
             return Err(Error::InvalidPost {
                 site: self.site.clone(),
-                reason: "template_limit_invalid".into(),
+                reason,
                 limit: None,
             });
         }
@@ -544,7 +544,7 @@ impl WhatsAppTemplates for WhatsAppCloud {
                 limit: None,
             })?;
             url.push_str("&name=");
-            url.push_str(name);
+            url.push_str(&percent_encode(name));
         }
         if let Some(status) = &query.status {
             validate_template_status_filter(status).map_err(|reason| Error::InvalidPost {
@@ -553,10 +553,14 @@ impl WhatsAppTemplates for WhatsAppCloud {
                 limit: None,
             })?;
             url.push_str("&status=");
-            url.push_str(status);
+            url.push_str(&percent_encode(status));
         }
         if let Some(limit) = query.limit {
             url.push_str(&format!("&limit={limit}"));
+        }
+        if let Some(after) = &query.after {
+            url.push_str("&after=");
+            url.push_str(&percent_encode(after));
         }
         let response = self
             .http
@@ -574,7 +578,10 @@ impl WhatsAppTemplates for WhatsAppCloud {
             .iter()
             .map(|v| parse_template_record(v, "template_list_invalid"))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(WhatsAppTemplateList { templates })
+        Ok(WhatsAppTemplateList {
+            templates,
+            after: graph_after(&body),
+        })
     }
 
     async fn get_template(
@@ -720,22 +727,22 @@ impl WhatsAppFlows for WhatsAppCloud {
         &self,
         app: &AppConfig,
         creds: &AccountCreds,
+        query: &WhatsAppPageQuery,
         deadline: Deadline,
     ) -> Result<WhatsAppFlowList, Error> {
+        page_query_error(query, &self.site)?;
         let waba = waba_id(app)?;
         let token = access_token(creds)?;
+        let url = graph_page_url(
+            format!(
+                "{}/{waba}/flows?fields=id,name,status,categories",
+                self.base
+            ),
+            query,
+        );
         let response = self
             .http
-            .send(
-                self.http
-                    .get(&format!(
-                        "{}/{waba}/flows?fields=id,name,status,categories",
-                        self.base
-                    ))
-                    .bearer_auth(token),
-                deadline,
-                &self.site,
-            )
+            .send(self.http.get(&url).bearer_auth(token), deadline, &self.site)
             .await?;
         let body = read_json(response, &self.site).await?;
         let flows = body
@@ -749,7 +756,10 @@ impl WhatsAppFlows for WhatsAppCloud {
             .iter()
             .map(|v| parse_flow_record(v, "flow_list_invalid"))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(WhatsAppFlowList { flows })
+        Ok(WhatsAppFlowList {
+            flows,
+            after: graph_after(&body),
+        })
     }
 
     async fn get_flow(
@@ -877,25 +887,34 @@ impl WhatsAppAccount for WhatsAppCloud {
         &self,
         app: &AppConfig,
         creds: &AccountCreds,
+        query: &WhatsAppPageQuery,
         deadline: Deadline,
-    ) -> Result<Vec<WhatsAppWaba>, Error> {
+    ) -> Result<WhatsAppWabaList, Error> {
+        page_query_error(query, &self.site)?;
         let token = access_token(creds)?;
         if let Some(business_id) = extra_digits(app, "business_id") {
+            let url = graph_page_url(
+                format!(
+                    "{}/{business_id}/owned_whatsapp_business_accounts?fields=id,name",
+                    self.base
+                ),
+                query,
+            );
             let response = self
                 .http
-                .send(
-                    self.http
-                        .get(&format!(
-                            "{}/{business_id}/owned_whatsapp_business_accounts?fields=id,name",
-                            self.base
-                        ))
-                        .bearer_auth(token),
-                    deadline,
-                    &self.site,
-                )
+                .send(self.http.get(&url).bearer_auth(token), deadline, &self.site)
                 .await?;
             let body = read_json(response, &self.site).await?;
             return parse_waba_list(&body);
+        }
+        // A configured single WABA is a node read, not an edge. Meta cannot
+        // return a next cursor here, so reject one rather than silently
+        // pretending that a caller paginated it.
+        if query.after.is_some() {
+            return Err(Error::InvalidQuery {
+                site: self.site.clone(),
+                reason: "waba_cursor_requires_business_id".into(),
+            });
         }
         let waba = waba_id(app)?;
         let response = self
@@ -909,29 +928,32 @@ impl WhatsAppAccount for WhatsAppCloud {
             )
             .await?;
         let body = read_json(response, &self.site).await?;
-        Ok(vec![parse_waba(&body)?])
+        Ok(WhatsAppWabaList {
+            wabas: vec![parse_waba(&body)?],
+            after: None,
+        })
     }
 
     async fn list_phone_numbers(
         &self,
         app: &AppConfig,
         creds: &AccountCreds,
+        query: &WhatsAppPageQuery,
         deadline: Deadline,
-    ) -> Result<Vec<WhatsAppPhoneNumber>, Error> {
+    ) -> Result<WhatsAppPhoneNumberList, Error> {
+        page_query_error(query, &self.site)?;
         let waba = waba_id(app)?;
         let token = access_token(creds)?;
+        let url = graph_page_url(
+            format!(
+                "{}/{waba}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,messaging_limit_tier,code_verification_status",
+                self.base
+            ),
+            query,
+        );
         let response = self
             .http
-            .send(
-                self.http
-                    .get(&format!(
-                        "{}/{waba}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,messaging_limit_tier,code_verification_status",
-                        self.base
-                    ))
-                    .bearer_auth(token),
-                deadline,
-                &self.site,
-            )
+            .send(self.http.get(&url).bearer_auth(token), deadline, &self.site)
             .await?;
         let body = read_json(response, &self.site).await?;
         let rows = body
@@ -942,7 +964,13 @@ impl WhatsAppAccount for WhatsAppCloud {
                 code: "phone_list_invalid".into(),
                 message: "WhatsApp phone list returned no data array".into(),
             })?;
-        rows.iter().map(parse_phone_number).collect()
+        Ok(WhatsAppPhoneNumberList {
+            phone_numbers: rows
+                .iter()
+                .map(parse_phone_number)
+                .collect::<Result<_, _>>()?,
+            after: graph_after(&body),
+        })
     }
 
     async fn phone_health(
@@ -1079,25 +1107,25 @@ impl WhatsAppAccount for WhatsAppCloud {
         &self,
         app: &AppConfig,
         creds: &AccountCreds,
+        query: &WhatsAppPageQuery,
         deadline: Deadline,
-    ) -> Result<Vec<WhatsAppSystemUser>, Error> {
+    ) -> Result<WhatsAppSystemUserList, Error> {
+        page_query_error(query, &self.site)?;
         let business_id = extra_digits(app, "business_id").ok_or_else(|| Error::Auth {
             site: self.site.clone(),
             reason: "missing_business_id".into(),
         })?;
         let token = access_token(creds)?;
+        let url = graph_page_url(
+            format!(
+                "{}/{business_id}/system_users?fields=id,name,role",
+                self.base
+            ),
+            query,
+        );
         let response = self
             .http
-            .send(
-                self.http
-                    .get(&format!(
-                        "{}/{business_id}/system_users?fields=id,name,role",
-                        self.base
-                    ))
-                    .bearer_auth(token),
-                deadline,
-                &self.site,
-            )
+            .send(self.http.get(&url).bearer_auth(token), deadline, &self.site)
             .await?;
         let body = read_json(response, &self.site).await?;
         let rows = body
@@ -1108,7 +1136,8 @@ impl WhatsAppAccount for WhatsAppCloud {
                 code: "system_user_list_invalid".into(),
                 message: "System user list returned no data array".into(),
             })?;
-        rows.iter()
+        let users = rows
+            .iter()
             .map(|v| {
                 let id = v
                     .get("id")
@@ -1119,13 +1148,17 @@ impl WhatsAppAccount for WhatsAppCloud {
                         code: "missing_system_user_id".into(),
                         message: "System user row had no id".into(),
                     })?;
-                Ok(WhatsAppSystemUser {
+                Ok::<WhatsAppSystemUser, Error>(WhatsAppSystemUser {
                     id,
                     name: v.get("name").and_then(value_string),
                     role: v.get("role").and_then(value_string),
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(WhatsAppSystemUserList {
+            users,
+            after: graph_after(&body),
+        })
     }
 }
 
@@ -1136,7 +1169,52 @@ fn extra_digits(app: &AppConfig, key: &str) -> Option<String> {
         .filter(|id| !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn parse_waba_list(body: &Value) -> Result<Vec<WhatsAppWaba>, Error> {
+/// Graph returns the next page cursor under `paging.cursors.after`. Expose
+/// only that opaque continuation token, never the `paging.next` URL, which
+/// is an implementation detail that can carry unrelated query parameters.
+fn graph_after(body: &Value) -> Option<String> {
+    body.pointer("/paging/cursors/after")
+        .and_then(value_string)
+        .filter(|cursor| !cursor.is_empty() && cursor.len() <= 1_024)
+}
+
+fn page_query_error(query: &WhatsAppPageQuery, site: &Site) -> Result<(), Error> {
+    query.validate().map_err(|reason| Error::InvalidQuery {
+        site: site.clone(),
+        reason,
+    })
+}
+
+/// Append one bounded opaque page query to an existing Graph edge URL. Both
+/// values are percent encoded; cursors are data, never fragments of a URL.
+fn graph_page_url(mut url: String, query: &WhatsAppPageQuery) -> String {
+    if let Some(limit) = query.limit {
+        url.push_str(&format!("&limit={limit}"));
+    }
+    if let Some(after) = &query.after {
+        url.push_str("&after=");
+        url.push_str(&percent_encode(after));
+    }
+    url
+}
+
+/// Graph query values can contain cursor punctuation. Encode them locally
+/// rather than trusting a caller-provided cursor/name to stay inside one
+/// parameter (the `fields` portion above is Postkit-owned static text).
+fn percent_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn parse_waba_list(body: &Value) -> Result<WhatsAppWabaList, Error> {
     let rows = body
         .get("data")
         .and_then(Value::as_array)
@@ -1145,7 +1223,10 @@ fn parse_waba_list(body: &Value) -> Result<Vec<WhatsAppWaba>, Error> {
             code: "waba_list_invalid".into(),
             message: "WhatsApp WABA list returned no data array".into(),
         })?;
-    rows.iter().map(parse_waba).collect()
+    Ok(WhatsAppWabaList {
+        wabas: rows.iter().map(parse_waba).collect::<Result<_, _>>()?,
+        after: graph_after(body),
+    })
 }
 
 fn parse_waba(value: &Value) -> Result<WhatsAppWaba, Error> {
@@ -1188,11 +1269,7 @@ fn parse_flow_record(value: &Value, missing: &str) -> Result<WhatsAppFlowRecord,
     let categories = value
         .get("categories")
         .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(value_string)
-                .collect::<Vec<_>>()
-        })
+        .map(|arr| arr.iter().filter_map(value_string).collect::<Vec<_>>())
         .unwrap_or_default();
     let id = value
         .get("id")
@@ -1322,7 +1399,14 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
             media,
             caption,
             reply_to_message_id,
-        } => media_payload(to, "image", media, caption.as_deref(), None, reply_to_message_id.as_deref()),
+        } => media_payload(
+            to,
+            "image",
+            media,
+            caption.as_deref(),
+            None,
+            reply_to_message_id.as_deref(),
+        ),
         WhatsAppMessage::Document {
             to,
             media,
@@ -1341,18 +1425,39 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
             to,
             media,
             reply_to_message_id,
-        } => media_payload(to, "audio", media, None, None, reply_to_message_id.as_deref()),
+        } => media_payload(
+            to,
+            "audio",
+            media,
+            None,
+            None,
+            reply_to_message_id.as_deref(),
+        ),
         WhatsAppMessage::Video {
             to,
             media,
             caption,
             reply_to_message_id,
-        } => media_payload(to, "video", media, caption.as_deref(), None, reply_to_message_id.as_deref()),
+        } => media_payload(
+            to,
+            "video",
+            media,
+            caption.as_deref(),
+            None,
+            reply_to_message_id.as_deref(),
+        ),
         WhatsAppMessage::Sticker {
             to,
             media,
             reply_to_message_id,
-        } => media_payload(to, "sticker", media, None, None, reply_to_message_id.as_deref()),
+        } => media_payload(
+            to,
+            "sticker",
+            media,
+            None,
+            None,
+            reply_to_message_id.as_deref(),
+        ),
         WhatsAppMessage::Buttons {
             to,
             body,
@@ -1371,7 +1476,13 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
                     })).collect::<Vec<_>>(),
                 },
             });
-            interactive_payload(to, interactive, header.as_deref(), footer.as_deref(), reply_to_message_id.as_deref())
+            interactive_payload(
+                to,
+                interactive,
+                header.as_deref(),
+                footer.as_deref(),
+                reply_to_message_id.as_deref(),
+            )
         }
         WhatsAppMessage::List {
             to,
@@ -1390,7 +1501,13 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
                     "sections": sections,
                 },
             });
-            interactive_payload(to, interactive, header.as_deref(), footer.as_deref(), reply_to_message_id.as_deref())
+            interactive_payload(
+                to,
+                interactive,
+                header.as_deref(),
+                footer.as_deref(),
+                reply_to_message_id.as_deref(),
+            )
         }
         WhatsAppMessage::CtaUrl {
             to,
@@ -1409,7 +1526,13 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
                     "parameters": { "display_text": display_text, "url": url },
                 },
             });
-            interactive_payload(to, interactive, header.as_deref(), footer.as_deref(), reply_to_message_id.as_deref())
+            interactive_payload(
+                to,
+                interactive,
+                header.as_deref(),
+                footer.as_deref(),
+                reply_to_message_id.as_deref(),
+            )
         }
         WhatsAppMessage::LocationRequest {
             to,
@@ -1431,7 +1554,8 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
             payload,
             reply_to_message_id,
         } => {
-            let mut parameters = json!({ "display_text": display_text.as_deref().unwrap_or("Call Now") });
+            let mut parameters =
+                json!({ "display_text": display_text.as_deref().unwrap_or("Call Now") });
             if let Some(ttl) = ttl_minutes {
                 parameters["ttl_minutes"] = json!(ttl);
             }
@@ -1548,7 +1672,13 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
                 "body": { "text": body },
                 "action": action,
             });
-            interactive_payload(to, interactive, None, footer.as_deref(), reply_to_message_id.as_deref())
+            interactive_payload(
+                to,
+                interactive,
+                None,
+                footer.as_deref(),
+                reply_to_message_id.as_deref(),
+            )
         }
         WhatsAppMessage::Product {
             to,
@@ -1568,7 +1698,13 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
             if let Some(body) = body {
                 interactive["body"] = json!({ "text": body });
             }
-            interactive_payload(to, interactive, None, footer.as_deref(), reply_to_message_id.as_deref())
+            interactive_payload(
+                to,
+                interactive,
+                None,
+                footer.as_deref(),
+                reply_to_message_id.as_deref(),
+            )
         }
         WhatsAppMessage::ProductList {
             to,
@@ -1597,7 +1733,13 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
                     }).collect::<Vec<_>>(),
                 },
             });
-            interactive_payload(to, interactive, Some(header), footer.as_deref(), reply_to_message_id.as_deref())
+            interactive_payload(
+                to,
+                interactive,
+                Some(header),
+                footer.as_deref(),
+                reply_to_message_id.as_deref(),
+            )
         }
         WhatsAppMessage::OrderStatus {
             to,
@@ -1658,7 +1800,13 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
                 "body": { "text": body },
                 "action": { "name": "flow", "parameters": parameters },
             });
-            interactive_payload(to, interactive, header.as_deref(), footer.as_deref(), reply_to_message_id.as_deref())
+            interactive_payload(
+                to,
+                interactive,
+                header.as_deref(),
+                footer.as_deref(),
+                reply_to_message_id.as_deref(),
+            )
         }
         WhatsAppMessage::MarkRead { message_id } => json!({
             "messaging_product": "whatsapp",
@@ -2447,23 +2595,29 @@ mod tests {
         });
         assert_eq!(audio["type"], "audio");
         assert_eq!(audio["context"]["message_id"], "wamid.in");
-        assert_eq!(send_payload(&WhatsAppMessage::Video {
-            to: "60123456789".into(),
-            media: crate::whatsapp::MediaRef {
-                id: Some("v1".into()),
-                link: None,
-            },
-            caption: None,
-            reply_to_message_id: None,
-        })["type"], "video");
-        assert_eq!(send_payload(&WhatsAppMessage::Sticker {
-            to: "60123456789".into(),
-            media: crate::whatsapp::MediaRef {
-                id: Some("s1".into()),
-                link: None,
-            },
-            reply_to_message_id: None,
-        })["type"], "sticker");
+        assert_eq!(
+            send_payload(&WhatsAppMessage::Video {
+                to: "60123456789".into(),
+                media: crate::whatsapp::MediaRef {
+                    id: Some("v1".into()),
+                    link: None,
+                },
+                caption: None,
+                reply_to_message_id: None,
+            })["type"],
+            "video"
+        );
+        assert_eq!(
+            send_payload(&WhatsAppMessage::Sticker {
+                to: "60123456789".into(),
+                media: crate::whatsapp::MediaRef {
+                    id: Some("s1".into()),
+                    link: None,
+                },
+                reply_to_message_id: None,
+            })["type"],
+            "sticker"
+        );
     }
 
     #[test]
@@ -2481,7 +2635,10 @@ mod tests {
             reply_to_message_id: None,
         });
         assert_eq!(buttons["interactive"]["type"], "button");
-        assert_eq!(buttons["interactive"]["action"]["buttons"][0]["reply"]["id"], "yes");
+        assert_eq!(
+            buttons["interactive"]["action"]["buttons"][0]["reply"]["id"],
+            "yes"
+        );
         let list = send_payload(&WhatsAppMessage::List {
             to: "60123456789".into(),
             body: "Menu".into(),
@@ -2509,7 +2666,10 @@ mod tests {
             reply_to_message_id: None,
         });
         assert_eq!(cta["interactive"]["type"], "cta_url");
-        assert_eq!(cta["interactive"]["action"]["parameters"]["url"], "https://example.com");
+        assert_eq!(
+            cta["interactive"]["action"]["parameters"]["url"],
+            "https://example.com"
+        );
         assert_eq!(
             send_payload(&WhatsAppMessage::LocationRequest {
                 to: "60123456789".into(),
@@ -2564,10 +2724,7 @@ mod tests {
             reply_to_message_id: None,
         });
         assert_eq!(addr["interactive"]["type"], "address_message");
-        assert_eq!(
-            addr["interactive"]["action"]["parameters"]["country"],
-            "MY"
-        );
+        assert_eq!(addr["interactive"]["action"]["parameters"]["country"], "MY");
         let reaction = send_payload(&WhatsAppMessage::Reaction {
             to: "60123456789".into(),
             message_id: "wamid.in".into(),
@@ -2922,7 +3079,10 @@ mod tests {
         let components = &payload["template"]["components"];
         assert_eq!(components[0]["type"], "header");
         assert_eq!(components[0]["parameters"][0]["type"], "image");
-        assert_eq!(components[1]["parameters"][0]["parameter_name"], "first_name");
+        assert_eq!(
+            components[1]["parameters"][0]["parameter_name"],
+            "first_name"
+        );
         assert_eq!(components[2]["type"], "limited_time_offer");
         assert_eq!(components[3]["sub_type"], "copy_code");
         assert_eq!(components[3]["parameters"][0]["coupon_code"], "SAVE10");
@@ -2954,9 +3114,7 @@ mod tests {
                     text: "Thanks".into(),
                 },
                 TemplateCreateComponent::Buttons {
-                    buttons: vec![TemplateCreateButton::QuickReply {
-                        text: "OK".into(),
-                    }],
+                    buttons: vec![TemplateCreateButton::QuickReply { text: "OK".into() }],
                 },
             ],
         }
@@ -2966,7 +3124,8 @@ mod tests {
     async fn template_list_get_create_edit_delete_use_waba_paths() {
         let server = MockServer::start();
         let list = server.mock(|when, then| {
-            when.method(GET).path("/v26.0/102290129340398/message_templates");
+            when.method(GET)
+                .path("/v26.0/102290129340398/message_templates");
             then.status(200).json_body(json!({
                 "data": [{
                     "id": "920070352646140",
@@ -2988,7 +3147,8 @@ mod tests {
             }));
         });
         let create = server.mock(|when, then| {
-            when.method(POST).path("/v26.0/102290129340398/message_templates");
+            when.method(POST)
+                .path("/v26.0/102290129340398/message_templates");
             then.status(200).json_body(json!({
                 "id": "111",
                 "status": "PENDING",
@@ -3004,7 +3164,8 @@ mod tests {
             }));
         });
         let del = server.mock(|when, then| {
-            when.method(DELETE).path("/v26.0/102290129340398/message_templates");
+            when.method(DELETE)
+                .path("/v26.0/102290129340398/message_templates");
             then.status(200).json_body(json!({ "success": true }));
         });
         let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
@@ -3029,7 +3190,13 @@ mod tests {
             .unwrap();
         assert_eq!(created.status.as_deref(), Some("PENDING"));
         connector
-            .edit_template(&app(), &creds(), "111", &sample_draft(), Deadline::from_secs(30))
+            .edit_template(
+                &app(),
+                &creds(),
+                "111",
+                &sample_draft(),
+                Deadline::from_secs(30),
+            )
             .await
             .unwrap();
         connector
@@ -3041,6 +3208,62 @@ mod tests {
         assert_eq!(create.hits(), 1);
         assert_eq!(edit.hits(), 1);
         assert_eq!(del.hits(), 1);
+    }
+
+    #[test]
+    fn page_cursor_is_opaque_encoded_and_extracted_without_next_url() {
+        let url = graph_page_url(
+            "https://graph.example/flows?fields=id".into(),
+            &WhatsAppPageQuery {
+                limit: Some(25),
+                after: Some("cursor+/=&".into()),
+            },
+        );
+        assert_eq!(
+            url,
+            "https://graph.example/flows?fields=id&limit=25&after=cursor%2B%2F%3D%26"
+        );
+        assert_eq!(
+            graph_after(&json!({
+                "paging": {
+                    "cursors": { "after": "next-page" },
+                    "next": "https://graph.example/secretly-unrelated"
+                }
+            })),
+            Some("next-page".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn template_list_round_trips_meta_after_cursor() {
+        let server = MockServer::start();
+        let list = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/102290129340398/message_templates")
+                .query_param("after", "old-page");
+            then.status(200).json_body(json!({
+                "data": [{ "id": "1", "name": "one" }],
+                "paging": { "cursors": { "after": "next-page" } }
+            }));
+        });
+        let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let page = connector
+            .list_templates(
+                &app(),
+                &creds(),
+                &WhatsAppTemplateQuery {
+                    name: None,
+                    status: None,
+                    limit: Some(25),
+                    after: Some("old-page".into()),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.templates[0].id, "1");
+        assert_eq!(page.after.as_deref(), Some("next-page"));
+        assert_eq!(list.hits(), 1);
     }
 
     #[test]
@@ -3106,7 +3329,10 @@ mod tests {
             reply_to_message_id: None,
         });
         assert_eq!(flow["interactive"]["type"], "flow");
-        assert_eq!(flow["interactive"]["action"]["parameters"]["flow_id"], "123");
+        assert_eq!(
+            flow["interactive"]["action"]["parameters"]["flow_id"],
+            "123"
+        );
         assert_eq!(
             flow["interactive"]["action"]["parameters"]["flow_message_version"],
             "3"
@@ -3124,7 +3350,8 @@ mod tests {
         });
         let create = server.mock(|when, then| {
             when.method(POST).path("/v26.0/102290129340398/flows");
-            then.status(200).json_body(json!({ "id": "123", "status": "DRAFT" }));
+            then.status(200)
+                .json_body(json!({ "id": "123", "status": "DRAFT" }));
         });
         let publish = server.mock(|when, then| {
             when.method(POST).path("/v26.0/123/publish");
@@ -3132,7 +3359,12 @@ mod tests {
         });
         let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
         let listed = connector
-            .list_flows(&app(), &creds(), Deadline::from_secs(30))
+            .list_flows(
+                &app(),
+                &creds(),
+                &crate::whatsapp::WhatsAppPageQuery::default(),
+                Deadline::from_secs(30),
+            )
             .await
             .unwrap();
         assert_eq!(listed.flows[0].status.as_deref(), Some("DRAFT"));
@@ -3159,7 +3391,8 @@ mod tests {
     async fn account_list_subscribe_register_and_health_use_waba_paths() {
         let server = MockServer::start();
         let phones = server.mock(|when, then| {
-            when.method(GET).path("/v26.0/102290129340398/phone_numbers");
+            when.method(GET)
+                .path("/v26.0/102290129340398/phone_numbers");
             then.status(200).json_body(json!({
                 "data": [{
                     "id": "123456789",
@@ -3178,7 +3411,8 @@ mod tests {
             }));
         });
         let sub = server.mock(|when, then| {
-            when.method(POST).path("/v26.0/102290129340398/subscribed_apps");
+            when.method(POST)
+                .path("/v26.0/102290129340398/subscribed_apps");
             then.status(200).json_body(json!({ "success": true }));
         });
         let register = server.mock(|when, then| {
@@ -3191,14 +3425,23 @@ mod tests {
         });
         let waba = server.mock(|when, then| {
             when.method(GET).path("/v26.0/102290129340398");
-            then.status(200).json_body(json!({ "id": "102290129340398", "name": "Test" }));
+            then.status(200)
+                .json_body(json!({ "id": "102290129340398", "name": "Test" }));
         });
         let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
         let listed = connector
-            .list_phone_numbers(&app(), &creds(), Deadline::from_secs(30))
+            .list_phone_numbers(
+                &app(),
+                &creds(),
+                &crate::whatsapp::WhatsAppPageQuery::default(),
+                Deadline::from_secs(30),
+            )
             .await
             .unwrap();
-        assert_eq!(listed[0].quality_rating.as_deref(), Some("GREEN"));
+        assert_eq!(
+            listed.phone_numbers[0].quality_rating.as_deref(),
+            Some("GREEN")
+        );
         let health_row = connector
             .phone_health(&app(), &creds(), Deadline::from_secs(30))
             .await
@@ -3217,10 +3460,15 @@ mod tests {
             .await
             .unwrap();
         let wabas = connector
-            .list_wabas(&app(), &creds(), Deadline::from_secs(30))
+            .list_wabas(
+                &app(),
+                &creds(),
+                &crate::whatsapp::WhatsAppPageQuery::default(),
+                Deadline::from_secs(30),
+            )
             .await
             .unwrap();
-        assert_eq!(wabas[0].id, "102290129340398");
+        assert_eq!(wabas.wabas[0].id, "102290129340398");
         assert_eq!(phones.hits(), 1);
         assert_eq!(health.hits(), 1);
         assert_eq!(sub.hits(), 1);
