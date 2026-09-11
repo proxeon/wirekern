@@ -38,6 +38,10 @@ impl Http {
         self.inner.post(url)
     }
 
+    pub fn delete(&self, url: &str) -> RequestBuilder {
+        self.inner.delete(url)
+    }
+
     pub async fn send(
         &self,
         req: RequestBuilder,

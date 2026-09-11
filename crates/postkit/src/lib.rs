@@ -77,7 +77,7 @@ pub use draft::{
 };
 pub use error::{Error, WireError};
 #[cfg(feature = "whatsapp-cloud")]
-pub use facets::WhatsAppSender;
+pub use facets::{WhatsAppAssets, WhatsAppSender};
 pub use facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 pub use insights::{
     AdAccount, AdAccountsReply, AttributionWindow, Breakdown, DateRange, InsightRow, InsightsLevel,
@@ -100,7 +100,8 @@ pub use whatsapp::{
     DeliveryConversation, DeliveryError, DeliveryPricing, DeliveryStatus, DeliveryStatusKind,
     InboundContact, InboundInteractive, InboundLocation, InboundMedia, InboundMessage,
     InboundMessages, InboundOrder, InboundReaction, InboundReferral, InboundUnsupported,
-    WebhookParseOptions, WhatsAppMessage, WhatsAppSendRequest, MAX_REPLY_TEXT,
+    WebhookParseOptions, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppMessage,
+    WhatsAppSendRequest, WhatsAppUploadedMedia, MAX_REPLY_TEXT, MediaRef,
 };
 
 #[cfg(feature = "vault-file")]

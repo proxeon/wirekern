@@ -321,6 +321,119 @@ pub struct InboundMessages {
     pub statuses: Vec<DeliveryStatus>,
 }
 
+/// Cloud API media handle. Either `id` (uploaded / inbound) or an `https`
+/// `link`. Meta requires exactly one.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MediaRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+}
+
+impl MediaRef {
+    pub fn validate(&self) -> Result<(), String> {
+        match (
+            self.id.as_deref().filter(|s| !s.is_empty()),
+            self.link.as_deref().filter(|s| !s.is_empty()),
+        ) {
+            (Some(_), None) => Ok(()),
+            (None, Some(link)) if link.starts_with("https://") => Ok(()),
+            (None, Some(_)) => Err("media_link_must_be_https".into()),
+            _ => Err("media_id_or_https_link_required".into()),
+        }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        match (
+            self.id.as_deref().filter(|s| !s.is_empty()),
+            self.link.as_deref().filter(|s| !s.is_empty()),
+        ) {
+            (Some(id), _) => serde_json::json!({ "id": id }),
+            (_, Some(link)) => serde_json::json!({ "link": link }),
+            _ => serde_json::json!({}),
+        }
+    }
+}
+
+/// Local file for `POST /{phone-number-id}/media`. Bytes are not Debug-printed.
+#[derive(Clone, Eq, PartialEq)]
+pub struct WhatsAppMediaUpload {
+    pub bytes: Vec<u8>,
+    pub mime_type: String,
+    pub filename: String,
+}
+
+impl std::fmt::Debug for WhatsAppMediaUpload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WhatsAppMediaUpload")
+            .field("bytes_len", &self.bytes.len())
+            .field("mime_type", &self.mime_type)
+            .field("filename", &self.filename)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppUploadedMedia {
+    pub id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppMediaMeta {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_size: Option<u64>,
+    /// Short-lived download URL (Meta: ~5 minutes). Do not persist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// Meta documented MIME types for Cloud API media (image 5 MB, audio/video
+/// 16 MB, sticker 500 KB, document 100 MB).
+pub fn media_max_bytes(mime: &str) -> Option<usize> {
+    match mime {
+        "image/jpeg" | "image/png" => Some(5 * 1024 * 1024),
+        "image/webp" => Some(500 * 1024),
+        "audio/aac" | "audio/amr" | "audio/mpeg" | "audio/mp4" | "audio/ogg" => {
+            Some(16 * 1024 * 1024)
+        }
+        "video/mp4" | "video/3gpp" => Some(16 * 1024 * 1024),
+        "text/plain"
+        | "application/pdf"
+        | "application/msword"
+        | "application/vnd.ms-excel"
+        | "application/vnd.ms-powerpoint"
+        | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        | "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
+            Some(100 * 1024 * 1024)
+        }
+        _ => None,
+    }
+}
+
+pub fn validate_media_upload(upload: &WhatsAppMediaUpload) -> Result<(), String> {
+    if upload.filename.is_empty() || upload.filename.contains('/') || upload.filename.contains('\\')
+    {
+        return Err("media_filename_invalid".into());
+    }
+    let Some(max) = media_max_bytes(&upload.mime_type) else {
+        return Err("media_mime_unsupported".into());
+    };
+    if upload.bytes.is_empty() {
+        return Err("media_bytes_empty".into());
+    }
+    if upload.bytes.len() > max {
+        return Err("media_bytes_too_large".into());
+    }
+    Ok(())
+}
+
 pub fn validate_recipient(value: &str) -> Result<(), String> {
     normalize_recipient(value).map(|_| ())
 }
@@ -485,5 +598,58 @@ mod tests {
             idempotency_key: "order-42-v1".into(),
         };
         assert!(ok.validate().is_ok());
+    }
+
+    #[test]
+    fn media_ref_requires_exactly_one_of_id_or_https_link() {
+        assert!(MediaRef {
+            id: Some("123".into()),
+            link: None,
+        }
+        .validate()
+        .is_ok());
+        assert!(MediaRef {
+            id: None,
+            link: Some("https://example.com/a.jpg".into()),
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            MediaRef {
+                id: None,
+                link: Some("http://insecure.example/a.jpg".into()),
+            }
+            .validate()
+            .unwrap_err(),
+            "media_link_must_be_https"
+        );
+        assert_eq!(
+            MediaRef {
+                id: Some("1".into()),
+                link: Some("https://example.com/a.jpg".into()),
+            }
+            .validate()
+            .unwrap_err(),
+            "media_id_or_https_link_required"
+        );
+    }
+
+    #[test]
+    fn media_upload_rejects_unknown_mime_and_oversize() {
+        let small = WhatsAppMediaUpload {
+            bytes: vec![1, 2, 3],
+            mime_type: "image/jpeg".into(),
+            filename: "a.jpg".into(),
+        };
+        assert!(validate_media_upload(&small).is_ok());
+        let bad = WhatsAppMediaUpload {
+            bytes: vec![1],
+            mime_type: "application/octet-stream".into(),
+            filename: "a.bin".into(),
+        };
+        assert_eq!(
+            validate_media_upload(&bad).unwrap_err(),
+            "media_mime_unsupported"
+        );
     }
 }

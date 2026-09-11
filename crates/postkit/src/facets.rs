@@ -19,7 +19,9 @@ use crate::pages::PagesReply;
 use crate::types::Outcome;
 use crate::types::{AccountCreds, AppConfig, Deadline};
 #[cfg(feature = "whatsapp-cloud")]
-use crate::whatsapp::WhatsAppSendRequest;
+use crate::whatsapp::{
+    WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppSendRequest, WhatsAppUploadedMedia,
+};
 use async_trait::async_trait;
 
 /// Spend/performance reads. Distinct from publish because a metrics-only
@@ -125,4 +127,42 @@ pub trait WhatsAppSender: Send + Sync {
         request: &WhatsAppSendRequest,
         deadline: Deadline,
     ) -> Result<Outcome, Error>;
+}
+
+/// Cloud API media upload/get/download/delete. Distinct from `WhatsAppSender`
+/// so a send-only mock does not have to fake Graph multipart.
+#[cfg(feature = "whatsapp-cloud")]
+#[async_trait]
+pub trait WhatsAppAssets: Send + Sync {
+    async fn upload_media(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        upload: &WhatsAppMediaUpload,
+        deadline: Deadline,
+    ) -> Result<WhatsAppUploadedMedia, Error>;
+
+    async fn media_metadata(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        media_id: &str,
+        deadline: Deadline,
+    ) -> Result<WhatsAppMediaMeta, Error>;
+
+    async fn download_media(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        media_id: &str,
+        deadline: Deadline,
+    ) -> Result<Vec<u8>, Error>;
+
+    async fn delete_media(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        media_id: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error>;
 }

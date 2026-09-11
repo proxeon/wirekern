@@ -63,6 +63,32 @@ pub enum Capability {
     SendText,
     #[serde(rename = "send.template")]
     SendTemplate,
+    #[serde(rename = "send.media")]
+    SendMedia,
+    #[serde(rename = "send.interactive")]
+    SendInteractive,
+    #[serde(rename = "send.location")]
+    SendLocation,
+    #[serde(rename = "send.contacts")]
+    SendContacts,
+    #[serde(rename = "send.reaction")]
+    SendReaction,
+    #[serde(rename = "send.read")]
+    MarkRead,
+    #[serde(rename = "send.typing")]
+    SendTyping,
+    #[serde(rename = "send.catalog")]
+    SendCatalog,
+    #[serde(rename = "send.flow")]
+    SendFlow,
+    #[serde(rename = "manage.whatsapp_media")]
+    ManageWhatsAppMedia,
+    #[serde(rename = "read.whatsapp_media")]
+    ReadWhatsAppMedia,
+    #[serde(rename = "read.templates")]
+    ReadTemplates,
+    #[serde(rename = "manage.templates")]
+    ManageTemplates,
     #[serde(rename = "read.webhook_messages")]
     ReadWebhookMessages,
     #[serde(rename = "read.webhook_statuses")]
@@ -95,6 +121,19 @@ impl Capability {
             Self::SendReply => "send.reply",
             Self::SendText => "send.text",
             Self::SendTemplate => "send.template",
+            Self::SendMedia => "send.media",
+            Self::SendInteractive => "send.interactive",
+            Self::SendLocation => "send.location",
+            Self::SendContacts => "send.contacts",
+            Self::SendReaction => "send.reaction",
+            Self::MarkRead => "send.read",
+            Self::SendTyping => "send.typing",
+            Self::SendCatalog => "send.catalog",
+            Self::SendFlow => "send.flow",
+            Self::ManageWhatsAppMedia => "manage.whatsapp_media",
+            Self::ReadWhatsAppMedia => "read.whatsapp_media",
+            Self::ReadTemplates => "read.templates",
+            Self::ManageTemplates => "manage.templates",
             Self::ReadWebhookMessages => "read.webhook_messages",
             Self::ReadWebhookStatuses => "read.webhook_statuses",
             Self::ReadMetrics => "read.metrics",

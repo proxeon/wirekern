@@ -273,6 +273,81 @@ impl Client {
         )
     }
 
+    /// Upload bytes to Cloud API media. Not a customer send: no `--allow-send`.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn upload_whatsapp_media(
+        &self,
+        key: &AccountKey,
+        upload: crate::whatsapp::WhatsAppMediaUpload,
+        deadline: Deadline,
+    ) -> Result<crate::whatsapp::WhatsAppUploadedMedia, Error> {
+        self.require_capability(&key.site, Capability::ManageWhatsAppMedia)?;
+        let assets = self.whatsapp_assets(&key.site, Capability::ManageWhatsAppMedia)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        assets
+            .upload_media(&app, &creds, &upload, deadline)
+            .await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn whatsapp_media_metadata(
+        &self,
+        key: &AccountKey,
+        media_id: &str,
+        deadline: Deadline,
+    ) -> Result<crate::whatsapp::WhatsAppMediaMeta, Error> {
+        self.require_capability(&key.site, Capability::ReadWhatsAppMedia)?;
+        let assets = self.whatsapp_assets(&key.site, Capability::ReadWhatsAppMedia)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        assets
+            .media_metadata(&app, &creds, media_id, deadline)
+            .await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn download_whatsapp_media(
+        &self,
+        key: &AccountKey,
+        media_id: &str,
+        deadline: Deadline,
+    ) -> Result<Vec<u8>, Error> {
+        self.require_capability(&key.site, Capability::ReadWhatsAppMedia)?;
+        let assets = self.whatsapp_assets(&key.site, Capability::ReadWhatsAppMedia)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        assets
+            .download_media(&app, &creds, media_id, deadline)
+            .await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn delete_whatsapp_media(
+        &self,
+        key: &AccountKey,
+        media_id: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        self.require_capability(&key.site, Capability::ManageWhatsAppMedia)?;
+        let assets = self.whatsapp_assets(&key.site, Capability::ManageWhatsAppMedia)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        assets.delete_media(&app, &creds, media_id, deadline).await
+    }
+
     /// Shared load + optional proactive refresh. Every network verb that
     /// talks with stored OAuth creds goes through here so a missed retry
     /// cannot land on only one of insights/pages/ads.
@@ -835,6 +910,18 @@ impl Client {
             .connector(site)
             .and_then(|c| c.media_facet())
             .ok_or_else(|| Self::missing_facet(site, Capability::ReadMedia))
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    fn whatsapp_assets(
+        &self,
+        site: &Site,
+        need: Capability,
+    ) -> Result<Arc<dyn crate::facets::WhatsAppAssets>, Error> {
+        self.registry
+            .connector(site)
+            .and_then(|c| c.whatsapp_assets_facet())
+            .ok_or_else(|| Self::missing_facet(site, need))
     }
 
     #[cfg(feature = "whatsapp-cloud")]

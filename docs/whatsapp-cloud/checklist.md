@@ -49,7 +49,7 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 
 ### Media
 
-- [ ] Media upload / retrieve metadata / download / delete
+- [x] Media upload / retrieve metadata / download / delete
 - [ ] Send image (id or link, optional caption)
 - [ ] Send document (id or link, filename, caption)
 - [ ] Send audio
