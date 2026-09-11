@@ -1,6 +1,6 @@
 # postkit
 
-Send posts to **Threads**, **Bluesky**, **Facebook Pages**, and **Instagram**, plus narrowly typed **WhatsApp Cloud** business messages, through official APIs with credentials that never leave your machine. Rust library + CLI. No scheduler, no hosted inbox, no cloud.
+**postkit is an official-API execution kernel:** send now through your apps, with your vault, no calendar. Posts to **Threads**, **Bluesky**, **Facebook Pages**, and **Instagram**, plus narrowly typed **WhatsApp Cloud** business messages and paused **Meta Ads** drafts. Credentials never leave your machine. Rust library + CLI. No scheduler, no hosted inbox, no cloud.
 
 Success is an `Outcome` with `id` and `url`; failure is a `WireError` you can branch on. No `"ok": true`.
 
@@ -34,7 +34,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 
 | | |
 |--|--|
-| **Job** | Send **now** through official APIs. `Outcome.id` + `url`, or `WireError`. |
+| **Job** | Official-API execution kernel. Send **now**. `Outcome.id` + `url`, or `WireError`. |
 | **Not** | Scheduler, persistent inbox, drafts, `--at`, media download/hosting, `serve` |
 | **You hold** | Tokens on disk. BYO Meta app / Bluesky app password. |
 | **Surfaces** | `cargo add postkit` (`Client`) and the `postkit` CLI. HTTP (`pk_live_`) only when a caller cannot exec. |

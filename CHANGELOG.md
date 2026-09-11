@@ -12,6 +12,13 @@ same detail by subject.
 
 ## [Unreleased]
 
+### Changed
+
+- Product sentence is now explicit: postkit is an **official-API execution
+  kernel** (send now through your apps, your vault, no calendar). Ads and
+  WhatsApp stay in this crate. LinkedIn, Telegram, and video are future
+  connectors, not a second product.
+
 ### Added
 
 - WhatsApp Cloud business messaging: the new `whatsapp_cloud` connector uses

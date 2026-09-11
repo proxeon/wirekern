@@ -1,4 +1,4 @@
-//! Publish kernel: official APIs, BYO credentials, no calendar.
+//! Official-API execution kernel: send now through your apps, with your vault, no calendar.
 //!
 //! Default features are empty. Inject `Vault` / `AppStore`, or enable `vault-file`.
 
