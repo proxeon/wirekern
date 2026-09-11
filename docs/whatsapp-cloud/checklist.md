@@ -35,7 +35,7 @@ Do these without becoming an inbox.
 - [x] Inbound media: image/audio/video/document/sticker **ids**, mime, caption
 - [x] Inbound structured: location, contacts, interactive reply, reaction, referral, order, unsupported
 - [x] Failed status `errors[]` (code / title only)
-- [ ] Status extras (optional, privacy-gated): `recipient_id`, `conversation`, `pricing`
+- [x] Status extras (optional, privacy-gated): `recipient_id`, `conversation`, `pricing`
 - [ ] HTTP webhook **parse**: `POST /v1/whatsapp/webhook` (same HMAC as CLI; no listener)
 - [ ] `preview_url` as a typed opt-in (today hardcoded `false`)
 - [ ] Recipient grammar: Meta-supported `+` / formatting vs digits-only

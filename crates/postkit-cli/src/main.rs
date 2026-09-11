@@ -469,6 +469,10 @@ enum WhatsAppWebhookCmd {
         /// The request's exact `X-Hub-Signature-256` value.
         #[arg(long)]
         signature: String,
+        /// Include recipient_id, conversation, and pricing on statuses.
+        /// Off by default: those fields are personal/billing data.
+        #[arg(long)]
+        status_extras: bool,
     },
 }
 
@@ -755,15 +759,24 @@ async fn dispatch(
             )
             .await
         }
-        Commands::WhatsApp(WhatsAppCmd::Webhook(WhatsAppWebhookCmd::Parse { signature })) => {
+        Commands::WhatsApp(WhatsAppCmd::Webhook(WhatsAppWebhookCmd::Parse {
+            signature,
+            status_extras,
+        })) => {
             let raw = read_whatsapp_webhook_stdin(json)?;
             let apps = FileAppStore::new(home).map_err(|error| fail(&error, json))?;
             let app = apps
                 .get(&Site::new("whatsapp_cloud"))
                 .map_err(|error| fail(&error, json))?;
-            let reply = postkit::connectors::whatsapp_cloud::WhatsAppCloud::parse_signed_webhook(
-                &app, &signature, &raw,
-            )
+            let reply =
+                postkit::connectors::whatsapp_cloud::WhatsAppCloud::parse_signed_webhook_with(
+                    &app,
+                    &signature,
+                    &raw,
+                    postkit::WebhookParseOptions {
+                        include_status_extras: status_extras,
+                    },
+                )
             .map_err(|error| fail(&error, json))?;
             if json {
                 emit_raw(&serde_json::to_value(&reply).expect("webhook reply serializes"));
@@ -1750,11 +1763,19 @@ mod tests {
                     id: "wamid.private-one".into(),
                     status: postkit::DeliveryStatusKind::Delivered,
                     timestamp: Some("1".into()),
+                    errors: vec![],
+                    recipient_id: None,
+                    conversation: None,
+                    pricing: None,
                 },
                 postkit::DeliveryStatus {
                     id: "wamid.private-two".into(),
                     status: postkit::DeliveryStatusKind::Read,
                     timestamp: Some("2".into()),
+                    errors: vec![],
+                    recipient_id: None,
+                    conversation: None,
+                    pricing: None,
                 },
             ],
         };

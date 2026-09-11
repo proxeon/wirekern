@@ -252,6 +252,36 @@ pub struct DeliveryStatus {
     /// Meta `statuses[].errors` — code and title only, no href/raw dump.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<DeliveryError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<DeliveryConversation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<DeliveryPricing>,
+}
+
+/// Off by default: recipient/conversation/pricing are personal/billing data.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WebhookParseOptions {
+    pub include_status_extras: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryConversation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_type: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryPricing {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub billable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -11,10 +11,10 @@ use crate::publisher::{AuthKind, Publisher};
 use crate::registry::Connector;
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::whatsapp::{
-    DeliveryError, DeliveryStatus, DeliveryStatusKind, InboundContact, InboundInteractive,
-    InboundLocation,
+    DeliveryConversation, DeliveryError, DeliveryPricing, DeliveryStatus, DeliveryStatusKind,
+    InboundContact, InboundInteractive, InboundLocation,
     InboundMedia, InboundMessage, InboundMessages, InboundOrder, InboundReaction, InboundReferral,
-    InboundUnsupported, WhatsAppMessage, WhatsAppSendRequest,
+    InboundUnsupported, WebhookParseOptions, WhatsAppMessage, WhatsAppSendRequest,
 };
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
@@ -66,6 +66,15 @@ impl WhatsAppCloud {
         app: &AppConfig,
         signature: &str,
         raw_body: &[u8],
+    ) -> Result<InboundMessages, Error> {
+        Self::parse_signed_webhook_with(app, signature, raw_body, WebhookParseOptions::default())
+    }
+
+    pub fn parse_signed_webhook_with(
+        app: &AppConfig,
+        signature: &str,
+        raw_body: &[u8],
+        options: WebhookParseOptions,
     ) -> Result<InboundMessages, Error> {
         if raw_body.len() > MAX_WEBHOOK_BYTES {
             return Err(webhook_error("webhook_body_too_large"));
@@ -127,7 +136,7 @@ impl WhatsAppCloud {
                         .as_array()
                         .ok_or_else(|| webhook_error("webhook_statuses_invalid"))?;
                     for status in delivery_statuses {
-                        statuses.push(delivery_status(status)?);
+                        statuses.push(delivery_status(status, options.include_status_extras)?);
                     }
                 }
                 let Some(inbound) = value.get("messages").and_then(Value::as_array) else {
@@ -517,7 +526,7 @@ fn inbound_unsupported(kind: &str, value: &Value) -> Option<InboundUnsupported> 
     })
 }
 
-fn delivery_status(value: &Value) -> Result<DeliveryStatus, Error> {
+fn delivery_status(value: &Value, include_extras: bool) -> Result<DeliveryStatus, Error> {
     let id = value
         .get("id")
         .and_then(value_string)
@@ -543,6 +552,31 @@ fn delivery_status(value: &Value) -> Result<DeliveryStatus, Error> {
         status,
         timestamp: value.get("timestamp").and_then(value_string),
         errors: delivery_errors(value),
+        recipient_id: include_extras
+            .then(|| value.get("recipient_id").and_then(value_string))
+            .flatten(),
+        conversation: include_extras.then(|| delivery_conversation(value)).flatten(),
+        pricing: include_extras.then(|| delivery_pricing(value)).flatten(),
+    })
+}
+
+fn delivery_conversation(value: &Value) -> Option<DeliveryConversation> {
+    let object = value.get("conversation")?;
+    Some(DeliveryConversation {
+        id: object.get("id").and_then(value_string),
+        origin_type: object
+            .get("origin")
+            .and_then(|o| o.get("type"))
+            .and_then(value_string),
+    })
+}
+
+fn delivery_pricing(value: &Value) -> Option<DeliveryPricing> {
+    let object = value.get("pricing")?;
+    Some(DeliveryPricing {
+        billable: object.get("billable").and_then(Value::as_bool),
+        pricing_model: object.get("pricing_model").and_then(value_string),
+        category: object.get("category").and_then(value_string),
     })
 }
 
@@ -983,6 +1017,61 @@ mod tests {
         );
         let wire = serde_json::to_value(&reply).unwrap();
         assert!(wire["statuses"][0]["errors"][0].get("href").is_none());
+    }
+
+    #[test]
+    fn status_extras_are_off_by_default_and_opt_in() {
+        let raw = br#"{
+          "object":"whatsapp_business_account",
+          "entry":[{"changes":[{
+            "field":"messages",
+            "value":{
+              "metadata":{"phone_number_id":"123456789"},
+              "statuses":[{
+                "id":"wamid.outbound",
+                "status":"delivered",
+                "recipient_id":"60123456789",
+                "conversation":{"id":"conv-1","origin":{"type":"service"}},
+                "pricing":{"billable":false,"pricing_model":"PMP","category":"service"}
+              }]
+            }
+          }]}]
+        }"#;
+        let hidden = WhatsAppCloud::parse_signed_webhook(&app(), &signed(raw), raw).unwrap();
+        assert!(hidden.statuses[0].recipient_id.is_none());
+        assert!(hidden.statuses[0].conversation.is_none());
+        assert!(hidden.statuses[0].pricing.is_none());
+        let shown = WhatsAppCloud::parse_signed_webhook_with(
+            &app(),
+            &signed(raw),
+            raw,
+            WebhookParseOptions {
+                include_status_extras: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            shown.statuses[0].recipient_id.as_deref(),
+            Some("60123456789")
+        );
+        assert_eq!(
+            shown.statuses[0]
+                .conversation
+                .as_ref()
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("conv-1")
+        );
+        assert_eq!(
+            shown.statuses[0]
+                .pricing
+                .as_ref()
+                .unwrap()
+                .category
+                .as_deref(),
+            Some("service")
+        );
     }
 
     #[test]
