@@ -407,7 +407,7 @@ enum WhatsAppCmd {
     /// while a customer-service window is open; `--allow-send` acknowledges
     /// a real private message. Not a quoted reply — use `reply` for that.
     Text {
-        /// WhatsApp ID, digits with optional `+` / spaces / hyphens / parens.
+        /// WhatsApp ID. `+`, spaces, hyphens, and parentheses are stripped.
         #[arg(long)]
         to: String,
         #[arg(long)]
@@ -422,7 +422,7 @@ enum WhatsAppCmd {
     /// Reply with text to an inbound message. Meta enforces its service
     /// window; `--allow-send` acknowledges this is a real private message.
     Reply {
-        /// WhatsApp ID, digits only with country code, no leading `+`.
+        /// WhatsApp ID. `+`, spaces, hyphens, and parentheses are allowed.
         #[arg(long)]
         to: String,
         /// The inbound `wamid` this reply is attached to.
@@ -443,7 +443,7 @@ enum WhatsAppCmd {
     /// Send one existing Meta-approved template with ordered body variables.
     /// It cannot create, edit, or submit a template for approval.
     Template {
-        /// WhatsApp ID, digits only with country code, no leading `+`.
+        /// WhatsApp ID. `+`, spaces, hyphens, and parentheses are allowed.
         #[arg(long)]
         to: String,
         /// Existing approved template name, e.g. `order_update`.

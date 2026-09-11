@@ -317,12 +317,31 @@ pub struct InboundMessages {
 }
 
 pub fn validate_recipient(value: &str) -> Result<(), String> {
-    if !(MIN_RECIPIENT_DIGITS..=MAX_RECIPIENT_DIGITS).contains(&value.len())
-        || !value.bytes().all(|byte| byte.is_ascii_digit())
-    {
+    normalize_recipient(value).map(|_| ())
+}
+
+/// Meta accepts `+`, spaces, hyphens, and parentheses. We strip decoration
+/// and keep an optional leading `+` plus 7–15 digits so the wire matches
+/// Meta's recommendation without inventing a country code.
+pub fn normalize_recipient(value: &str) -> Result<String, String> {
+    let mut plus = false;
+    let mut digits = String::new();
+    for c in value.chars() {
+        match c {
+            '+' if !plus && digits.is_empty() => plus = true,
+            '0'..='9' => digits.push(c),
+            ' ' | '-' | '(' | ')' => {}
+            _ => return Err("recipient_must_be_whatsapp_id".into()),
+        }
+    }
+    if !(MIN_RECIPIENT_DIGITS..=MAX_RECIPIENT_DIGITS).contains(&digits.len()) {
         return Err("recipient_must_be_whatsapp_id".into());
     }
-    Ok(())
+    Ok(if plus {
+        format!("+{digits}")
+    } else {
+        digits
+    })
 }
 
 fn validate_context_id(value: &str) -> Result<(), String> {
@@ -384,9 +403,21 @@ mod tests {
             preview_url: false,
         };
         assert!(reply.validate().is_ok());
+        assert!(WhatsAppMessage::Reply {
+            to: "+60 12-345 6789".into(),
+            reply_to_message_id: "wamid.abc".into(),
+            text: "ok".into(),
+            preview_url: false,
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            normalize_recipient("+60 (12) 345-6789").unwrap(),
+            "+60123456789"
+        );
         assert_eq!(
             WhatsAppMessage::Reply {
-                to: "+60123456789".into(),
+                to: "not-a-number".into(),
                 reply_to_message_id: "wamid.abc".into(),
                 text: "ok".into(),
                 preview_url: false,

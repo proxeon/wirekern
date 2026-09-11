@@ -293,7 +293,7 @@ pub fn send_payload(message: &WhatsAppMessage) -> Value {
         } => json!({
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": to,
+            "to": crate::whatsapp::normalize_recipient(to).expect("validated"),
             "context": { "message_id": reply_to_message_id },
             "type": "text",
             "text": { "body": text, "preview_url": preview_url },
@@ -305,7 +305,7 @@ pub fn send_payload(message: &WhatsAppMessage) -> Value {
         } => json!({
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": to,
+            "to": crate::whatsapp::normalize_recipient(to).expect("validated"),
             "type": "text",
             "text": { "body": text, "preview_url": preview_url },
         }),
@@ -331,7 +331,7 @@ pub fn send_payload(message: &WhatsAppMessage) -> Value {
             json!({
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
-                "to": to,
+                "to": crate::whatsapp::normalize_recipient(to).expect("validated"),
                 "type": "template",
                 "template": template,
             })
@@ -806,6 +806,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn formatted_recipient_is_normalized_on_the_wire() {
+        let server = MockServer::start();
+        let payload = json!({
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": "+60123456789",
+            "type": "text",
+            "text": { "body": "Hello", "preview_url": false },
+        });
+        let send = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/123456789/messages")
+                .json_body(payload);
+            then.status(200)
+                .json_body(json!({ "messages": [{ "id": "wamid.fmt" }] }));
+        });
+        let request = WhatsAppSendRequest {
+            message: WhatsAppMessage::Text {
+                to: "+60 12-345 6789".into(),
+                text: "Hello".into(),
+                preview_url: false,
+            },
+            idempotency_key: "fmt-1".into(),
+        };
+        let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        connector
+            .send_whatsapp(&app(), &creds(), &request, Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(send.hits(), 1);
+    }
+
+    #[tokio::test]
     async fn preview_url_opt_in_reaches_the_wire() {
         let server = MockServer::start();
         let payload = json!({
@@ -892,7 +925,7 @@ mod tests {
         });
         let bad = WhatsAppSendRequest {
             message: WhatsAppMessage::Reply {
-                to: "+60123456789".into(),
+                to: "not-a-number".into(),
                 reply_to_message_id: "wamid.inbound".into(),
                 text: "ok".into(),
                 preview_url: false,
