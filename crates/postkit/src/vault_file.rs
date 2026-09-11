@@ -1,4 +1,4 @@
-use crate::apps::{env_override, AppStore};
+use crate::apps::{env_override, resolve_app_config, AppStore};
 use crate::error::Error;
 use crate::types::{valid_name, AccountCreds, AccountKey, AppConfig, Outcome, Site};
 use crate::vault::{Claim, Vault};
@@ -237,8 +237,12 @@ impl FileAppStore {
 
 impl AppStore for FileAppStore {
     fn get(&self, site: &Site) -> Result<AppConfig, Error> {
-        if let Some(from_env) = env_override(site) {
-            return Ok(from_env);
+        // OAuth config remains an atomic env override. WhatsApp is resolved
+        // below so an env sender ID can retain a file-backed webhook secret.
+        if site.as_str() != "whatsapp_cloud" {
+            if let Some(from_env) = env_override(site) {
+                return Ok(from_env);
+            }
         }
         if !valid_name(site.as_str()) {
             return Err(Error::InvalidName(site.as_str().into()));
@@ -247,11 +251,23 @@ impl AppStore for FileAppStore {
             .root
             .join("apps")
             .join(format!("{}.json", site.as_str()));
-        let data = fs::read(&path).map_err(|_| Error::Auth {
+        // Missing is a normal environment-only deployment; other read and
+        // parse failures remain errors rather than silently hiding a broken
+        // local configuration behind an incomplete merged result.
+        let from_file = match fs::read(&path) {
+            Ok(data) => Some(serde_json::from_slice(&data)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => {
+                return Err(Error::Auth {
+                    site: site.clone(),
+                    reason: "missing_app_config".into(),
+                });
+            }
+        };
+        resolve_app_config(site, from_file).ok_or_else(|| Error::Auth {
             site: site.clone(),
             reason: "missing_app_config".into(),
-        })?;
-        Ok(serde_json::from_slice(&data)?)
+        })
     }
 
     fn put(&self, cfg: &AppConfig) -> Result<(), Error> {

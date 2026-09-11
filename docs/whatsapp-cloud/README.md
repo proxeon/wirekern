@@ -63,9 +63,12 @@ export POSTKIT_WHATSAPP_APP_SECRET='<META_APP_SECRET>' # only needed for webhook
 postkit auth whatsapp_cloud --token '<SYSTEM_USER_ACCESS_TOKEN>'
 ```
 
-Environment configuration takes precedence over `apps/whatsapp_cloud.json`.
-`apps show` redacts the app secret and reports only whether webhook signing is
-configured.
+For WhatsApp, environment values override their matching fields rather than
+replacing the whole file: setting only `POSTKIT_WHATSAPP_PHONE_NUMBER_ID`
+keeps an app secret previously saved by `whatsapp configure`. Set
+`POSTKIT_WHATSAPP_APP_SECRET` only when you deliberately want to replace that
+secret. `apps show` redacts the app secret and reports only whether webhook
+signing is configured.
 
 ## 3. Send a reply
 

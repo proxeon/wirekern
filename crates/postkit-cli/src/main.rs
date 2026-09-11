@@ -582,7 +582,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
             apps.put(&cfg).map_err(|e| fail(&e, json))?;
             if app_source(&Site::new("whatsapp_cloud")) == "env" {
                 eprintln!(
-                    "note: POSTKIT_WHATSAPP_PHONE_NUMBER_ID is set and takes precedence over apps/whatsapp_cloud.json"
+                    "note: WhatsApp environment values override only their matching fields; an unset app secret remains available from apps/whatsapp_cloud.json"
                 );
             }
             let phone_number_id = cfg.extra["phone_number_id"]

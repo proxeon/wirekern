@@ -141,7 +141,9 @@ postkit whatsapp webhook parse --signature <X-Hub-Signature-256> < raw-webhook.j
 owner-only app configuration; `auth` separately validates and stores the
 static System User token in the vault. The config secret is never displayed by
 `apps show`. Environment values `POSTKIT_WHATSAPP_PHONE_NUMBER_ID` and
-`POSTKIT_WHATSAPP_APP_SECRET` override the file.
+`POSTKIT_WHATSAPP_APP_SECRET` override only their corresponding file fields;
+for example, an environment sender ID retains a file-backed app secret unless
+the environment also supplies a replacement secret.
 
 `reply` and `template` are intentionally not `post` subcommands. They are
 private, recipient-specific writes: both require an idempotency key and exact
