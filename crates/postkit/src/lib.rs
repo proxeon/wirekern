@@ -77,7 +77,7 @@ pub use draft::{
 };
 pub use error::{Error, WireError};
 #[cfg(feature = "whatsapp-cloud")]
-pub use facets::{WhatsAppAssets, WhatsAppSender};
+pub use facets::{WhatsAppAssets, WhatsAppSender, WhatsAppTemplates};
 pub use facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 pub use insights::{
     AdAccount, AdAccountsReply, AttributionWindow, Breakdown, DateRange, InsightRow, InsightsLevel,
@@ -102,7 +102,9 @@ pub use whatsapp::{
     InboundMessages, InboundOrder, InboundReaction, InboundReferral, InboundUnsupported,
     WebhookParseOptions, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppMessage,
     WhatsAppSendRequest, WhatsAppUploadedMedia, MAX_REPLY_TEXT, MediaRef, NamedBodyParameter,
-    LimitedTimeOffer, RecipientType, TemplateButton, TemplateHeader,
+    LimitedTimeOffer, ParameterFormat, RecipientType, TemplateButton, TemplateCreateButton,
+    TemplateCreateComponent, TemplateHeader, WhatsAppTemplateDraft, WhatsAppTemplateList,
+    WhatsAppTemplateQuery, WhatsAppTemplateRecord,
 };
 
 #[cfg(feature = "vault-file")]

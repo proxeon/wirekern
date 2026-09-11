@@ -5,13 +5,14 @@
 //! number and the later webhook delivery state are all part of the contract.
 
 use crate::error::Error;
-use crate::facets::{WhatsAppAssets, WhatsAppSender};
+use crate::facets::{WhatsAppAssets, WhatsAppSender, WhatsAppTemplates};
 use crate::http::Http;
 use crate::publisher::{AuthKind, Publisher};
 use crate::registry::Connector;
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::whatsapp::{
-    validate_media_upload, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppUploadedMedia,
+    validate_media_upload, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppTemplateDraft,
+    WhatsAppTemplateList, WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
     DeliveryConversation, DeliveryError, DeliveryPricing, DeliveryStatus, DeliveryStatusKind,
     InboundContact, InboundInteractive, InboundLocation, InboundMedia, InboundMessage,
     InboundMessages, InboundOrder, InboundReaction, InboundReferral, InboundUnsupported,
@@ -57,7 +58,8 @@ impl WhatsAppCloud {
         let this = std::sync::Arc::new(self);
         Connector::from_publisher(this.clone())
             .whatsapp(this.clone())
-            .whatsapp_assets(this)
+            .whatsapp_assets(this.clone())
+            .whatsapp_templates(this)
     }
 
     /// Verify and parse raw `messages` webhook bytes. This is intentionally a
@@ -181,6 +183,8 @@ impl Publisher for WhatsAppCloud {
             Capability::SendTyping,
             Capability::ManageWhatsAppMedia,
             Capability::ReadWhatsAppMedia,
+            Capability::ReadTemplates,
+            Capability::ManageTemplates,
             Capability::ReadWebhookMessages,
             Capability::ReadWebhookStatuses,
         ]
@@ -475,6 +479,205 @@ impl WhatsAppAssets for WhatsAppCloud {
                 site: self.site.clone(),
                 code: "media_delete_failed".into(),
                 message: "WhatsApp media delete did not return success".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl WhatsAppTemplates for WhatsAppCloud {
+    async fn list_templates(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        query: &WhatsAppTemplateQuery,
+        deadline: Deadline,
+    ) -> Result<WhatsAppTemplateList, Error> {
+        if query.limit.is_some_and(|n| n == 0 || n > 100) {
+            return Err(Error::InvalidPost {
+                site: self.site.clone(),
+                reason: "template_limit_invalid".into(),
+                limit: None,
+            });
+        }
+        let waba = waba_id(app)?;
+        let token = access_token(creds)?;
+        let mut url = format!(
+            "{}/{waba}/message_templates?fields=id,name,language,status,category,quality_score",
+            self.base
+        );
+        if let Some(name) = &query.name {
+            validate_template_query_name(name).map_err(|reason| Error::InvalidPost {
+                site: self.site.clone(),
+                reason,
+                limit: None,
+            })?;
+            url.push_str("&name=");
+            url.push_str(name);
+        }
+        if let Some(status) = &query.status {
+            validate_template_status_filter(status).map_err(|reason| Error::InvalidPost {
+                site: self.site.clone(),
+                reason,
+                limit: None,
+            })?;
+            url.push_str("&status=");
+            url.push_str(status);
+        }
+        if let Some(limit) = query.limit {
+            url.push_str(&format!("&limit={limit}"));
+        }
+        let response = self
+            .http
+            .send(self.http.get(&url).bearer_auth(token), deadline, &self.site)
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        let templates = body
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::Platform {
+                site: self.site.clone(),
+                code: "template_list_invalid".into(),
+                message: "WhatsApp template list returned no data array".into(),
+            })?
+            .iter()
+            .map(parse_template_record)
+            .collect();
+        Ok(WhatsAppTemplateList { templates })
+    }
+
+    async fn get_template(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        template_id: &str,
+        deadline: Deadline,
+    ) -> Result<WhatsAppTemplateRecord, Error> {
+        validate_graph_id(template_id).map_err(|reason| Error::InvalidPost {
+            site: self.site.clone(),
+            reason,
+            limit: None,
+        })?;
+        let _waba = waba_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .get(&format!(
+                        "{}/{template_id}?fields=id,name,language,status,category,quality_score",
+                        self.base
+                    ))
+                    .bearer_auth(token),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        Ok(parse_template_record(&body))
+    }
+
+    async fn create_template(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        draft: &WhatsAppTemplateDraft,
+        deadline: Deadline,
+    ) -> Result<WhatsAppTemplateRecord, Error> {
+        draft.validate().map_err(|reason| Error::InvalidPost {
+            site: self.site.clone(),
+            reason,
+            limit: None,
+        })?;
+        let waba = waba_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .post(&format!("{}/{waba}/message_templates", self.base))
+                    .bearer_auth(token)
+                    .json(&template_draft_payload(draft)),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        Ok(parse_template_record(&body))
+    }
+
+    async fn edit_template(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        template_id: &str,
+        draft: &WhatsAppTemplateDraft,
+        deadline: Deadline,
+    ) -> Result<WhatsAppTemplateRecord, Error> {
+        validate_graph_id(template_id).map_err(|reason| Error::InvalidPost {
+            site: self.site.clone(),
+            reason,
+            limit: None,
+        })?;
+        draft.validate().map_err(|reason| Error::InvalidPost {
+            site: self.site.clone(),
+            reason,
+            limit: None,
+        })?;
+        let _waba = waba_id(app)?;
+        let token = access_token(creds)?;
+        let mut payload = template_draft_payload(draft);
+        // Name is immutable after create; sending it on edit is rejected.
+        payload.as_object_mut().map(|o| o.remove("name"));
+        let response = self
+            .http
+            .send(
+                self.http
+                    .post(&format!("{}/{template_id}", self.base))
+                    .bearer_auth(token)
+                    .json(&payload),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        Ok(parse_template_record(&body))
+    }
+
+    async fn delete_template(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        name: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        crate::whatsapp::validate_template_name(name).map_err(|reason| Error::InvalidPost {
+            site: self.site.clone(),
+            reason,
+            limit: None,
+        })?;
+        let waba = waba_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .delete(&format!(
+                        "{}/{waba}/message_templates?name={name}",
+                        self.base
+                    ))
+                    .bearer_auth(token),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        if body.get("success").and_then(Value::as_bool) != Some(true) {
+            return Err(Error::Platform {
+                site: self.site.clone(),
+                code: "template_delete_failed".into(),
+                message: "WhatsApp template delete did not return success".into(),
             });
         }
         Ok(())
@@ -925,6 +1128,129 @@ fn media_payload(
     payload
 }
 
+fn waba_id(app: &AppConfig) -> Result<String, Error> {
+    app.extra
+        .get("waba_id")
+        .and_then(value_string)
+        .filter(|id| {
+            !id.is_empty() && id.len() <= 32 && id.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        .ok_or_else(|| Error::Auth {
+            site: Site::new(SITE),
+            reason: "missing_waba_id".into(),
+        })
+}
+
+fn validate_graph_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 32 || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("template_id_invalid".into());
+    }
+    Ok(())
+}
+
+fn validate_template_query_name(name: &str) -> Result<(), String> {
+    crate::whatsapp::validate_template_name(name)
+}
+
+fn validate_template_status_filter(status: &str) -> Result<(), String> {
+    match status {
+        "APPROVED" | "PENDING" | "REJECTED" | "PAUSED" | "DISABLED" | "IN_APPEAL"
+        | "PENDING_DELETION" | "DELETED" | "LIMIT_EXCEEDED" | "ARCHIVED" => Ok(()),
+        _ => Err("template_status_invalid".into()),
+    }
+}
+
+fn parse_template_record(value: &Value) -> WhatsAppTemplateRecord {
+    let quality = value
+        .get("quality_score")
+        .and_then(|q| q.get("score"))
+        .and_then(value_string)
+        .or_else(|| value.get("quality").and_then(value_string));
+    WhatsAppTemplateRecord {
+        id: value.get("id").and_then(value_string).unwrap_or_default(),
+        name: value.get("name").and_then(value_string),
+        language: value.get("language").and_then(value_string),
+        status: value.get("status").and_then(value_string),
+        category: value.get("category").and_then(value_string),
+        quality,
+    }
+}
+
+fn template_draft_payload(draft: &WhatsAppTemplateDraft) -> Value {
+    use crate::whatsapp::{TemplateCreateButton, TemplateCreateComponent};
+    let components: Vec<Value> = draft
+        .components
+        .iter()
+        .map(|component| match component {
+            TemplateCreateComponent::Header {
+                format,
+                text,
+                example_handle,
+            } => {
+                let mut c = json!({ "type": "HEADER", "format": format });
+                if let Some(text) = text {
+                    c["text"] = json!(text);
+                }
+                if let Some(handle) = example_handle {
+                    c["example"] = json!({ "header_handle": [handle] });
+                }
+                c
+            }
+            TemplateCreateComponent::Body {
+                text,
+                example,
+                named_example,
+            } => {
+                let mut c = json!({ "type": "BODY", "text": text });
+                if !named_example.is_empty() {
+                    c["example"] = json!({
+                        "body_text_named_params": named_example.iter().map(|p| json!({
+                            "param_name": p.parameter_name,
+                            "example": p.text,
+                        })).collect::<Vec<_>>(),
+                    });
+                } else if !example.is_empty() {
+                    c["example"] = json!({ "body_text": [example] });
+                }
+                c
+            }
+            TemplateCreateComponent::Footer { text } => {
+                json!({ "type": "FOOTER", "text": text })
+            }
+            TemplateCreateComponent::Buttons { buttons } => json!({
+                "type": "BUTTONS",
+                "buttons": buttons.iter().map(|b| match b {
+                    TemplateCreateButton::QuickReply { text } => json!({
+                        "type": "QUICK_REPLY",
+                        "text": text,
+                    }),
+                    TemplateCreateButton::Url { text, url } => json!({
+                        "type": "URL",
+                        "text": text,
+                        "url": url,
+                    }),
+                    TemplateCreateButton::PhoneNumber { text, phone_number } => json!({
+                        "type": "PHONE_NUMBER",
+                        "text": text,
+                        "phone_number": phone_number,
+                    }),
+                    TemplateCreateButton::CopyCode { example } => json!({
+                        "type": "COPY_CODE",
+                        "example": example,
+                    }),
+                }).collect::<Vec<_>>(),
+            }),
+        })
+        .collect();
+    json!({
+        "name": draft.name,
+        "language": draft.language,
+        "category": draft.category.to_uppercase(),
+        "parameter_format": draft.parameter_format.as_str(),
+        "components": components,
+    })
+}
+
 fn phone_number_id(app: &AppConfig) -> Result<String, Error> {
     app.extra
         .get("phone_number_id")
@@ -1308,6 +1634,7 @@ mod tests {
             oauth: None,
             extra: json!({
                 "phone_number_id": "123456789",
+                "waba_id": "102290129340398",
                 "app_secret": "webhook-secret",
             }),
         }
@@ -1908,6 +2235,119 @@ mod tests {
         assert_eq!(components[3]["parameters"][0]["coupon_code"], "SAVE10");
         assert_eq!(components[4]["sub_type"], "url");
         assert_eq!(components[5]["sub_type"], "phone_number");
+    }
+
+    fn sample_draft() -> crate::whatsapp::WhatsAppTemplateDraft {
+        use crate::whatsapp::{
+            TemplateCreateButton, TemplateCreateComponent, WhatsAppTemplateDraft,
+        };
+        WhatsAppTemplateDraft {
+            name: "order_update".into(),
+            language: "en_US".into(),
+            category: "utility".into(),
+            parameter_format: crate::whatsapp::ParameterFormat::Positional,
+            components: vec![
+                TemplateCreateComponent::Header {
+                    format: "TEXT".into(),
+                    text: Some("Update".into()),
+                    example_handle: None,
+                },
+                TemplateCreateComponent::Body {
+                    text: "Hi {{1}}, your order is ready.".into(),
+                    example: vec!["Ada".into()],
+                    named_example: vec![],
+                },
+                TemplateCreateComponent::Footer {
+                    text: "Thanks".into(),
+                },
+                TemplateCreateComponent::Buttons {
+                    buttons: vec![TemplateCreateButton::QuickReply {
+                        text: "OK".into(),
+                    }],
+                },
+            ],
+        }
+    }
+
+    #[tokio::test]
+    async fn template_list_get_create_edit_delete_use_waba_paths() {
+        let server = MockServer::start();
+        let list = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/102290129340398/message_templates");
+            then.status(200).json_body(json!({
+                "data": [{
+                    "id": "920070352646140",
+                    "name": "order_update",
+                    "language": "en_US",
+                    "status": "APPROVED",
+                    "category": "UTILITY",
+                    "quality_score": { "score": "GREEN" }
+                }]
+            }));
+        });
+        let get = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/920070352646140");
+            then.status(200).json_body(json!({
+                "id": "920070352646140",
+                "name": "order_update",
+                "status": "APPROVED",
+                "quality_score": { "score": "YELLOW" }
+            }));
+        });
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/102290129340398/message_templates");
+            then.status(200).json_body(json!({
+                "id": "111",
+                "status": "PENDING",
+                "category": "UTILITY"
+            }));
+        });
+        let edit = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/111");
+            then.status(200).json_body(json!({
+                "id": "111",
+                "status": "PENDING",
+                "category": "UTILITY"
+            }));
+        });
+        let del = server.mock(|when, then| {
+            when.method(DELETE).path("/v26.0/102290129340398/message_templates");
+            then.status(200).json_body(json!({ "success": true }));
+        });
+        let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let listed = connector
+            .list_templates(
+                &app(),
+                &creds(),
+                &crate::whatsapp::WhatsAppTemplateQuery::default(),
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.templates[0].quality.as_deref(), Some("GREEN"));
+        let got = connector
+            .get_template(&app(), &creds(), "920070352646140", Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(got.quality.as_deref(), Some("YELLOW"));
+        let created = connector
+            .create_template(&app(), &creds(), &sample_draft(), Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(created.status.as_deref(), Some("PENDING"));
+        connector
+            .edit_template(&app(), &creds(), "111", &sample_draft(), Deadline::from_secs(30))
+            .await
+            .unwrap();
+        connector
+            .delete_template(&app(), &creds(), "order_update", Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(list.hits(), 1);
+        assert_eq!(get.hits(), 1);
+        assert_eq!(create.hits(), 1);
+        assert_eq!(edit.hits(), 1);
+        assert_eq!(del.hits(), 1);
     }
 
     #[tokio::test]

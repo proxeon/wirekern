@@ -690,6 +690,194 @@ impl WhatsAppSendRequest {
     }
 }
 
+/// Business Management API template row. Components stay off this record
+/// so a get/list cannot become an untyped JSON dump.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppTemplateRecord {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Meta `quality_score.score`: GREEN / YELLOW / RED / UNKNOWN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppTemplateQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppTemplateList {
+    pub templates: Vec<WhatsAppTemplateRecord>,
+}
+
+/// Typed template create/edit. Create auto-submits for Meta review — there
+/// is no separate "review submit" verb on Cloud API.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppTemplateDraft {
+    pub name: String,
+    pub language: String,
+    pub category: String,
+    #[serde(default)]
+    pub parameter_format: ParameterFormat,
+    pub components: Vec<TemplateCreateComponent>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParameterFormat {
+    #[default]
+    Positional,
+    Named,
+}
+
+impl ParameterFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Positional => "positional",
+            Self::Named => "named",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TemplateCreateComponent {
+    Header {
+        format: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        example_handle: Option<String>,
+    },
+    Body {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        example: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        named_example: Vec<NamedBodyParameter>,
+    },
+    /// Footer is defined here, not at send time.
+    Footer {
+        text: String,
+    },
+    Buttons {
+        buttons: Vec<TemplateCreateButton>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TemplateCreateButton {
+    QuickReply { text: String },
+    Url { text: String, url: String },
+    PhoneNumber { text: String, phone_number: String },
+    CopyCode { example: String },
+}
+
+impl WhatsAppTemplateDraft {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_template_name(&self.name)?;
+        validate_language(&self.language)?;
+        match self.category.as_str() {
+            "marketing" | "utility" | "authentication" => {}
+            _ => return Err("template_category_invalid".into()),
+        }
+        if self.components.is_empty() {
+            return Err("template_components_empty".into());
+        }
+        let mut saw_body = false;
+        for component in &self.components {
+            match component {
+                TemplateCreateComponent::Header {
+                    format,
+                    text,
+                    example_handle,
+                } => match format.as_str() {
+                    "TEXT" => {
+                        if text.as_ref().is_none_or(|t| t.is_empty() || t.chars().count() > 60)
+                        {
+                            return Err("template_header_text_invalid".into());
+                        }
+                    }
+                    "IMAGE" | "VIDEO" | "DOCUMENT" => {
+                        if example_handle.as_ref().is_none_or(|h| h.is_empty()) {
+                            return Err("template_header_handle_required".into());
+                        }
+                    }
+                    _ => return Err("template_header_format_invalid".into()),
+                },
+                TemplateCreateComponent::Body {
+                    text,
+                    example,
+                    named_example,
+                } => {
+                    saw_body = true;
+                    if text.trim().is_empty() || text.chars().count() > MAX_REPLY_TEXT {
+                        return Err("template_body_invalid".into());
+                    }
+                    if !example.is_empty() && !named_example.is_empty() {
+                        return Err("template_body_parameters_mixed".into());
+                    }
+                }
+                TemplateCreateComponent::Footer { text } => {
+                    if text.trim().is_empty() || text.chars().count() > 60 {
+                        return Err("template_footer_invalid".into());
+                    }
+                }
+                TemplateCreateComponent::Buttons { buttons } => {
+                    if buttons.is_empty() || buttons.len() > 10 {
+                        return Err("template_buttons_too_many".into());
+                    }
+                    for button in buttons {
+                        validate_create_button(button)?;
+                    }
+                }
+            }
+        }
+        if !saw_body {
+            return Err("template_body_required".into());
+        }
+        Ok(())
+    }
+}
+
+fn validate_create_button(button: &TemplateCreateButton) -> Result<(), String> {
+    match button {
+        TemplateCreateButton::QuickReply { text }
+        | TemplateCreateButton::Url { text, .. }
+        | TemplateCreateButton::PhoneNumber { text, .. } => {
+            if text.is_empty() || text.chars().count() > 25 {
+                return Err("template_button_text_invalid".into());
+            }
+        }
+        TemplateCreateButton::CopyCode { example } => {
+            let n = example.chars().count();
+            if !(4..=15).contains(&n) {
+                return Err("template_coupon_code_invalid".into());
+            }
+        }
+    }
+    if let TemplateCreateButton::Url { url, .. } = button {
+        if !url.starts_with("https://") {
+            return Err("template_button_url_must_be_https".into());
+        }
+    }
+    Ok(())
+}
+
 /// A minimal inbound message extracted from a verified WhatsApp webhook.
 /// `from` and `text` are personal data, so Postkit returns them only to the
 /// explicit caller and deliberately does not persist an inbox in v1.
@@ -1151,7 +1339,7 @@ fn validate_template_button(button: &TemplateButton) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_template_name(value: &str) -> Result<(), String> {
+pub fn validate_template_name(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MAX_TEMPLATE_NAME
         || !value
@@ -1511,6 +1699,37 @@ mod tests {
             .validate()
             .unwrap_err(),
             "template_body_parameters_mixed"
+        );
+        let draft = WhatsAppTemplateDraft {
+            name: "order_update".into(),
+            language: "en_US".into(),
+            category: "utility".into(),
+            parameter_format: ParameterFormat::Positional,
+            components: vec![
+                TemplateCreateComponent::Body {
+                    text: "Hi {{1}}".into(),
+                    example: vec!["Ada".into()],
+                    named_example: vec![],
+                },
+                TemplateCreateComponent::Footer {
+                    text: "Thanks".into(),
+                },
+            ],
+        };
+        assert!(draft.validate().is_ok());
+        assert_eq!(
+            WhatsAppTemplateDraft {
+                name: "order_update".into(),
+                language: "en_US".into(),
+                category: "utility".into(),
+                parameter_format: ParameterFormat::Positional,
+                components: vec![TemplateCreateComponent::Footer {
+                    text: "Thanks".into(),
+                }],
+            }
+            .validate()
+            .unwrap_err(),
+            "template_body_required"
         );
     }
 }

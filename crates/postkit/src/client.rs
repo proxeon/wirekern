@@ -364,6 +364,105 @@ impl Client {
         assets.delete_media(&app, &creds, media_id, deadline).await
     }
 
+    /// List WABA templates (id/name/status/quality). Not a customer send.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn list_whatsapp_templates(
+        &self,
+        key: &AccountKey,
+        query: crate::whatsapp::WhatsAppTemplateQuery,
+        deadline: Deadline,
+    ) -> Result<crate::whatsapp::WhatsAppTemplateList, Error> {
+        self.require_capability(&key.site, Capability::ReadTemplates)?;
+        let templates = self.whatsapp_templates(&key.site, Capability::ReadTemplates)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        templates
+            .list_templates(&app, &creds, &query, deadline)
+            .await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn get_whatsapp_template(
+        &self,
+        key: &AccountKey,
+        template_id: &str,
+        deadline: Deadline,
+    ) -> Result<crate::whatsapp::WhatsAppTemplateRecord, Error> {
+        self.require_capability(&key.site, Capability::ReadTemplates)?;
+        let templates = self.whatsapp_templates(&key.site, Capability::ReadTemplates)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        templates
+            .get_template(&app, &creds, template_id, deadline)
+            .await
+    }
+
+    /// Create (and auto-submit for review) a typed template. Not a customer
+    /// send: no `--allow-send`, but still requires `manage.templates`.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn create_whatsapp_template(
+        &self,
+        key: &AccountKey,
+        draft: crate::whatsapp::WhatsAppTemplateDraft,
+        deadline: Deadline,
+    ) -> Result<crate::whatsapp::WhatsAppTemplateRecord, Error> {
+        self.require_capability(&key.site, Capability::ManageTemplates)?;
+        let templates = self.whatsapp_templates(&key.site, Capability::ManageTemplates)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        templates
+            .create_template(&app, &creds, &draft, deadline)
+            .await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn edit_whatsapp_template(
+        &self,
+        key: &AccountKey,
+        template_id: &str,
+        draft: crate::whatsapp::WhatsAppTemplateDraft,
+        deadline: Deadline,
+    ) -> Result<crate::whatsapp::WhatsAppTemplateRecord, Error> {
+        self.require_capability(&key.site, Capability::ManageTemplates)?;
+        let templates = self.whatsapp_templates(&key.site, Capability::ManageTemplates)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        templates
+            .edit_template(&app, &creds, template_id, &draft, deadline)
+            .await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn delete_whatsapp_template(
+        &self,
+        key: &AccountKey,
+        name: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        self.require_capability(&key.site, Capability::ManageTemplates)?;
+        let templates = self.whatsapp_templates(&key.site, Capability::ManageTemplates)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        templates
+            .delete_template(&app, &creds, name, deadline)
+            .await
+    }
+
     /// Shared load + optional proactive refresh. Every network verb that
     /// talks with stored OAuth creds goes through here so a missed retry
     /// cannot land on only one of insights/pages/ads.
@@ -941,6 +1040,17 @@ impl Client {
     }
 
     #[cfg(feature = "whatsapp-cloud")]
+    fn whatsapp_templates(
+        &self,
+        site: &Site,
+        need: Capability,
+    ) -> Result<Arc<dyn crate::facets::WhatsAppTemplates>, Error> {
+        self.registry
+            .connector(site)
+            .and_then(|c| c.whatsapp_templates_facet())
+            .ok_or_else(|| Self::missing_facet(site, need))
+    }
+
     fn whatsapp_sender(
         &self,
         site: &Site,

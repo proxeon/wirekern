@@ -86,6 +86,7 @@ pub(crate) fn read_whatsapp_webhook_stdin(json: bool) -> Result<Vec<u8>, i32> {
 
 pub(crate) fn whatsapp_app_config(
     phone_number_id: String,
+    waba_id: Option<String>,
     app_secret: Option<String>,
 ) -> Result<AppConfig, Error> {
     if phone_number_id.is_empty()
@@ -103,6 +104,14 @@ pub(crate) fn whatsapp_app_config(
             reason: "webhook_app_secret_empty".into(),
         });
     }
+    if let Some(waba) = waba_id.as_deref() {
+        if waba.is_empty() || waba.len() > 32 || !waba.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(Error::InvalidQuery {
+                site: Site::new("whatsapp_cloud"),
+                reason: "waba_id_invalid".into(),
+            });
+        }
+    }
     Ok(AppConfig {
         site: Site::new("whatsapp_cloud"),
         oauth: None,
@@ -111,6 +120,7 @@ pub(crate) fn whatsapp_app_config(
         // never render `extra`.
         extra: serde_json::json!({
             "phone_number_id": phone_number_id,
+            "waba_id": waba_id,
             "app_secret": app_secret,
         }),
     })

@@ -75,12 +75,12 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 
 - [x] Header: text
 - [x] Header: image / video / document
-- [ ] Footer
+- [x] Footer
 - [x] Buttons (quick reply / URL / phone / copy code)
 - [x] Named body parameters (vs ordered only)
 - [x] Limited-time offer / coupon components
-- [ ] Template list / get / status / quality (read)
-- [ ] Template create / edit / delete / review submit (write — Business Management API)
+- [x] Template list / get / status / quality (read)
+- [x] Template create / edit / delete / review submit (write — Business Management API)
 
 ### Commerce / Flows
 

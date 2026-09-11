@@ -20,7 +20,8 @@ use crate::types::Outcome;
 use crate::types::{AccountCreds, AppConfig, Deadline};
 #[cfg(feature = "whatsapp-cloud")]
 use crate::whatsapp::{
-    WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppSendRequest, WhatsAppUploadedMedia,
+    WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppSendRequest, WhatsAppTemplateDraft,
+    WhatsAppTemplateList, WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
 };
 use async_trait::async_trait;
 
@@ -163,6 +164,54 @@ pub trait WhatsAppAssets: Send + Sync {
         app: &AppConfig,
         creds: &AccountCreds,
         media_id: &str,
+        deadline: Deadline,
+    ) -> Result<(), Error>;
+}
+
+/// Business Management API template lifecycle. Distinct from `WhatsAppSender`
+/// so sending an approved template does not imply WABA write access.
+#[cfg(feature = "whatsapp-cloud")]
+#[async_trait]
+pub trait WhatsAppTemplates: Send + Sync {
+    async fn list_templates(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        query: &WhatsAppTemplateQuery,
+        deadline: Deadline,
+    ) -> Result<WhatsAppTemplateList, Error>;
+
+    async fn get_template(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        template_id: &str,
+        deadline: Deadline,
+    ) -> Result<WhatsAppTemplateRecord, Error>;
+
+    /// Create submits the template for Meta review (`status` starts PENDING).
+    async fn create_template(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        draft: &WhatsAppTemplateDraft,
+        deadline: Deadline,
+    ) -> Result<WhatsAppTemplateRecord, Error>;
+
+    async fn edit_template(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        template_id: &str,
+        draft: &WhatsAppTemplateDraft,
+        deadline: Deadline,
+    ) -> Result<WhatsAppTemplateRecord, Error>;
+
+    async fn delete_template(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        name: &str,
         deadline: Deadline,
     ) -> Result<(), Error>;
 }

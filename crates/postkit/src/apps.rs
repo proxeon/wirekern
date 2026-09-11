@@ -48,6 +48,7 @@ const WHATSAPP_CLOUD_SITE: &str = "whatsapp_cloud";
 struct WhatsAppEnvOverride {
     phone_number_id: Option<String>,
     app_secret: Option<String>,
+    waba_id: Option<String>,
 }
 
 impl WhatsAppEnvOverride {
@@ -55,11 +56,12 @@ impl WhatsAppEnvOverride {
         Self {
             phone_number_id: std::env::var("POSTKIT_WHATSAPP_PHONE_NUMBER_ID").ok(),
             app_secret: std::env::var("POSTKIT_WHATSAPP_APP_SECRET").ok(),
+            waba_id: std::env::var("POSTKIT_WHATSAPP_WABA_ID").ok(),
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.phone_number_id.is_none() && self.app_secret.is_none()
+        self.phone_number_id.is_none() && self.app_secret.is_none() && self.waba_id.is_none()
     }
 }
 
@@ -103,6 +105,9 @@ fn merge_whatsapp_config(
     }
     if let Some(app_secret) = from_env.app_secret {
         extra.insert("app_secret".into(), app_secret.into());
+    }
+    if let Some(waba_id) = from_env.waba_id {
+        extra.insert("waba_id".into(), waba_id.into());
     }
     config.extra = serde_json::Value::Object(extra);
     Some(config)
@@ -199,6 +204,7 @@ mod tests {
             WhatsAppEnvOverride {
                 phone_number_id: Some("env-phone".into()),
                 app_secret: None,
+                waba_id: None,
             },
         )
         .unwrap();
@@ -217,6 +223,7 @@ mod tests {
             WhatsAppEnvOverride {
                 phone_number_id: None,
                 app_secret: Some("env-secret".into()),
+                waba_id: None,
             },
         )
         .unwrap();
@@ -234,6 +241,7 @@ mod tests {
             WhatsAppEnvOverride {
                 phone_number_id: None,
                 app_secret: Some("secret-without-sender".into()),
+                waba_id: None,
             },
         )
         .is_none());
@@ -244,10 +252,12 @@ mod tests {
             WhatsAppEnvOverride {
                 phone_number_id: Some("env-phone".into()),
                 app_secret: Some("secret-not-for-diagnostics".into()),
+                waba_id: Some("102290129340398".into()),
             },
         )
         .unwrap();
         assert!(format!("{merged:?}").contains("[opaque]"));
         assert!(!format!("{merged:?}").contains("secret-not-for-diagnostics"));
+        assert_eq!(merged.extra["waba_id"], "102290129340398");
     }
 }
