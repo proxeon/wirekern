@@ -28,8 +28,8 @@ stays **1.80**.
 
 ## Writes (policy-gated)
 
-- [ ] `post` (`PostRequest` + optional idempotency key)
-- [ ] `whatsapp_send` (`allow_send: true` + idempotency; configured `--sender` alias only)
+- [x] `post` (`PostRequest` + optional idempotency key)
+- [x] `whatsapp_send` (`allow_send: true` + idempotency; configured `--sender` alias only)
 
 ## Reads
 

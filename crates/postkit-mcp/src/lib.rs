@@ -175,6 +175,8 @@ impl Server {
             "capabilities" => tools::capabilities(&self.client, arguments),
             "accounts_list" => tools::accounts_list(&self.client, arguments),
             "whoami" => tools::whoami(&self.client, arguments).await,
+            "post" => tools::post(&self.client, arguments).await,
+            "whatsapp_send" => tools::whatsapp_send(&self.whatsapp, arguments).await,
             other => {
                 return Err(rpc_error(
                     Value::Null,
@@ -210,6 +212,7 @@ pub async fn run(home: &Path) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postkit::Vault;
     use protocol::DEFAULT_PROTOCOL_VERSION;
 
     fn server() -> Server {
@@ -331,19 +334,28 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["capabilities", "accounts_list", "whoami"]);
+        assert_eq!(
+            names,
+            [
+                "capabilities",
+                "accounts_list",
+                "whoami",
+                "post",
+                "whatsapp_send"
+            ]
+        );
         let missing = rpc(
             &server,
             json!({
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "tools/call",
-                "params": { "name": "post", "arguments": {} }
+                "params": { "name": "broadcast", "arguments": {} }
             }),
         )
         .await;
         assert_eq!(missing["error"]["code"], INVALID_PARAMS);
-        assert_eq!(missing["error"]["message"], "Unknown tool: post");
+        assert_eq!(missing["error"]["message"], "Unknown tool: broadcast");
     }
 
     async fn call(server: &Server, name: &str, arguments: Value) -> Value {
@@ -416,5 +428,235 @@ mod tests {
         let reply = server.handle_line("{").await.unwrap();
         let value: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(value["error"]["code"], PARSE_ERROR);
+    }
+
+    struct PostMock {
+        site: postkit::Site,
+        posts: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl postkit::Publisher for PostMock {
+        fn site(&self) -> &postkit::Site {
+            &self.site
+        }
+        fn capabilities(&self) -> &[postkit::Capability] {
+            &[postkit::Capability::PublishText]
+        }
+        fn auth_kind(&self) -> postkit::AuthKind {
+            postkit::AuthKind::None
+        }
+        async fn publish(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &postkit::AccountCreds,
+            _intent: postkit::Intent,
+            _deadline: postkit::Deadline,
+        ) -> Result<postkit::Outcome, Error> {
+            let n = self.posts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(postkit::Outcome {
+                site: self.site.clone(),
+                id: Some(format!("post-{n}")),
+                url: Some("https://example.com/p".into()),
+                limits: None,
+            })
+        }
+        async fn whoami(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &postkit::AccountCreds,
+        ) -> Result<postkit::WhoAmI, Error> {
+            Ok(postkit::WhoAmI {
+                site: self.site.clone(),
+                id: "1".into(),
+                handle: None,
+            })
+        }
+    }
+
+    fn mock_post_server() -> Server {
+        let mock = Arc::new(PostMock {
+            site: postkit::Site::new("threads"),
+            posts: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let mut registry = postkit::Registry::new();
+        registry.register(mock);
+        let vault = Arc::new(postkit::MemoryVault::new());
+        vault
+            .put(
+                &postkit::AccountKey::new("threads", "default"),
+                &postkit::AccountCreds::OAuth2 {
+                    access_token: "tok".into(),
+                    refresh_token: None,
+                    extra: json!({}),
+                },
+            )
+            .unwrap();
+        let apps = Arc::new(postkit::MemoryAppStore::new());
+        let client = Client::new(registry, vault, apps);
+        let dummy = Client::new(
+            postkit::Registry::new(),
+            Arc::new(postkit::MemoryVault::new()),
+            Arc::new(postkit::MemoryAppStore::new()),
+        );
+        Server::new(client, dummy)
+    }
+
+    #[tokio::test]
+    async fn post_tool_publishes_through_the_kernel() {
+        let server = mock_post_server();
+        let _ = rpc(
+            &server,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        )
+        .await;
+        let reply = call(
+            &server,
+            "post",
+            json!({
+                "target": { "site": "threads" },
+                "body": { "type": "text", "text": "hi" },
+                "idempotency_key": "post-1"
+            }),
+        )
+        .await;
+        assert_eq!(reply["result"]["isError"], false);
+        assert_eq!(reply["result"]["structuredContent"]["id"], "post-0");
+    }
+
+    struct WaMock {
+        site: postkit::Site,
+        sends: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl postkit::Publisher for WaMock {
+        fn site(&self) -> &postkit::Site {
+            &self.site
+        }
+        fn capabilities(&self) -> &[postkit::Capability] {
+            &[postkit::Capability::SendText]
+        }
+        fn auth_kind(&self) -> postkit::AuthKind {
+            postkit::AuthKind::StaticToken
+        }
+        async fn publish(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &postkit::AccountCreds,
+            _intent: postkit::Intent,
+            _deadline: postkit::Deadline,
+        ) -> Result<postkit::Outcome, Error> {
+            Err(Error::InvalidPost {
+                site: self.site.clone(),
+                reason: "use_whatsapp_command".into(),
+                limit: None,
+            })
+        }
+        async fn whoami(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &postkit::AccountCreds,
+        ) -> Result<postkit::WhoAmI, Error> {
+            Ok(postkit::WhoAmI {
+                site: self.site.clone(),
+                id: "1".into(),
+                handle: None,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl postkit::WhatsAppSender for WaMock {
+        async fn send_whatsapp(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &postkit::AccountCreds,
+            _request: &postkit::WhatsAppSendRequest,
+            _deadline: postkit::Deadline,
+        ) -> Result<postkit::Outcome, Error> {
+            let n = self.sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(postkit::Outcome {
+                site: self.site.clone(),
+                id: Some(format!("wamid-{n}")),
+                url: None,
+                limits: None,
+            })
+        }
+    }
+
+    fn mock_whatsapp_server() -> Server {
+        let mock = Arc::new(WaMock {
+            site: postkit::Site::new("whatsapp_cloud"),
+            sends: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let mut deny_registry = postkit::Registry::new();
+        deny_registry.register_connector(
+            postkit::Connector::from_publisher(mock.clone()).whatsapp(mock.clone()),
+        );
+        let mut allow_registry = postkit::Registry::new();
+        allow_registry.register_connector(
+            postkit::Connector::from_publisher(mock.clone()).whatsapp(mock.clone()),
+        );
+        let vault = Arc::new(postkit::MemoryVault::new());
+        vault
+            .put(
+                &postkit::AccountKey::new("whatsapp_cloud", "default"),
+                &postkit::AccountCreds::BotToken {
+                    token: "system-user".into(),
+                },
+            )
+            .unwrap();
+        let apps = Arc::new(postkit::MemoryAppStore::new());
+        postkit::AppStore::put(
+            &*apps,
+            &postkit::AppConfig {
+                site: postkit::Site::new("whatsapp_cloud"),
+                oauth: None,
+                extra: json!({ "phone_number_id": "123456789" }),
+            },
+        )
+        .unwrap();
+        let deny = Client::new(deny_registry, vault.clone(), apps.clone());
+        let allow = Client::new(allow_registry, vault, apps)
+            .with_whatsapp_policy(Arc::new(postkit::AllowWhatsAppSendsPolicy));
+        Server::new(deny, allow)
+    }
+
+    #[tokio::test]
+    async fn whatsapp_send_requires_allow_send_then_returns_wamid() {
+        let server = mock_whatsapp_server();
+        let _ = rpc(
+            &server,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        )
+        .await;
+        let denied = call(
+            &server,
+            "whatsapp_send",
+            json!({
+                "allow_send": false,
+                "idempotency_key": "wa-1",
+                "message": { "type": "text", "to": "60123456789", "text": "hi" }
+            }),
+        )
+        .await;
+        assert_eq!(denied["result"]["isError"], true);
+        assert_eq!(
+            denied["result"]["structuredContent"]["error"],
+            "policy_denied"
+        );
+        let sent = call(
+            &server,
+            "whatsapp_send",
+            json!({
+                "allow_send": true,
+                "idempotency_key": "wa-1",
+                "message": { "type": "text", "to": "60123456789", "text": "hi" }
+            }),
+        )
+        .await;
+        assert_eq!(sent["result"]["isError"], false);
+        assert_eq!(sent["result"]["structuredContent"]["id"], "wamid-0");
     }
 }
