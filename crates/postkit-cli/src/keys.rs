@@ -1,7 +1,8 @@
 //! `postkit keys` — mint, list, revoke operator HTTP keys.
 //!
 //! The store is [`postkit::FileKeyStore`]. This module is CLI I/O only;
-//! `postkit-serve` verifies keys and never creates them.
+//! `postkit-serve` verifies keys and never creates them. Covered by
+//! `FileKeyStore` tests plus `serve_and_keys_commands_parse`.
 
 use crate::app::fail;
 use crate::output::{emit_raw, human_line};
