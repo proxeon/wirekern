@@ -4,7 +4,9 @@
 //! kernel first; this file only adapts JSON-RPC arguments onto those types.
 
 use postkit::{
-    AccountKey, Client, Deadline, Error, PostRequest, Site, WhatsAppSendRequest, WireError,
+    AccountKey, AttributionWindow, Breakdown, Client, DateRange, Deadline, Error, InsightsLevel,
+    InsightsQuery, MediaQuery, Metric, PostRequest, Site, WhatsAppSendRequest, WireError,
+    DEFAULT_MEDIA_LIMIT,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -57,6 +59,34 @@ pub fn catalog() -> &'static [ToolSpec] {
             read_only: false,
             destructive: true,
             schema: whatsapp_schema,
+        },
+        ToolSpec {
+            name: "insights",
+            description: "Read Meta Ads spend/performance metrics. Attribution window is required. Range ≤ 90 days.",
+            read_only: true,
+            destructive: false,
+            schema: insights_schema,
+        },
+        ToolSpec {
+            name: "ads_accounts",
+            description: "List remote advertising accounts for the stored credential. Not local vault aliases.",
+            read_only: true,
+            destructive: false,
+            schema: site_account_schema,
+        },
+        ToolSpec {
+            name: "pages_accounts",
+            description: "List Facebook Pages visible to the stored credential. Returns identities, never Page tokens.",
+            read_only: true,
+            destructive: false,
+            schema: site_account_schema,
+        },
+        ToolSpec {
+            name: "media_list",
+            description: "Read one bounded first page of published media (limit 1–25).",
+            read_only: true,
+            destructive: false,
+            schema: media_schema,
         },
     ]
 }
@@ -170,6 +200,54 @@ fn whatsapp_schema() -> Value {
             "deadline": { "type": "integer", "minimum": 1, "default": 30 }
         },
         "required": ["allow_send", "message", "idempotency_key"],
+        "additionalProperties": false
+    })
+}
+
+fn site_account_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "site": { "type": "string" },
+            "account": { "type": "string", "default": "default" },
+            "deadline": { "type": "integer", "minimum": 1, "default": 30 }
+        },
+        "required": ["site"],
+        "additionalProperties": false
+    })
+}
+
+fn insights_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "site": { "type": "string", "default": "meta_ads" },
+            "account": { "type": "string", "default": "default" },
+            "from": { "type": "string", "description": "Inclusive YYYY-MM-DD." },
+            "to": { "type": "string", "description": "Inclusive YYYY-MM-DD." },
+            "attribution": { "type": "string", "enum": ["7d_click_1d_view", "1d_click", "1d_view"] },
+            "level": { "type": "string", "enum": ["account", "campaign", "adset", "ad"], "default": "account" },
+            "metrics": { "type": "array", "items": { "type": "string" } },
+            "ad_account": { "type": "string" },
+            "entity_ids": { "type": "array", "items": { "type": "string" } },
+            "breakdowns": { "type": "array", "items": { "type": "string" } },
+            "deadline": { "type": "integer", "minimum": 1, "default": 30 }
+        },
+        "required": ["from", "to", "attribution"],
+        "additionalProperties": false
+    })
+}
+
+fn media_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "site": { "type": "string" },
+            "account": { "type": "string", "default": "default" },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 25, "default": 10 },
+            "deadline": { "type": "integer", "minimum": 1, "default": 30 }
+        },
+        "required": ["site"],
         "additionalProperties": false
     })
 }
@@ -317,6 +395,178 @@ pub async fn whatsapp_send(allowed: &Client, arguments: Value) -> Value {
             Err(error) => tool_err(invalid_query("whatsapp_cloud", format!("json:{error}"))),
         },
         Err(error) => tool_err(error),
+    }
+}
+
+#[derive(Deserialize)]
+struct SiteAccountArgs {
+    site: String,
+    #[serde(default = "default_account")]
+    account: String,
+    #[serde(default = "default_deadline")]
+    deadline: u64,
+}
+
+#[derive(Deserialize)]
+struct InsightsArgs {
+    #[serde(default = "default_ads_site")]
+    site: String,
+    #[serde(default = "default_account")]
+    account: String,
+    from: String,
+    to: String,
+    attribution: String,
+    #[serde(default = "default_level")]
+    level: String,
+    #[serde(default)]
+    metrics: Option<Vec<String>>,
+    ad_account: Option<String>,
+    #[serde(default)]
+    entity_ids: Vec<String>,
+    #[serde(default)]
+    breakdowns: Vec<String>,
+    #[serde(default = "default_deadline")]
+    deadline: u64,
+}
+
+#[derive(Deserialize)]
+struct MediaArgs {
+    site: String,
+    #[serde(default = "default_account")]
+    account: String,
+    #[serde(default = "default_media_limit")]
+    limit: u8,
+    #[serde(default = "default_deadline")]
+    deadline: u64,
+}
+
+fn default_ads_site() -> String {
+    "meta_ads".into()
+}
+
+fn default_level() -> String {
+    "account".into()
+}
+
+fn default_media_limit() -> u8 {
+    DEFAULT_MEDIA_LIMIT
+}
+
+pub async fn insights(client: &Client, arguments: Value) -> Value {
+    let args: InsightsArgs = match serde_json::from_value(arguments) {
+        Ok(value) => value,
+        Err(error) => return tool_err(invalid_query("meta_ads", format!("json:{error}"))),
+    };
+    let query = match insights_query(&args) {
+        Ok(query) => query,
+        Err(error) => return tool_err(error),
+    };
+    let key = AccountKey::new(&args.site, &args.account);
+    match client
+        .insights(&key, query, Deadline::from_secs(args.deadline.max(1)))
+        .await
+    {
+        Ok(reply) => value_ok(&args.site, reply),
+        Err(error) => tool_err(error),
+    }
+}
+
+pub async fn ads_accounts(client: &Client, arguments: Value) -> Value {
+    let args: SiteAccountArgs = match serde_json::from_value(arguments) {
+        Ok(value) => value,
+        Err(error) => return tool_err(invalid_query("", format!("json:{error}"))),
+    };
+    let key = AccountKey::new(&args.site, &args.account);
+    match client
+        .ad_accounts(&key, Deadline::from_secs(args.deadline.max(1)))
+        .await
+    {
+        Ok(reply) => value_ok(&args.site, reply),
+        Err(error) => tool_err(error),
+    }
+}
+
+pub async fn pages_accounts(client: &Client, arguments: Value) -> Value {
+    let args: SiteAccountArgs = match serde_json::from_value(arguments) {
+        Ok(value) => value,
+        Err(error) => return tool_err(invalid_query("", format!("json:{error}"))),
+    };
+    let key = AccountKey::new(&args.site, &args.account);
+    match client
+        .pages(&key, Deadline::from_secs(args.deadline.max(1)))
+        .await
+    {
+        Ok(reply) => value_ok(&args.site, reply),
+        Err(error) => tool_err(error),
+    }
+}
+
+pub async fn media_list(client: &Client, arguments: Value) -> Value {
+    let args: MediaArgs = match serde_json::from_value(arguments) {
+        Ok(value) => value,
+        Err(error) => return tool_err(invalid_query("", format!("json:{error}"))),
+    };
+    let key = AccountKey::new(&args.site, &args.account);
+    match client
+        .media(
+            &key,
+            MediaQuery { limit: args.limit },
+            Deadline::from_secs(args.deadline.max(1)),
+        )
+        .await
+    {
+        Ok(reply) => value_ok(&args.site, reply),
+        Err(error) => tool_err(error),
+    }
+}
+
+fn insights_query(args: &InsightsArgs) -> Result<InsightsQuery, Error> {
+    let site = args.site.as_str();
+    let level: InsightsLevel = args
+        .level
+        .parse()
+        .map_err(|reason| invalid_query(site, reason))?;
+    let attribution: AttributionWindow = args
+        .attribution
+        .parse()
+        .map_err(|reason| invalid_query(site, reason))?;
+    let metrics = match &args.metrics {
+        Some(values) if !values.is_empty() => values
+            .iter()
+            .map(|metric| metric.parse())
+            .collect::<Result<Vec<Metric>, String>>()
+            .map_err(|reason| invalid_query(site, reason))?,
+        _ => vec![
+            Metric::Spend,
+            Metric::Impressions,
+            Metric::Clicks,
+            Metric::Purchases,
+        ],
+    };
+    let breakdowns = args
+        .breakdowns
+        .iter()
+        .map(|item| item.parse())
+        .collect::<Result<Vec<Breakdown>, String>>()
+        .map_err(|reason| invalid_query(site, reason))?;
+    Ok(InsightsQuery {
+        level,
+        metrics,
+        range: DateRange {
+            from: args.from.clone(),
+            to: args.to.clone(),
+        },
+        attribution,
+        account: args.ad_account.clone(),
+        entity_ids: args.entity_ids.clone(),
+        breakdowns,
+    })
+}
+
+fn value_ok<T: serde::Serialize>(site: &str, value: T) -> Value {
+    match serde_json::to_value(value) {
+        Ok(json) => tool_ok(json),
+        Err(error) => tool_err(invalid_query(site, format!("json:{error}"))),
     }
 }
 

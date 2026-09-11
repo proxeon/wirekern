@@ -177,6 +177,10 @@ impl Server {
             "whoami" => tools::whoami(&self.client, arguments).await,
             "post" => tools::post(&self.client, arguments).await,
             "whatsapp_send" => tools::whatsapp_send(&self.whatsapp, arguments).await,
+            "insights" => tools::insights(&self.client, arguments).await,
+            "ads_accounts" => tools::ads_accounts(&self.client, arguments).await,
+            "pages_accounts" => tools::pages_accounts(&self.client, arguments).await,
+            "media_list" => tools::media_list(&self.client, arguments).await,
             other => {
                 return Err(rpc_error(
                     Value::Null,
@@ -341,7 +345,11 @@ mod tests {
                 "accounts_list",
                 "whoami",
                 "post",
-                "whatsapp_send"
+                "whatsapp_send",
+                "insights",
+                "ads_accounts",
+                "pages_accounts",
+                "media_list"
             ]
         );
         let missing = rpc(
@@ -658,5 +666,64 @@ mod tests {
         .await;
         assert_eq!(sent["result"]["isError"], false);
         assert_eq!(sent["result"]["structuredContent"]["id"], "wamid-0");
+    }
+
+    #[tokio::test]
+    async fn read_tools_fail_closed_without_accounts() {
+        let server = server();
+        let _ = rpc(
+            &server,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        )
+        .await;
+        let insights = call(
+            &server,
+            "insights",
+            json!({
+                "from": "2026-06-01",
+                "to": "2026-06-30",
+                "attribution": "7d_click_1d_view"
+            }),
+        )
+        .await;
+        assert_eq!(insights["result"]["isError"], true);
+        assert_eq!(
+            insights["result"]["structuredContent"]["error"],
+            "unknown_account"
+        );
+        let pages = call(
+            &server,
+            "pages_accounts",
+            json!({ "site": "facebook_pages" }),
+        )
+        .await;
+        assert_eq!(
+            pages["result"]["structuredContent"]["error"],
+            "unknown_account"
+        );
+        let media = call(&server, "media_list", json!({ "site": "instagram" })).await;
+        assert_eq!(
+            media["result"]["structuredContent"]["error"],
+            "unknown_account"
+        );
+        let ads = call(&server, "ads_accounts", json!({ "site": "meta_ads" })).await;
+        assert_eq!(
+            ads["result"]["structuredContent"]["error"],
+            "unknown_account"
+        );
+        let bad_attr = call(
+            &server,
+            "insights",
+            json!({
+                "from": "2026-06-01",
+                "to": "2026-06-30",
+                "attribution": "forever"
+            }),
+        )
+        .await;
+        assert_eq!(
+            bad_attr["result"]["structuredContent"]["error"],
+            "invalid_query"
+        );
     }
 }

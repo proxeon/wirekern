@@ -33,10 +33,10 @@ stays **1.80**.
 
 ## Reads
 
-- [ ] `insights`
-- [ ] `ads_accounts`
-- [ ] `pages_accounts`
-- [ ] `media_list`
+- [x] `insights`
+- [x] `ads_accounts`
+- [x] `pages_accounts`
+- [x] `media_list`
 
 ## Surfaces and docs
 
