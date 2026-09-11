@@ -21,6 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const API_ORIGIN: &str = "https://api.linkedin.com";
 pub const AUTHORIZE: &str = "https://www.linkedin.com/oauth/v2/authorization";
 pub const TOKEN_ENDPOINT: &str = "https://www.linkedin.com/oauth/v2/accessToken";
+const FEED_UPDATE_ORIGIN: &str = "https://www.linkedin.com/feed/update";
 pub const SITE: &str = "linkedin";
 /// Pin the documented Marketing API version. A version change is a reviewed
 /// wire change: the header is asserted by mock tests rather than inherited
@@ -314,12 +315,27 @@ async fn post_text(
     let id = post_id_from_response(response, &site).await?;
     Ok(Outcome {
         site,
+        // LinkedIn returns the created post URN in `x-restli-id`. Its feed
+        // route is deterministic for the two post-URN types LinkedIn emits,
+        // so callers can open the accepted post without reverse-engineering a
+        // link from the opaque identifier themselves.
+        url: linkedin_feed_url(&id),
         id: Some(id),
-        // The documented create response supplies a URN header, not a stable
-        // public permalink. Returning no URL is more truthful than guessing.
-        url: None,
         limits: None,
     })
+}
+
+fn linkedin_feed_url(post_urn: &str) -> Option<String> {
+    // Do not construct a URL from an arbitrary response header. Restrict the
+    // convenience URL to LinkedIn's documented post URN families and numeric
+    // identifiers, leaving an unexpected future format safely URL-less.
+    let numeric_id = post_urn
+        .strip_prefix("urn:li:share:")
+        .or_else(|| post_urn.strip_prefix("urn:li:ugcPost:"))?;
+    if numeric_id.is_empty() || !numeric_id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("{FEED_UPDATE_ORIGIN}/{post_urn}/"))
 }
 
 async fn post_id_from_response(response: reqwest::Response, site: &Site) -> Result<String, Error> {
@@ -667,7 +683,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_uses_closed_current_member_payload_and_returns_restli_urn() {
+    async fn post_uses_closed_current_member_payload_and_returns_post_url() {
         let server = MockServer::start();
         let post = server.mock(|when, then| {
             when.method(POST)
@@ -705,7 +721,24 @@ mod tests {
             .unwrap();
         post.assert();
         assert_eq!(outcome.id.as_deref(), Some("urn:li:share:123"));
-        assert!(outcome.url.is_none());
+        assert_eq!(
+            outcome.url.as_deref(),
+            Some("https://www.linkedin.com/feed/update/urn:li:share:123/")
+        );
+    }
+
+    #[test]
+    fn feed_url_accepts_only_known_numeric_linkedin_post_urns() {
+        assert_eq!(
+            linkedin_feed_url("urn:li:share:7504108828771401729").as_deref(),
+            Some("https://www.linkedin.com/feed/update/urn:li:share:7504108828771401729/")
+        );
+        assert_eq!(
+            linkedin_feed_url("urn:li:ugcPost:7504108828771401729").as_deref(),
+            Some("https://www.linkedin.com/feed/update/urn:li:ugcPost:7504108828771401729/")
+        );
+        assert!(linkedin_feed_url("urn:li:organization:123").is_none());
+        assert!(linkedin_feed_url("urn:li:share:not-a-number").is_none());
     }
 
     #[tokio::test]

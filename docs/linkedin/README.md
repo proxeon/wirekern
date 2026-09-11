@@ -92,12 +92,17 @@ postkit post linkedin \
 Expected success is an exact LinkedIn post URN, for example:
 
 ```json
-{"site":"linkedin","id":"urn:li:share:1234567890123456789"}
+{
+  "site":"linkedin",
+  "id":"urn:li:share:1234567890123456789",
+  "url":"https://www.linkedin.com/feed/update/urn:li:share:1234567890123456789/"
+}
 ```
 
-`url` is intentionally absent. LinkedIn returns `x-restli-id`, not a
-documented stable public permalink, so Postkit does not manufacture one.
-Confirm the result in the authenticated member's LinkedIn activity feed.
+LinkedIn returns the post URN in `x-restli-id`. For its known `share` and
+`ugcPost` URN forms, Postkit returns the corresponding feed URL as an opening
+convenience. LinkedIn may require a signed-in viewer to open it; confirm the
+result in the authenticated member's activity feed.
 
 The supplied text must be nonblank and at most 3,000 Unicode characters.
 `--param` is deliberately unsupported: the stored OAuth member is the only
