@@ -26,6 +26,18 @@ same detail by subject.
 
 ### Added
 
+- LinkedIn member text publishing: the new `linkedin` connector uses
+  paste-code OAuth with the self-serve `openid,profile,w_member_social`
+  scopes, resolves and stores the authenticated member only through OIDC
+  UserInfo, and creates one closed public organic Posts API payload with its
+  version and Rest.li protocol headers pinned in wire tests. Successful output
+  is LinkedIn's exact `x-restli-id` post URN; Postkit intentionally does not
+  invent a permalink. The connector refuses author/organization params,
+  images, carousels, comments, analytics, Page access, sponsored content, and
+  generic payload JSON. Public post creation is never auto-retried; completed
+  idempotency keys replay locally, while an unknown remote write stays
+  ambiguous. Refresh works only when LinkedIn issued a refresh token.
+
 - `postkit serve` and `postkit keys`: localhost HTTP for callers that cannot
   exec, authenticated with `pk_live_` keys hashed in `~/.postkit/keys/`. Same
   JSON as `--json`. Default bind `127.0.0.1:8788`. `POST /v1/whatsapp` requires

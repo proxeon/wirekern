@@ -55,6 +55,7 @@ pub use oauth::{
     feature = "meta-ads",
     feature = "facebook-pages",
     feature = "instagram",
+    feature = "linkedin",
     feature = "whatsapp-cloud"
 ))]
 pub mod connectors;

@@ -16,9 +16,9 @@ Who postkit is for, and how it compares. Stable axes only — prices move, these
 
 Read the table as jobs, not scores. Hosted APIs sell convenience by taking custody (their cloud, their pre-approved platform apps, their metering). Schedulers sell a calendar. postkit is an **official-API execution kernel**: an agent or program sends **now** (a post, a paused ad draft, a typed WhatsApp message), with **your** apps, for **$0**, and errors it can branch on.
 
-That sentence is the product. Ads and WhatsApp stay in this crate because they are official-API execution with the same custody and fail-closed posture. LinkedIn, Telegram, video, and any later site are connectors, not a second product. A "social publish CLI" split would orphan the safety work already shipped.
+That sentence is the product. Ads and WhatsApp stay in this crate because they are official-API execution with the same custody and fail-closed posture. LinkedIn (now member text posts), Telegram, video, and any later site are connectors, not a second product. A "social publish CLI" split would orphan the safety work already shipped.
 
-The trade postkit asks of you: you run your own Meta app (tester invites, redirect chips, eventually App Review — the walkthrough is [threads/](./threads/)) and you get text-only for now.
+The trade postkit asks of you: you run your own platform app (Meta tester invites and redirect chips, LinkedIn product access, eventually platform review — the walkthrough is [threads/](./threads/)) and you get text-only where a connector has not yet grown richer media support.
 
 ## Roadmap, and why
 

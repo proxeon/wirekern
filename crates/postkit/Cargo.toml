@@ -26,6 +26,10 @@ facebook-pages = ["client", "oauth"]
 # Container readiness is an asynchronous Meta-side fetch, so the connector
 # needs Tokio only to perform bounded status polling before its final write.
 instagram = ["client", "oauth", "dep:tokio"]
+# LinkedIn's self-serve member posting is OAuth plus a versioned REST API.
+# It stays independent from Meta/Instagram features so library users opt in
+# only to LinkedIn's credential and HTTP surface.
+linkedin = ["client", "oauth"]
 # WhatsApp Cloud uses a static bearer token rather than an OAuth redirect.
 # HMAC-SHA256 verifies the raw inbound webhook body before it is parsed.
 whatsapp-cloud = ["client", "dep:hmac", "dep:sha2"]

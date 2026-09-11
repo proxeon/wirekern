@@ -4,6 +4,8 @@ pub mod bluesky;
 pub mod facebook_pages;
 #[cfg(feature = "instagram")]
 pub mod instagram;
+#[cfg(feature = "linkedin")]
+pub mod linkedin;
 #[cfg(feature = "meta-ads")]
 pub mod meta_ads;
 #[cfg(feature = "threads")]

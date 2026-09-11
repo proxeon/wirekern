@@ -22,6 +22,7 @@ postkit post bluesky --image hero.png [--text 'caption'] [--alt 'description']
 postkit post threads --image https://cdn.example.com/hero.png [--text 'caption']
 postkit post instagram --image https://cdn.example.com/hero.jpg [--text 'caption']
 postkit post instagram --image https://cdn.example.com/slide-1.jpg --image https://cdn.example.com/slide-2.jpg [--text 'one carousel caption']
+postkit post linkedin --text 'public member post' [--idempotency <key>]
 postkit media list instagram [--limit 10]
 postkit post --stdin
 ```
@@ -30,7 +31,7 @@ postkit post --stdin
 |------|--|
 | `<site>` or `--to a,b` | One site, or same text/`--param` on each. Mixed success → `{ "results": [ … ] }` |
 | `--text` | `Body::Text`. Repeatable on **threads** = reply chain (`reply_to_id`). One `--text` is a single `Outcome`; two or more is `{ "results": [ … ] }`. Other sites: two `--text` → `thread_unsupported` before HTTP. |
-| `--param k=v` | `Intent.params` (repeatable). `--param reply_to_id=` = one reply to an existing post (**threads**: media id; **Bluesky**: the parent's `at://` URI — the same string `Outcome.id` returns; the connector resolves its `cid` via `getRecord`, and a reply-to-reply inherits the thread root). Other keys refuse with `unsupported_param:<k>` before HTTP |
+| `--param k=v` | `Intent.params` (repeatable). `--param reply_to_id=` = one reply to an existing post (**threads**: media id; **Bluesky**: the parent's `at://` URI — the same string `Outcome.id` returns; the connector resolves its `cid` via `getRecord`, and a reply-to-reply inherits the thread root). Facebook Pages accepts only `page_id`; LinkedIn accepts no params so its authenticated member remains the sole author. Other keys refuse with `unsupported_param:<k>` before HTTP |
 | `--idempotency` | Root segment only on a chain. Client-side dedupe: a retry with the same key returns the stored `Outcome` without HTTP (`~/.postkit/idempotency/…`). Only **completed** publishes are remembered — an attempt that timed out after the platform created the post was never learned and will post again. While one publish under a key is in flight (another process or task), a second call answers `idempotency` (exit 4, retry-later) instead of racing to a duplicate; a crashed holder self-heals — its claim is stolen after 15 minutes |
 | `--stdin` | Raw request JSON. One body. Exclusive with every content flag — `--text`, `--image`, `--alt`, `--param`, `--to`, and a positional site refuse with `stdin_exclusive` exit 2 before stdin is read (`--dry-run` and `--idempotency` still apply on top of the stdin request) |
 | `--image` | Repeatable only for an Instagram **image carousel**: one image is the normal optional-caption image post; 2–10 become one carousel with a single parent caption. **Two forms, never bridged**: a local file (Bluesky uploads the bytes; png/jpg/gif/webp, ≤ 2 MB enforced locally) or a public **https** URL (Threads and Instagram crawl it; Meta is definitive on reachability, format, and size). A form the site cannot honor fails that target with `image_source_unsupported:bytes\|url` before HTTP. Refused combinations, all exit 2 before any HTTP: with a chain (`image_chain_unsupported` / `carousel_caption_multiple`), with `--param reply_to_id=` (`image_reply_unsupported` / `carousel_reply_unsupported`), with `--dry-run` (`dry_run_image_unsupported`), or carousel `--alt` (`carousel_alt_unsupported`) |
@@ -54,6 +55,7 @@ postkit auth bluesky --account you.bsky.social --password 'xxxx-xxxx-xxxx-xxxx'
 postkit auth meta_ads                        # same paste-code flow, ads_read + ads_management
 postkit auth facebook_pages                  # Page scopes; re-authorize after adding this connector
 postkit auth instagram                        # Instagram Login for one professional account
+postkit auth linkedin                         # LinkedIn OAuth: openid + profile + w_member_social
 postkit auth whatsapp_cloud --token 'system-user-token' # static System User token
 ```
 
@@ -82,6 +84,12 @@ postkit auth whatsapp_cloud --token 'system-user-token' # static System User tok
   with an optional 2,200-character parent caption. There is no Page target
   parameter or text-only post. See the
   [Instagram runbook](./instagram/README.md).
+- `linkedin` needs both **Share on LinkedIn** and **Sign in with LinkedIn
+  using OpenID Connect** enabled in the LinkedIn Developer Portal. It requests
+  `openid profile w_member_social`, resolves the member identity through OIDC
+  UserInfo, and posts only public text as that stored member. The response is
+  an exact LinkedIn post URN, not a constructed permalink. See the
+  [LinkedIn runbook](./linkedin/README.md).
 - `whatsapp_cloud` is not OAuth: configure the numeric sender with
   `postkit whatsapp configure --phone-number-id … [--app-secret …]`, then use
   `auth whatsapp_cloud --token …`. The one-time token bootstrap verifies

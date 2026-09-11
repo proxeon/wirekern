@@ -18,6 +18,7 @@ use std::path::Path;
     feature = "meta-ads",
     feature = "facebook-pages",
     feature = "instagram",
+    feature = "linkedin",
     feature = "whatsapp-cloud"
 ))]
 use std::sync::Arc;
@@ -40,6 +41,8 @@ pub fn bundled_registry() -> Result<Registry, Error> {
         .register_connector(crate::connectors::facebook_pages::FacebookPages::new()?.connector());
     #[cfg(feature = "instagram")]
     registry.register_connector(crate::connectors::instagram::Instagram::new()?.connector());
+    #[cfg(feature = "linkedin")]
+    registry.register(Arc::new(crate::connectors::linkedin::LinkedIn::new()?));
     #[cfg(feature = "whatsapp-cloud")]
     registry
         .register_connector(crate::connectors::whatsapp_cloud::WhatsAppCloud::new()?.connector());
@@ -84,6 +87,7 @@ mod tests {
             feature = "meta-ads",
             feature = "facebook-pages",
             feature = "instagram",
+            feature = "linkedin",
             feature = "whatsapp-cloud"
         )))]
         assert!(registry.sites().next().is_none());
@@ -91,6 +95,8 @@ mod tests {
         assert!(registry.get(&crate::types::Site::new("threads")).is_some());
         #[cfg(feature = "bluesky")]
         assert!(registry.get(&crate::types::Site::new("bluesky")).is_some());
+        #[cfg(feature = "linkedin")]
+        assert!(registry.get(&crate::types::Site::new("linkedin")).is_some());
         #[cfg(feature = "whatsapp-cloud")]
         assert!(registry
             .get(&crate::types::Site::new("whatsapp_cloud"))
