@@ -39,8 +39,8 @@ Do these without becoming an inbox.
 - [x] HTTP webhook **parse**: `POST /v1/whatsapp/webhook` (same HMAC as CLI; no listener)
 - [x] `preview_url` as a typed opt-in (today hardcoded `false`)
 - [x] Recipient grammar: Meta-supported `+` / formatting vs digits-only
-- [ ] README capability row: add `read.webhook_statuses`
-- [ ] Document uncertain idempotency (“request left, response lost” — no silent retry)
+- [x] README capability row: add `read.webhook_statuses`
+- [x] Document uncertain idempotency (“request left, response lost” — no silent retry)
 
 ## Send types (Cloud API, not typed yet)
 

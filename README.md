@@ -48,7 +48,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | `linkedin` | `publish.text` | Paste-code OAuth (`openid,profile,w_member_social`); UserInfo resolves the member ID | Public organic member text only; ≤ 3,000 Unicode characters; no author params, media, organization/Page, analytics, or ads |
 | `meta_ads` | `read.metrics`, `read.ad_accounts`, `create.paused_ads`, `create.ad_creative` | OAuth paste-code (`ads_read,ads_management,pages_show_list,pages_manage_ads`), long-lived via `fb_exchange_token` | ≤ 90-day reads; ads are fixed `PAUSED` |
 | `facebook_pages` | `read.pages`, `publish.text`, `publish.image` | OAuth paste-code (`pages_show_list,pages_manage_posts,pages_read_engagement`), long-lived via `fb_exchange_token` | Page ID required per post; local images upload as multipart bytes |
-| `whatsapp_cloud` | `send.reply`, `send.template`, `read.webhook_messages` | Static System User token (`auth whatsapp_cloud --token`), Phone number ID config | Private send requires `--allow-send` + idempotency; inbound messages arrive as signed webhooks |
+| `whatsapp_cloud` | `send.reply`, `send.text`, `send.template`, `read.webhook_messages`, `read.webhook_statuses` | Static System User token (`auth whatsapp_cloud --token`), Phone number ID config | Private send requires `--allow-send` + idempotency; inbound messages arrive as signed webhooks |
 
 ### Feature coverage
 
@@ -76,9 +76,10 @@ Kernel-level, all sites: 0600 vault with atomic writes, CSPRNG OAuth `state`, re
 | Capability | Status |
 |------------|--------|
 | Text reply | ✓ Requires recipient WhatsApp ID, inbound `wamid`, idempotency key, and `--allow-send` |
+| Session text | ✓ In-window `type=text` without `context`; same `--allow-send` + idempotency |
 | Approved template | ✓ Existing approved template; ordered text body variables only |
-| Inbound messages | ✓ Parse a signed raw webhook body; no listener or persistent inbox |
-| Delivery/read status | ✓ Parse signed `sent`/`delivered`/`read`/`failed` callbacks; no transport or storage |
+| Inbound messages | ✓ Parse a signed raw webhook body (text, media ids, structured fields); no listener or persistent inbox |
+| Delivery/read status | ✓ Parse signed `sent`/`delivered`/`read`/`failed` plus error code/title; extras opt-in |
 | Media, interactive messages, Flows, bulk sends | ✗ roadmap; each requires a separate consent/payload contract |
 | Token refresh | ✗ Static System User token is operator-managed |
 
