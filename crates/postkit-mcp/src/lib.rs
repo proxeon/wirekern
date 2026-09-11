@@ -60,6 +60,9 @@ impl Server {
     /// One stdio line in, at most one compact JSON line out. Notifications
     /// (`id` omitted) never produce a response.
     pub async fn handle_line(&self, line: &str) -> Option<String> {
+        // std::io::Lines keeps a trailing CR from Windows `\r\n` delimiters.
+        // The MCP stdio transport is newline-delimited JSON, so strip it.
+        let line = line.trim_end_matches('\r');
         if line.len() > MAX_MESSAGE_BYTES {
             return encode_message(&rpc_error(Value::Null, PARSE_ERROR, "Parse error")).ok();
         }
@@ -167,10 +170,11 @@ impl Server {
                 &tools::unknown_tool_message(name),
             ));
         }
-        let arguments = params
-            .get("arguments")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+        // Hosts omit `arguments` or send JSON null for no-arg tools.
+        let arguments = match params.get("arguments") {
+            None | Some(Value::Null) => json!({}),
+            Some(value) => value.clone(),
+        };
         let result = match name {
             "capabilities" => tools::capabilities(&self.client, arguments),
             "accounts_list" => tools::accounts_list(&self.client, arguments),
@@ -274,6 +278,35 @@ mod tests {
         )
         .await;
         assert_eq!(reply["result"]["protocolVersion"], DEFAULT_PROTOCOL_VERSION);
+    }
+
+    #[tokio::test]
+    async fn crlf_lines_and_null_arguments_are_accepted() {
+        let server = server();
+        let init = server
+            .handle_line("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\r")
+            .await
+            .unwrap();
+        let init: Value = serde_json::from_str(&init).unwrap();
+        assert_eq!(init["result"]["serverInfo"]["name"], "postkit");
+        let listed = rpc(
+            &server,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        )
+        .await;
+        assert!(listed["result"]["tools"].as_array().unwrap().len() >= 9);
+        let caps = rpc(
+            &server,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": { "name": "capabilities", "arguments": null }
+            }),
+        )
+        .await;
+        assert_eq!(caps["result"]["isError"], false);
+        assert!(caps["result"]["structuredContent"]["threads"].is_array());
     }
 
     #[tokio::test]
