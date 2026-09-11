@@ -3,9 +3,23 @@
 use crate::app::fail;
 use crate::output::emit_ok;
 use postkit::{
-    AccountKey, AppConfig, Client, Deadline, Error, InboundMessages, Site, WhatsAppSendRequest,
+    AccountKey, AppConfig, Client, Deadline, Error, InboundMessages, RecipientType, Site,
+    WhatsAppSendRequest,
 };
 use std::io::{self, Read};
+
+pub(crate) fn parse_recipient_type(raw: &str, json: bool) -> Result<RecipientType, i32> {
+    raw.parse().map_err(|reason: String| {
+        fail(
+            &Error::InvalidPost {
+                site: Site::new("whatsapp_cloud"),
+                reason,
+                limit: None,
+            },
+            json,
+        )
+    })
+}
 
 pub(crate) async fn one_whatsapp_send(
     client: &Client,

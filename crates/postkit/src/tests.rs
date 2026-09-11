@@ -1182,6 +1182,7 @@ fn whatsapp_request(key: &str) -> WhatsAppSendRequest {
             preview_url: false,
         },
         idempotency_key: key.into(),
+        recipient_type: crate::whatsapp::RecipientType::Individual,
     }
 }
 

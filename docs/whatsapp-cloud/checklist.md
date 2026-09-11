@@ -67,9 +67,9 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 - [x] Contacts send
 - [x] Address request
 - [x] Reaction (emoji on inbound `wamid`)
-- [ ] Mark as read
-- [ ] Typing indicator
-- [ ] Group send (`recipient_type: group`)
+- [x] Mark as read
+- [x] Typing indicator
+- [x] Group send (`recipient_type: group`)
 
 ### Templates (beyond body text)
 

@@ -202,6 +202,8 @@ impl Client {
             WhatsAppMessage::Location { .. } => WhatsAppAction::SendLocation,
             WhatsAppMessage::Contacts { .. } => WhatsAppAction::SendContacts,
             WhatsAppMessage::Reaction { .. } => WhatsAppAction::SendReaction,
+            WhatsAppMessage::MarkRead { .. } => WhatsAppAction::MarkRead,
+            WhatsAppMessage::Typing { .. } => WhatsAppAction::SendTyping,
         };
         // Do this before registry/vault lookup. A denied send must reveal
         // neither whether an account is configured nor a bearer token to the

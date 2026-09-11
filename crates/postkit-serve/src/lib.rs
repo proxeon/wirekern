@@ -174,6 +174,8 @@ async fn whatsapp_send(State(state): State<AppState>, headers: HeaderMap, body: 
             WhatsAppMessage::Location { .. } => "send_whatsapp_location",
             WhatsAppMessage::Contacts { .. } => "send_whatsapp_contacts",
             WhatsAppMessage::Reaction { .. } => "send_whatsapp_reaction",
+            WhatsAppMessage::MarkRead { .. } => "send_whatsapp_read",
+            WhatsAppMessage::Typing { .. } => "send_whatsapp_typing",
         };
         return wire_response(Error::PolicyDenied {
             site: Site::new("whatsapp_cloud"),

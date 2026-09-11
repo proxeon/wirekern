@@ -15,7 +15,7 @@ use crate::whatsapp::{
     DeliveryConversation, DeliveryError, DeliveryPricing, DeliveryStatus, DeliveryStatusKind,
     InboundContact, InboundInteractive, InboundLocation, InboundMedia, InboundMessage,
     InboundMessages, InboundOrder, InboundReaction, InboundReferral, InboundUnsupported,
-    WebhookParseOptions, WhatsAppMessage, WhatsAppSendRequest,
+    WebhookParseOptions, RecipientType, WhatsAppMessage, WhatsAppSendRequest,
 };
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
@@ -177,6 +177,8 @@ impl Publisher for WhatsAppCloud {
             Capability::SendLocation,
             Capability::SendContacts,
             Capability::SendReaction,
+            Capability::MarkRead,
+            Capability::SendTyping,
             Capability::ManageWhatsAppMedia,
             Capability::ReadWhatsAppMedia,
             Capability::ReadWebhookMessages,
@@ -263,12 +265,36 @@ impl WhatsAppSender for WhatsAppCloud {
                 self.http
                     .post(&format!("{}/{phone_number_id}/messages", self.base))
                     .bearer_auth(token)
-                    .json(&send_payload(&request.message)),
+                    .json(&send_payload_for(&request.message, request.recipient_type)),
                 deadline,
                 &self.site,
             )
             .await?;
         let body = read_json(response, &self.site).await?;
+        // Mark-as-read and typing return `{success: true}` (Messages API
+        // MarkMessageResponsePayload). Requiring a wamid would treat a
+        // successful ack as a platform error.
+        if request.message.is_status_ack() {
+            let ok = body.get("success").and_then(Value::as_bool) == Some(true);
+            if !ok {
+                return Err(Error::Platform {
+                    site: self.site.clone(),
+                    code: "missing_success".into(),
+                    message: "WhatsApp read/typing acknowledgement was not success".into(),
+                });
+            }
+            let id = match &request.message {
+                WhatsAppMessage::MarkRead { message_id }
+                | WhatsAppMessage::Typing { message_id } => message_id.clone(),
+                _ => unreachable!("is_status_ack"),
+            };
+            return Ok(Outcome {
+                site: self.site.clone(),
+                id: Some(id),
+                url: None,
+                limits: None,
+            });
+        }
         let id = body
             .get("messages")
             .and_then(Value::as_array)
@@ -471,7 +497,11 @@ fn wire_recipient(to: &str) -> String {
 }
 
 pub fn send_payload(message: &WhatsAppMessage) -> Value {
-    match message {
+    send_payload_for(message, RecipientType::Individual)
+}
+
+pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType) -> Value {
+    let mut payload = match message {
         WhatsAppMessage::Reply {
             to,
             reply_to_message_id,
@@ -736,7 +766,24 @@ pub fn send_payload(message: &WhatsAppMessage) -> Value {
             "type": "reaction",
             "reaction": { "message_id": message_id, "emoji": emoji },
         }),
+        // No `to` / `recipient_type`: these are inbound-wamid acks, not
+        // customer-addressed messages.
+        WhatsAppMessage::MarkRead { message_id } => json!({
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": message_id,
+        }),
+        WhatsAppMessage::Typing { message_id } => json!({
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": message_id,
+            "typing_indicator": { "type": "text" },
+        }),
+    };
+    if !message.is_status_ack() {
+        payload["recipient_type"] = json!(recipient_type.as_str());
     }
+    payload
 }
 
 fn interactive_payload(
@@ -1196,6 +1243,7 @@ mod tests {
                 preview_url: false,
             },
             idempotency_key: "reply-1".into(),
+            recipient_type: RecipientType::Individual,
         }
     }
 
@@ -1258,6 +1306,7 @@ mod tests {
                 reply_to_message_id: None,
             },
             idempotency_key: "img-1".into(),
+            recipient_type: RecipientType::Individual,
         };
         let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
         let out = connector
@@ -1424,6 +1473,100 @@ mod tests {
         assert_eq!(reaction["reaction"]["emoji"], "thumbs");
     }
 
+    #[test]
+    fn mark_read_and_typing_are_status_acks_not_customer_sends() {
+        let read = send_payload(&WhatsAppMessage::MarkRead {
+            message_id: "wamid.in".into(),
+        });
+        assert_eq!(read["status"], "read");
+        assert_eq!(read["message_id"], "wamid.in");
+        assert!(read.get("to").is_none());
+        assert!(read.get("recipient_type").is_none());
+        let typing = send_payload(&WhatsAppMessage::Typing {
+            message_id: "wamid.in".into(),
+        });
+        assert_eq!(typing["status"], "read");
+        assert_eq!(typing["typing_indicator"]["type"], "text");
+        let group = send_payload_for(
+            &WhatsAppMessage::Text {
+                to: "Y2FwaV9ncm91cDoxNzA1NTU1MDEzOToxMjAzNjM0MDQ2OTQyMzM4MjAZD".into(),
+                text: "hello group".into(),
+                preview_url: false,
+            },
+            RecipientType::Group,
+        );
+        assert_eq!(group["recipient_type"], "group");
+        assert_eq!(
+            group["to"],
+            "Y2FwaV9ncm91cDoxNzA1NTU1MDEzOToxMjAzNjM0MDQ2OTQyMzM4MjAZD"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_read_records_success_ack_not_a_wamid() {
+        let server = MockServer::start();
+        let payload = json!({
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": "wamid.in",
+        });
+        let send = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/123456789/messages")
+                .json_body(payload);
+            then.status(200).json_body(json!({ "success": true }));
+        });
+        let request = WhatsAppSendRequest {
+            message: WhatsAppMessage::MarkRead {
+                message_id: "wamid.in".into(),
+            },
+            idempotency_key: "read-1".into(),
+            recipient_type: RecipientType::Individual,
+        };
+        let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let out = connector
+            .send_whatsapp(&app(), &creds(), &request, Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(out.id.as_deref(), Some("wamid.in"));
+        assert_eq!(send.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn group_text_sets_recipient_type_group() {
+        let server = MockServer::start();
+        let payload = json!({
+            "messaging_product": "whatsapp",
+            "recipient_type": "group",
+            "to": "Y2FwaV9ncm91cDoxNzA1NTU1MDEzOToxMjAzNjM0MDQ2OTQyMzM4MjAZD",
+            "type": "text",
+            "text": { "body": "hello group", "preview_url": false },
+        });
+        let send = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/123456789/messages")
+                .json_body(payload);
+            then.status(200)
+                .json_body(json!({ "messages": [{ "id": "wamid.g" }] }));
+        });
+        let request = WhatsAppSendRequest {
+            message: WhatsAppMessage::Text {
+                to: "Y2FwaV9ncm91cDoxNzA1NTU1MDEzOToxMjAzNjM0MDQ2OTQyMzM4MjAZD".into(),
+                text: "hello group".into(),
+                preview_url: false,
+            },
+            idempotency_key: "group-1".into(),
+            recipient_type: RecipientType::Group,
+        };
+        let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let out = connector
+            .send_whatsapp(&app(), &creds(), &request, Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(out.id.as_deref(), Some("wamid.g"));
+        assert_eq!(send.hits(), 1);
+    }
+
     #[tokio::test]
     async fn session_text_has_no_context_object() {
         let server = MockServer::start();
@@ -1448,6 +1591,7 @@ mod tests {
                 preview_url: false,
             },
             idempotency_key: "text-1".into(),
+            recipient_type: RecipientType::Individual,
         };
         let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
         let outcome = connector
@@ -1541,6 +1685,7 @@ mod tests {
                 preview_url: false,
             },
             idempotency_key: "fmt-1".into(),
+            recipient_type: RecipientType::Individual,
         };
         let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
         connector
@@ -1574,6 +1719,7 @@ mod tests {
                 preview_url: true,
             },
             idempotency_key: "prev-1".into(),
+            recipient_type: RecipientType::Individual,
         };
         let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
         connector
@@ -1618,6 +1764,7 @@ mod tests {
                 body_parameters: vec!["A-42".into(), "tomorrow".into()],
             },
             idempotency_key: "template-1".into(),
+            recipient_type: RecipientType::Individual,
         };
         let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
         let outcome = connector
@@ -1643,6 +1790,7 @@ mod tests {
                 preview_url: false,
             },
             idempotency_key: "bad-1".into(),
+            recipient_type: RecipientType::Individual,
         };
         let connector = WhatsAppCloud::with_base(server.base_url()).unwrap();
         let error = connector

@@ -418,6 +418,9 @@ enum WhatsAppCmd {
         idempotency: String,
         #[arg(long)]
         allow_send: bool,
+        /// `individual` (default) or `group`. Group `to` is a Groups API id.
+        #[arg(long, default_value = "individual")]
+        recipient_type: String,
     },
     /// Reply with text to an inbound message. Meta enforces its service
     /// window; `--allow-send` acknowledges this is a real private message.
@@ -441,6 +444,9 @@ enum WhatsAppCmd {
         /// Explicitly authorize this one private, potentially chargeable send.
         #[arg(long)]
         allow_send: bool,
+        /// `individual` (default) or `group`. Group `to` is a Groups API id.
+        #[arg(long, default_value = "individual")]
+        recipient_type: String,
     },
     /// Send one existing Meta-approved template with ordered body variables.
     /// It cannot create, edit, or submit a template for approval.
@@ -463,6 +469,9 @@ enum WhatsAppCmd {
         /// Explicitly authorize this one private, potentially chargeable send.
         #[arg(long)]
         allow_send: bool,
+        /// `individual` (default) or `group`. Group `to` is a Groups API id.
+        #[arg(long, default_value = "individual")]
+        recipient_type: String,
     },
     /// Parse one signed raw Cloud API webhook body from stdin. This does not
     /// run an HTTP listener or acknowledge Meta's webhook delivery.
@@ -702,6 +711,7 @@ async fn dispatch(
             text,
             preview_url,
             idempotency,
+            recipient_type,
             ..
         }) => {
             let request = WhatsAppSendRequest {
@@ -711,6 +721,7 @@ async fn dispatch(
                     preview_url,
                 },
                 idempotency_key: idempotency,
+                recipient_type: parse_recipient_type(&recipient_type, json)?,
             };
             one_whatsapp_send(
                 &client,
@@ -727,6 +738,7 @@ async fn dispatch(
             text,
             preview_url,
             idempotency,
+            recipient_type,
             ..
         }) => {
             let request = WhatsAppSendRequest {
@@ -737,6 +749,7 @@ async fn dispatch(
                     preview_url,
                 },
                 idempotency_key: idempotency,
+                recipient_type: parse_recipient_type(&recipient_type, json)?,
             };
             one_whatsapp_send(
                 &client,
@@ -753,6 +766,7 @@ async fn dispatch(
             language,
             body_parameters,
             idempotency,
+            recipient_type,
             ..
         }) => {
             let request = WhatsAppSendRequest {
@@ -763,6 +777,7 @@ async fn dispatch(
                     body_parameters,
                 },
                 idempotency_key: idempotency,
+                recipient_type: parse_recipient_type(&recipient_type, json)?,
             };
             one_whatsapp_send(
                 &client,

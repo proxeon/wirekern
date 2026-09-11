@@ -183,6 +183,49 @@ pub enum WhatsAppMessage {
         message_id: String,
         emoji: String,
     },
+    /// Mark an inbound `wamid` as read. Cloud API returns `{success: true}`,
+    /// not a new outbound wamid. `Outcome.id` is this inbound id so the local
+    /// idempotency ledger still has a stable value.
+    MarkRead {
+        message_id: String,
+    },
+    /// Typing indicator. Official docs always pair it with mark-as-read on
+    /// the same inbound `wamid` (`status: read` + `typing_indicator`). It
+    /// dismisses after 25s or the next send, whichever is first.
+    Typing {
+        message_id: String,
+    },
+}
+
+/// Cloud API `recipient_type`. Group `to` is a Groups API id, not a phone
+/// number — see Meta group messaging (`recipient_type: group`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecipientType {
+    #[default]
+    Individual,
+    Group,
+}
+
+impl RecipientType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Individual => "individual",
+            Self::Group => "group",
+        }
+    }
+}
+
+impl std::str::FromStr for RecipientType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "individual" => Ok(Self::Individual),
+            "group" => Ok(Self::Group),
+            _ => Err("recipient_type_invalid".into()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -233,10 +276,21 @@ impl WhatsAppMessage {
             Self::Location { .. } => Capability::SendLocation,
             Self::Contacts { .. } => Capability::SendContacts,
             Self::Reaction { .. } => Capability::SendReaction,
+            Self::MarkRead { .. } => Capability::MarkRead,
+            Self::Typing { .. } => Capability::SendTyping,
         }
     }
 
+    /// True when Meta acknowledges with `{success: true}` instead of a wamid.
+    pub fn is_status_ack(&self) -> bool {
+        matches!(self, Self::MarkRead { .. } | Self::Typing { .. })
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_for(RecipientType::Individual)
+    }
+
+    pub fn validate_for(&self, recipient_type: RecipientType) -> Result<(), String> {
         match self {
             Self::Reply {
                 to,
@@ -244,7 +298,7 @@ impl WhatsAppMessage {
                 text,
                 preview_url: _,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_context_id(reply_to_message_id)?;
                 validate_reply_text(text)?;
             }
@@ -253,7 +307,7 @@ impl WhatsAppMessage {
                 text,
                 preview_url: _,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_reply_text(text)?;
             }
             Self::Template {
@@ -262,7 +316,7 @@ impl WhatsAppMessage {
                 language,
                 body_parameters,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_template_name(name)?;
                 validate_language(language)?;
                 if body_parameters.len() > MAX_BODY_PARAMETERS {
@@ -286,7 +340,7 @@ impl WhatsAppMessage {
                 caption,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 media.validate()?;
                 validate_optional_caption(caption)?;
                 validate_optional_context(reply_to_message_id)?;
@@ -298,7 +352,7 @@ impl WhatsAppMessage {
                 filename,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 media.validate()?;
                 validate_optional_caption(caption)?;
                 if let Some(name) = filename {
@@ -318,7 +372,7 @@ impl WhatsAppMessage {
                 media,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 media.validate()?;
                 validate_optional_context(reply_to_message_id)?;
             }
@@ -328,7 +382,7 @@ impl WhatsAppMessage {
                 caption,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 media.validate()?;
                 validate_optional_caption(caption)?;
                 validate_optional_context(reply_to_message_id)?;
@@ -341,7 +395,7 @@ impl WhatsAppMessage {
                 footer,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_body(body)?;
                 validate_optional_header(header)?;
                 validate_optional_footer(footer)?;
@@ -367,7 +421,7 @@ impl WhatsAppMessage {
                 footer,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_body(body)?;
                 validate_optional_header(header)?;
                 validate_optional_footer(footer)?;
@@ -413,7 +467,7 @@ impl WhatsAppMessage {
                 footer,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_body(body)?;
                 validate_optional_header(header)?;
                 validate_optional_footer(footer)?;
@@ -430,7 +484,7 @@ impl WhatsAppMessage {
                 body,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_body(body)?;
                 validate_optional_context(reply_to_message_id)?;
             }
@@ -442,7 +496,7 @@ impl WhatsAppMessage {
                 payload: _,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_body(body)?;
                 validate_optional_context(reply_to_message_id)?;
                 if display_text
@@ -463,7 +517,7 @@ impl WhatsAppMessage {
                 address: _,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_optional_context(reply_to_message_id)?;
                 validate_coordinates(latitude, longitude)?;
             }
@@ -472,7 +526,7 @@ impl WhatsAppMessage {
                 contacts,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_optional_context(reply_to_message_id)?;
                 if contacts.is_empty() {
                     return Err("contacts_empty".into());
@@ -489,7 +543,7 @@ impl WhatsAppMessage {
                 country,
                 reply_to_message_id,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_body(body)?;
                 validate_optional_context(reply_to_message_id)?;
                 if country.len() != 2 || !country.bytes().all(|b| b.is_ascii_alphabetic()) {
@@ -501,11 +555,17 @@ impl WhatsAppMessage {
                 message_id,
                 emoji,
             } => {
-                validate_recipient(to)?;
+                validate_destination(to, recipient_type)?;
                 validate_context_id(message_id)?;
                 if emoji.trim().is_empty() {
                     return Err("reaction_emoji_empty".into());
                 }
+            }
+            Self::MarkRead { message_id } | Self::Typing { message_id } => {
+                if recipient_type != RecipientType::Individual {
+                    return Err("status_ack_not_group".into());
+                }
+                validate_context_id(message_id)?;
             }
         }
         Ok(())
@@ -524,6 +584,10 @@ impl WhatsAppMessage {
 pub struct WhatsAppSendRequest {
     pub message: WhatsAppMessage,
     pub idempotency_key: String,
+    /// Default `individual`. `group` puts a Groups API id in `to` and sets
+    /// Cloud API `recipient_type: group`. Status acks (read/typing) refuse it.
+    #[serde(default)]
+    pub recipient_type: RecipientType,
 }
 
 impl WhatsAppSendRequest {
@@ -532,7 +596,7 @@ impl WhatsAppSendRequest {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        self.message.validate()?;
+        self.message.validate_for(self.recipient_type)?;
         if !valid_name(&self.idempotency_key) {
             return Err("idempotency_key_invalid".into());
         }
@@ -841,6 +905,25 @@ pub fn validate_recipient(value: &str) -> Result<(), String> {
     normalize_recipient(value).map(|_| ())
 }
 
+fn validate_destination(value: &str, recipient_type: RecipientType) -> Result<(), String> {
+    match recipient_type {
+        RecipientType::Individual => validate_recipient(value),
+        RecipientType::Group => validate_group_id(value),
+    }
+}
+
+/// Groups API ids are opaque (often base64). Refuse empty, whitespace, and
+/// path separators so a group `to` cannot be a URL or filename.
+fn validate_group_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 256
+        || value.chars().any(|c| c.is_whitespace() || c == '/' || c == '\\')
+    {
+        return Err("group_id_invalid".into());
+    }
+    Ok(())
+}
+
 /// Meta accepts `+`, spaces, hyphens, and parentheses. We strip decoration
 /// and keep an optional leading `+` plus 7–15 digits so the wire matches
 /// Meta's recommendation without inventing a country code.
@@ -1033,6 +1116,7 @@ mod tests {
                 preview_url: false,
             },
             idempotency_key: "not/a-filename".into(),
+            recipient_type: RecipientType::Individual,
         };
         assert_eq!(request.validate().unwrap_err(), "idempotency_key_invalid");
     }
@@ -1049,6 +1133,7 @@ mod tests {
                 preview_url: false,
             },
             idempotency_key: "order-42-v1".into(),
+            recipient_type: RecipientType::Individual,
         };
         assert!(ok.validate().is_ok());
     }
@@ -1187,5 +1272,40 @@ mod tests {
         }
         .validate()
         .is_ok());
+        assert!(WhatsAppMessage::MarkRead {
+            message_id: "wamid.in".into(),
+        }
+        .validate()
+        .is_ok());
+        assert!(WhatsAppMessage::Typing {
+            message_id: "wamid.in".into(),
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            WhatsAppMessage::MarkRead {
+                message_id: "wamid.in".into(),
+            }
+            .validate_for(RecipientType::Group)
+            .unwrap_err(),
+            "status_ack_not_group"
+        );
+        assert!(WhatsAppMessage::Text {
+            to: "Y2FwaV9ncm91cDoxNzA1NTU1MDEzOToxMjAzNjM0MDQ2OTQyMzM4MjAZD".into(),
+            text: "hello group".into(),
+            preview_url: false,
+        }
+        .validate_for(RecipientType::Group)
+        .is_ok());
+        assert_eq!(
+            WhatsAppMessage::Text {
+                to: "not a group".into(),
+                text: "hello".into(),
+                preview_url: false,
+            }
+            .validate_for(RecipientType::Group)
+            .unwrap_err(),
+            "group_id_invalid"
+        );
     }
 }
