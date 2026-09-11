@@ -84,6 +84,9 @@ impl AdsPolicy for PausedOnlyAdsPolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WhatsAppAction {
     SendReply,
+    /// Free-form in-window text. Distinct from a contextual reply so a
+    /// forgotten `wamid` cannot be faked as `context`.
+    SendText,
     SendTemplate,
 }
 
@@ -92,6 +95,7 @@ impl WhatsAppAction {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SendReply => "send_whatsapp_reply",
+            Self::SendText => "send_whatsapp_text",
             Self::SendTemplate => "send_whatsapp_template",
         }
     }
@@ -170,5 +174,10 @@ mod tests {
         assert!(AllowWhatsAppSendsPolicy
             .authorize(&site, WhatsAppAction::SendReply)
             .is_ok());
+        let denied_text = NoWhatsAppSendsPolicy
+            .authorize(&site, WhatsAppAction::SendText)
+            .unwrap_err();
+        assert!(matches!(denied_text, Error::PolicyDenied { action, .. }
+            if action == "send_whatsapp_text"));
     }
 }

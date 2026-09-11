@@ -403,6 +403,20 @@ enum WhatsAppCmd {
         #[arg(long)]
         app_secret: Option<String>,
     },
+    /// In-window service text with no `context`. Meta only delivers this
+    /// while a customer-service window is open; `--allow-send` acknowledges
+    /// a real private message. Not a quoted reply — use `reply` for that.
+    Text {
+        /// WhatsApp ID, digits with optional `+` / spaces / hyphens / parens.
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        idempotency: String,
+        #[arg(long)]
+        allow_send: bool,
+    },
     /// Reply with text to an inbound message. Meta enforces its service
     /// window; `--allow-send` acknowledges this is a real private message.
     Reply {
@@ -653,6 +667,9 @@ fn whatsapp_send_allowed(command: &Commands) -> bool {
         Commands::WhatsApp(WhatsAppCmd::Reply {
             allow_send: true,
             ..
+        }) | Commands::WhatsApp(WhatsAppCmd::Text {
+            allow_send: true,
+            ..
         }) | Commands::WhatsApp(WhatsAppCmd::Template {
             allow_send: true,
             ..
@@ -669,6 +686,25 @@ async fn dispatch(
     deadline: Deadline,
 ) -> Result<(), i32> {
     match cmd {
+        Commands::WhatsApp(WhatsAppCmd::Text {
+            to,
+            text,
+            idempotency,
+            ..
+        }) => {
+            let request = WhatsAppSendRequest {
+                message: WhatsAppMessage::Text { to, text },
+                idempotency_key: idempotency,
+            };
+            one_whatsapp_send(
+                &client,
+                &AccountKey::new("whatsapp_cloud", &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
         Commands::WhatsApp(WhatsAppCmd::Reply {
             to,
             reply_to_message_id,
@@ -1643,6 +1679,25 @@ mod tests {
         assert!(matches!(
             allowed.command,
             Commands::WhatsApp(WhatsAppCmd::Reply { idempotency, .. }) if idempotency == "reply-1"
+        ));
+
+        let session = Cli::try_parse_from([
+            "postkit",
+            "whatsapp",
+            "text",
+            "--to",
+            "60123456789",
+            "--text",
+            "Hello",
+            "--idempotency",
+            "text-1",
+            "--allow-send",
+        ])
+        .unwrap();
+        assert!(whatsapp_send_allowed(&session.command));
+        assert!(matches!(
+            session.command,
+            Commands::WhatsApp(WhatsAppCmd::Text { .. })
         ));
 
         let unacknowledged = Cli::try_parse_from([

@@ -58,6 +58,9 @@ pub enum Capability {
     PublishVideo,
     #[serde(rename = "send.reply")]
     SendReply,
+    /// In-window service text with no `context` (Meta customer-service window).
+    #[serde(rename = "send.text")]
+    SendText,
     #[serde(rename = "send.template")]
     SendTemplate,
     #[serde(rename = "read.webhook_messages")]
@@ -90,6 +93,7 @@ impl Capability {
             Self::PublishCarousel => "publish.carousel",
             Self::PublishVideo => "publish.video",
             Self::SendReply => "send.reply",
+            Self::SendText => "send.text",
             Self::SendTemplate => "send.template",
             Self::ReadWebhookMessages => "read.webhook_messages",
             Self::ReadWebhookStatuses => "read.webhook_statuses",

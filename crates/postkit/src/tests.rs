@@ -154,7 +154,11 @@ impl MockPub {
     #[cfg(feature = "whatsapp-cloud")]
     fn whatsapp(site: &str) -> Self {
         Self {
-            caps: vec![Capability::SendReply, Capability::SendTemplate],
+            caps: vec![
+                Capability::SendReply,
+                Capability::SendText,
+                Capability::SendTemplate,
+            ],
             auth_kind: AuthKind::StaticToken,
             ..Self::text(site)
         }

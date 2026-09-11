@@ -185,9 +185,10 @@ an intentional operational decision.
 ## Deliberate v1 boundary
 
 Implemented: static System User token validation, explicit sender
-configuration, text replies, approved text-template sends, mandatory
-idempotency, deny-by-default messaging policy, and verified inbound-message
-and delivery-status webhook extraction.
+configuration, text replies, in-window session text (no `context`),
+approved text-template sends, mandatory idempotency, deny-by-default
+messaging policy, and verified inbound-message and delivery-status webhook
+extraction.
 
 Not implemented: webhook HTTP hosting/challenge/acknowledgement, inbox or
 status persistence, template CRUD/review, pricing/billing surfaces, recipient
@@ -196,3 +197,5 @@ messages, catalogs, Flows, bulk/campaign sends, multi-phone/WABA discovery,
 retries, delivery-status actions, and direct-send beta features. Each has its
 own consent, privacy, billing, or payload contract and must be designed before
 it is added.
+
+Track remaining work as checkboxes in [checklist.md](./checklist.md).

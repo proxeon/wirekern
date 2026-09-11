@@ -30,6 +30,12 @@ pub enum WhatsAppMessage {
         reply_to_message_id: String,
         text: String,
     },
+    /// Service-window text with no `context`. Meta allows this only while
+    /// a customer-service window is open; Postkit does not track that clock.
+    Text {
+        to: String,
+        text: String,
+    },
     Template {
         to: String,
         name: String,
@@ -43,6 +49,7 @@ impl WhatsAppMessage {
     pub fn required_capability(&self) -> Capability {
         match self {
             Self::Reply { .. } => Capability::SendReply,
+            Self::Text { .. } => Capability::SendText,
             Self::Template { .. } => Capability::SendTemplate,
         }
     }
@@ -56,6 +63,10 @@ impl WhatsAppMessage {
             } => {
                 validate_recipient(to)?;
                 validate_context_id(reply_to_message_id)?;
+                validate_reply_text(text)?;
+            }
+            Self::Text { to, text } => {
+                validate_recipient(to)?;
                 validate_reply_text(text)?;
             }
             Self::Template {
@@ -240,6 +251,21 @@ mod tests {
             .validate()
             .unwrap_err(),
             "recipient_must_be_whatsapp_id"
+        );
+        assert!(WhatsAppMessage::Text {
+            to: "60123456789".into(),
+            text: "Hello".into(),
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            WhatsAppMessage::Text {
+                to: "60123456789".into(),
+                text: "   ".into(),
+            }
+            .validate()
+            .unwrap_err(),
+            "reply_text_empty"
         );
         assert_eq!(
             WhatsAppMessage::Template {

@@ -157,6 +157,7 @@ async fn whatsapp_send(State(state): State<AppState>, headers: HeaderMap, body: 
     if !req.allow_send {
         let action = match &req.request.message {
             WhatsAppMessage::Reply { .. } => "send_whatsapp_reply",
+            WhatsAppMessage::Text { .. } => "send_whatsapp_text",
             WhatsAppMessage::Template { .. } => "send_whatsapp_template",
         };
         return wire_response(Error::PolicyDenied {
@@ -349,7 +350,11 @@ mod tests {
             &self.site
         }
         fn capabilities(&self) -> &[Capability] {
-            &[Capability::SendReply, Capability::SendTemplate]
+            &[
+                Capability::SendReply,
+                Capability::SendText,
+                Capability::SendTemplate,
+            ]
         }
         fn auth_kind(&self) -> AuthKind {
             AuthKind::StaticToken

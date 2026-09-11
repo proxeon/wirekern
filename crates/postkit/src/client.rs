@@ -186,6 +186,7 @@ impl Client {
         })?;
         let action = match &request.message {
             WhatsAppMessage::Reply { .. } => WhatsAppAction::SendReply,
+            WhatsAppMessage::Text { .. } => WhatsAppAction::SendText,
             WhatsAppMessage::Template { .. } => WhatsAppAction::SendTemplate,
         };
         // Do this before registry/vault lookup. A denied send must reveal
