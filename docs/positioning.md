@@ -11,7 +11,7 @@ Who postkit is for, and how it compares. Stable axes only — prices move, these
 | Cost | **$0** | Paid subscription | $0 + your hosting | $0 |
 | Scheduling | ✗ | ✓ | ✓ (the product) | ✗ |
 | Media | **Images ✓** (video roadmap) | ✓ | ✓ | Varies |
-| Agent surface | **exec CLI / `cargo add`** | REST + API key | Web app | Hand-rolled |
+| Agent surface | **exec CLI / MCP stdio / `cargo add`** | REST + API key | Web app | Hand-rolled |
 | License | **MIT OR Apache-2.0** | Proprietary | AGPL-3.0 | Vendor ToS |
 
 Read the table as jobs, not scores. Hosted APIs sell convenience by taking custody (their cloud, their pre-approved platform apps, their metering). Schedulers sell a calendar. postkit is an **official-API execution kernel**: an agent or program sends **now** (a post, a paused ad draft, a typed WhatsApp message), with **your** apps, for **$0**, and errors it can branch on.
@@ -25,7 +25,7 @@ The trade postkit asks of you: you run your own platform app (Meta tester invite
 In priority order:
 
 1. **Images** — shipped (2026-09-10): one image per post, optional caption; Bluesky uploads bytes (`--image file`), Threads takes a public https URL (`--image https://…`). Video remains roadmap.
-2. **HTTP `serve` mode with `pk_live_` keys.** Shipped: `postkit keys create` / `postkit serve` on `127.0.0.1:8788`. Callers that cannot exec speak the same JSON over localhost HTTP without giving up custody.
+2. **HTTP `serve` mode with `pk_live_` keys.** Shipped: `postkit keys create` / `postkit serve` on `127.0.0.1:8788`. Callers that cannot exec speak the same JSON over localhost HTTP without giving up custody. Local agent hosts use `postkit mcp` (stdio JSON-RPC over the same `Client`).
 
 Not on the roadmap, ever: calendar, a hosted/persistent inbox, drafts. Send
 **now** or nothing is the product; a connector may still safely parse an

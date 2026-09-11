@@ -273,9 +273,13 @@ postkit keys list
 postkit keys revoke --name n8n --yes
 postkit serve [--bind 127.0.0.1:8788]
 postkit-serve [--bind 127.0.0.1:8788]   # same listen path, HTTP-only binary
+postkit mcp                             # MCP stdio; stdout is JSON-RPC only
+postkit-mcp                             # same stdio path, MCP-only binary
 ```
 
 For callers that cannot exec the binary. `keys create` prints `pk_live_` + 32 random bytes (unpadded base64url) **once** and stores SHA-256 of the full string in `~/.postkit/keys/<name>.json` (0600). `serve` binds loopback by default, requires at least one key, and speaks the same JSON as `--json`.
+
+`postkit mcp` is for local agent hosts (Claude Desktop, Cursor, Grok). The host spawns the process; JSON-RPC is newline-delimited on stdin/stdout. Omit `--json` — that document would corrupt the protocol pipe. There is no `pk_live_` on this path: the operator who configured the host already has the vault. Tool list and safety notes: [docs/mcp](./mcp/).
 
 `postkit serve --json` writes **one** listen document to stdout (`{"bind","listening":true,"pid"}`) and stays running. A script should parse that document and not wait for the process to exit; each later result is an HTTP response body.
 

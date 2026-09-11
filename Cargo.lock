@@ -1459,6 +1459,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "postkit",
+ "postkit-mcp",
  "postkit-serve",
  "rpassword",
  "serde",

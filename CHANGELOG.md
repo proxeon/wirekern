@@ -39,6 +39,17 @@ same detail by subject.
 
 ### Added
 
+- Local MCP stdio crate (`postkit-mcp` / `postkit mcp`): newline-delimited
+  JSON-RPC over stdin/stdout using the same `Client::from_home` as the CLI
+  and HTTP serve. Tools cover capabilities, vault account names, whoami,
+  post, WhatsApp send (`allow_send` required), insights, ads account
+  discovery, Page discovery, and bounded media list. Kernel `WireError`
+  values return as MCP tool-execution errors. Auth, keys, ads activation,
+  and WhatsApp management stay on the CLI so secrets are not tool
+  arguments. Streamable HTTP is still `postkit serve`. The crate does not
+  depend on `rmcp` 3.x (that SDK's MSRV is 1.88; this workspace stays
+  1.80).
+
 - WhatsApp Cloud CLI, pagination, and sender routing: `whatsapp send` /
   `send-batch` deserialize the same closed `WhatsAppSendRequest` as the
   library and HTTP (not arbitrary Graph JSON). Typed `whatsapp media`,

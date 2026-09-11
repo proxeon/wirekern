@@ -7,8 +7,9 @@ Success is an `Outcome` with `id` and `url`; failure is a `WireError` you can br
 ## Install
 
 ```bash
-cargo install postkit-cli     # the `postkit` binary (includes `postkit serve`)
+cargo install postkit-cli     # the `postkit` binary (includes `postkit serve` and `postkit mcp`)
 cargo install postkit-serve   # optional: HTTP-only binary
+cargo install postkit-mcp     # optional: MCP stdio-only binary
 cargo add postkit             # the library crate
 ```
 
@@ -38,7 +39,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | **Job** | Official-API execution kernel. Send **now**. `Outcome.id` + `url`, or `WireError`. |
 | **Not** | Scheduler, persistent inbox, social drafts, `--at`, media download/hosting |
 | **You hold** | Tokens on disk. BYO Meta app / Bluesky app password. |
-| **Surfaces** | `cargo add postkit` (`Client`) and the `postkit` CLI. HTTP (`pk_live_`) only when a caller cannot exec. |
+| **Surfaces** | `cargo add postkit` (`Client`), the `postkit` CLI, local MCP stdio (`postkit mcp`), and HTTP (`pk_live_`) when a caller cannot exec. |
 
 | Site | Capability | Auth | Limit |
 |------|------------|------|--------|
@@ -112,6 +113,7 @@ postkit whatsapp send --request message.json --sender marketing --allow-send
 postkit whatsapp webhook parse --signature "$X_HUB_SIGNATURE_256" < webhook.json
 postkit whoami <site>
 postkit capabilities [site]
+postkit mcp                                 # MCP stdio for local agent hosts
 postkit accounts list|delete
 postkit apps show|set
 ```
@@ -142,11 +144,11 @@ Default features are empty: `vault-file`, `client`, `oauth` (implies `client`), 
 
 postkit keeps what hosted APIs take: tokens stay in **your** vault, you bring **your own** platform apps, cost is **$0**, license MIT OR Apache-2.0. Comparison grid against hosted post APIs, self-hosted schedulers and official SDKs: **[docs/positioning.md](./docs/positioning.md)**.
 
-Roadmap, in order: images/video, then HTTP `serve` mode with `pk_live_` keys.
+Roadmap, in order: images/video. HTTP `serve` (`pk_live_`) and local MCP stdio (`postkit mcp`) are shipped.
 
 ## Not in this version
 
-`--listen`, video, schedule, persistent inbox, Telegram, Mastodon. LinkedIn is currently member text posts only; Page posting, media, comments, analytics, and sponsored content remain separate features. HTTP for callers that cannot exec: `postkit keys create --name n8n` then `postkit serve` (`127.0.0.1:8788`, `Authorization: Bearer pk_live_…`). Add a site: [docs/connectors.md](./docs/connectors.md).
+`--listen`, video, schedule, persistent inbox, Telegram, Mastodon. LinkedIn is currently member text posts only; Page posting, media, comments, analytics, and sponsored content remain separate features. HTTP for callers that cannot exec: `postkit keys create --name n8n` then `postkit serve` (`127.0.0.1:8788`, `Authorization: Bearer pk_live_…`). Local agent hosts: `postkit mcp` (stdio JSON-RPC; see [docs/mcp](./docs/mcp/)). Add a site: [docs/connectors.md](./docs/connectors.md).
 
 Notable changes, release by release: [CHANGELOG.md](./CHANGELOG.md).
 

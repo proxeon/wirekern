@@ -158,6 +158,9 @@ enum Commands {
         #[arg(long)]
         bind: Option<String>,
     },
+    /// MCP stdio server for local agent hosts. Stdout is JSON-RPC only;
+    /// omit `--json`. Vault from `--home` / POSTKIT_HOME.
+    Mcp,
     #[command(subcommand)]
     Keys(KeysCmd),
 }
@@ -875,6 +878,15 @@ async fn run(cli: Cli) -> Result<(), i32> {
         Commands::Serve { bind } => postkit_serve::run(&home, bind.as_deref(), json)
             .await
             .map_err(|e| fail(&e, json)),
+        Commands::Mcp => {
+            // MCP stdio reserves stdout for JSON-RPC. A `--json` document
+            // here would corrupt the host's protocol stream.
+            if json {
+                eprintln!("mcp uses stdout for JSON-RPC; omit --json");
+                return Err(2);
+            }
+            postkit_mcp::run(&home).await.map_err(|e| fail(&e, false))
+        }
         Commands::Keys(KeysCmd::Create { name }) => crate::keys::create(&home, &name, json),
         Commands::Keys(KeysCmd::List) => crate::keys::list(&home, json),
         Commands::Keys(KeysCmd::Revoke { name, yes }) => {
@@ -3007,6 +3019,8 @@ mod tests {
             cli.command,
             Commands::Serve { bind: Some(ref b) } if b == "127.0.0.1:9000"
         ));
+        let cli = Cli::try_parse_from(["postkit", "mcp"]).unwrap();
+        assert!(matches!(cli.command, Commands::Mcp));
         let cli = Cli::try_parse_from(["postkit", "keys", "create", "--name", "n8n"]).unwrap();
         assert!(matches!(
             cli.command,

@@ -40,8 +40,8 @@ stays **1.80**.
 
 ## Surfaces and docs
 
-- [ ] `postkit mcp` and standalone `postkit-mcp`
-- [ ] Host config snippet; README / cli.md / changelog / positioning
+- [x] `postkit mcp` and standalone `postkit-mcp`
+- [x] Host config snippet; README / cli.md / changelog / positioning
 
 ## Explicitly deferred
 

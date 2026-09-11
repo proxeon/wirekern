@@ -137,7 +137,7 @@ Link it from [README.md](./README.md). Secrets stay in `.env` (copy [`.env.examp
 ### 7. Register in the operator factory
 
 In-tree sites go in `crates/postkit/src/bundle.rs` (`bundled_registry` /
-`Client::from_home`). CLI, `postkit-serve`, and later MCP all call that —
+`Client::from_home`). CLI, `postkit-serve`, and `postkit-mcp` all call that —
 do not copy a `Registry::register` list into a surface crate.
 
 ```rust
