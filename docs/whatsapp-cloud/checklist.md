@@ -106,10 +106,10 @@ Meta has **no** GET-by-`wamid`. History only exists if something stores webhooks
 ### Business management
 
 - [x] List WABAs / phone numbers
-- [x] Phone registration / two-step PIN / migration
+- [x] Phone registration / two-step PIN (Cloud API register; on-prem backup migrate not typed)
 - [x] Quality rating / messaging-limit reads
-- [x] System User provisioning
-- [x] Embedded Signup (other businesses’ WABAs)
+- [x] System User list (`GET /{business-id}/system_users`; create stays Business Manager)
+- [x] Embedded Signup start URL (no Facebook Login dance)
 - [x] Multi-sender: more than one Phone Number ID per home
 
 ### Compliance and billing (Meta enforces window/pricing; we do not store policy state)
@@ -118,7 +118,7 @@ Meta has **no** GET-by-`wamid`. History only exists if something stores webhooks
 - [x] 24h customer-service window clock
 - [x] Template category / pacing awareness
 - [x] Conversation / pricing visibility from status webhooks
-- [x] Usage metrics / template-quality reporting
+- [x] Usage metrics / template-quality reporting (phone health + template quality reads; no billing dashboard)
 - [x] Bulk / campaign / marketing automation (`send_whatsapp_many` ≤ 10, rate-capped; no calendar/audience campaigns)
 
 ## Suggested kernel order

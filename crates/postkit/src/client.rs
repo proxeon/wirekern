@@ -352,13 +352,23 @@ impl Client {
                 Ok(parsed)
             }
             Err(error) => {
-                if let Some(ledger) = &self.whatsapp_ledger {
-                    let sha = crate::whatsapp_ops::sha256_hex(raw_body);
-                    let reason = match &error {
-                        Error::InvalidQuery { reason, .. } => reason.as_str(),
-                        _ => "webhook_ingest_failed",
-                    };
-                    let _ = ledger.put_dead_letter(reason, &sha);
+                // Unsigned junk must not fill the dead-letter log. Only
+                // payloads that passed HMAC (or failed later) are recorded.
+                let hmac_fail = matches!(
+                    &error,
+                    Error::InvalidQuery { reason, .. }
+                        if reason == "webhook_signature_invalid"
+                            || reason == "missing_webhook_app_secret"
+                );
+                if !hmac_fail {
+                    if let Some(ledger) = &self.whatsapp_ledger {
+                        let sha = crate::whatsapp_ops::sha256_hex(raw_body);
+                        let reason = match &error {
+                            Error::InvalidQuery { reason, .. } => reason.as_str(),
+                            _ => "webhook_ingest_failed",
+                        };
+                        let _ = ledger.put_dead_letter(reason, &sha);
+                    }
                 }
                 Err(error)
             }
@@ -719,8 +729,6 @@ impl Client {
         key: &AccountKey,
         deadline: Deadline,
     ) -> Result<(), Error> {
-        self.whatsapp_policy
-            .authorize(&key.site, WhatsAppAction::SubscribeWebhooks)?;
         self.require_capability(&key.site, Capability::ManageWhatsAppPhone)?;
         let account = self.whatsapp_account(&key.site, Capability::ManageWhatsAppPhone)?;
         let app = self
@@ -801,9 +809,12 @@ impl Client {
             });
         }
         let queue = crate::whatsapp_ops::ThroughputQueue::default_cloud_api();
-        let mut now = 1u64;
         let mut out = Vec::new();
         for request in requests {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
             let wait = queue.wait_ns(now);
             if wait > 0 {
                 return Err(Error::RateLimited {
@@ -811,7 +822,6 @@ impl Client {
                     retry_after: Some(std::time::Duration::from_nanos(wait)),
                 });
             }
-            now = now.saturating_add(1);
             out.push(self.send_whatsapp(key, request, deadline).await?);
         }
         Ok(out)

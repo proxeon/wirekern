@@ -7,7 +7,6 @@
 //! does not become a hosted conversation product.
 
 use crate::error::Error;
-use crate::types::valid_name;
 use crate::whatsapp::{DeliveryStatusKind, InboundMessage, InboundMessages};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -115,7 +114,10 @@ pub fn ingest_parsed(
             pricing_category: None,
             updated_at: now_secs(),
         });
-        record.inbound = Some(message.clone());
+        // Correlation only: do not persist message bodies in the ledger.
+        let mut stored = message.clone();
+        stored.text = None;
+        record.inbound = Some(stored);
         record.updated_at = now_secs();
         ledger.put(&record)?;
         let at = message
@@ -131,13 +133,8 @@ pub fn ingest_parsed(
             continue;
         }
         let existing = ledger.get(&status.id)?;
-        let new_rank = status_rank(status.status);
         if let Some(prev) = existing.as_ref().and_then(|r| r.status) {
-            if status_rank(prev) > new_rank {
-                out.push((status.id.clone(), LedgerApply::Unchanged));
-                continue;
-            }
-            if prev == status.status {
+            if !status_may_advance(prev, status.status) {
                 out.push((status.id.clone(), LedgerApply::Unchanged));
                 continue;
             }
@@ -176,7 +173,22 @@ fn status_rank(kind: DeliveryStatusKind) -> u8 {
         DeliveryStatusKind::Sent => 1,
         DeliveryStatusKind::Delivered => 2,
         DeliveryStatusKind::Read => 3,
-        DeliveryStatusKind::Failed => 4,
+        DeliveryStatusKind::Failed => 2,
+    }
+}
+
+/// Failed can replace sent/delivered (Meta may fail after accept) but must
+/// not clobber an already-read message if callbacks arrive out of order.
+fn status_may_advance(prev: DeliveryStatusKind, new: DeliveryStatusKind) -> bool {
+    if prev == new {
+        return false;
+    }
+    match (prev, new) {
+        (DeliveryStatusKind::Failed, _) => false,
+        (DeliveryStatusKind::Read, DeliveryStatusKind::Failed) => false,
+        (DeliveryStatusKind::Read, _) => false,
+        (_, DeliveryStatusKind::Failed) => true,
+        (a, b) => status_rank(b) > status_rank(a),
     }
 }
 
@@ -351,9 +363,9 @@ pub struct FileWhatsAppLedger {
 impl FileWhatsAppLedger {
     pub fn new(home: impl AsRef<Path>) -> Result<Self, Error> {
         let root = home.as_ref().join("whatsapp");
-        fs::create_dir_all(root.join("ledger"))?;
-        fs::create_dir_all(root.join("dlq"))?;
-        fs::create_dir_all(root.join("inbound"))?;
+        crate::vault_file::ensure_dir(&root.join("ledger"))?;
+        crate::vault_file::ensure_dir(&root.join("dlq"))?;
+        crate::vault_file::ensure_dir(&root.join("inbound"))?;
         Ok(Self { root })
     }
 
@@ -378,19 +390,19 @@ impl WhatsAppLedger for FileWhatsAppLedger {
 
     fn put(&self, record: &WhatsAppLedgerRecord) -> Result<(), Error> {
         let path = self.record_path(&record.wamid)?;
-        fs::write(&path, serde_json::to_vec(record)?)?;
+        write_private(&path, &serde_json::to_vec(record)?)?;
         Ok(())
     }
 
     fn put_dead_letter(&self, reason: &str, body_sha256: &str) -> Result<(), Error> {
-        if !valid_name(reason) && reason.contains('/') {
+        if reason.contains('/') || reason.contains('\\') {
             return Err(Error::InvalidName(reason.into()));
         }
         let name = format!("{}-{body_sha256}.json", now_secs());
         let path = self.root.join("dlq").join(name);
-        fs::write(
+        write_private(
             &path,
-            serde_json::to_vec(&serde_json::json!({
+            &serde_json::to_vec(&serde_json::json!({
                 "reason": reason,
                 "body_sha256": body_sha256,
                 "at": now_secs(),
@@ -423,9 +435,22 @@ impl WhatsAppLedger for FileWhatsAppLedger {
         if at <= prev {
             return Ok(());
         }
-        fs::write(&path, serde_json::to_vec(&serde_json::json!({ "at": at }))?)?;
+        write_private(&path, &serde_json::to_vec(&serde_json::json!({ "at": at }))?)?;
         Ok(())
     }
+}
+
+#[cfg(feature = "vault-file")]
+fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    fs::write(path, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "vault-file")]
@@ -437,7 +462,7 @@ pub struct FileWhatsAppConsent {
 impl FileWhatsAppConsent {
     pub fn new(home: impl AsRef<Path>) -> Result<Self, Error> {
         let root = home.as_ref().join("whatsapp").join("consent");
-        fs::create_dir_all(&root)?;
+        crate::vault_file::ensure_dir(&root)?;
         Ok(Self { root })
     }
 }
@@ -460,9 +485,9 @@ impl WhatsAppConsent for FileWhatsAppConsent {
         if record.wa_id.is_empty() || record.wa_id.contains('/') {
             return Err(Error::InvalidName(record.wa_id.clone()));
         }
-        fs::write(
-            self.root.join(format!("{}.json", record.wa_id)),
-            serde_json::to_vec(record)?,
+        write_private(
+            &self.root.join(format!("{}.json", record.wa_id)),
+            &serde_json::to_vec(record)?,
         )?;
         Ok(())
     }
@@ -580,6 +605,42 @@ mod tests {
         let row = ledger.get("wamid.a").unwrap().unwrap();
         assert_eq!(row.status, Some(DeliveryStatusKind::Delivered));
         assert_eq!(row.pricing_category.as_deref(), Some("service"));
+        assert!(row.inbound.as_ref().unwrap().text.is_none());
+        let read = InboundMessages {
+            site: Site::new("whatsapp_cloud"),
+            messages: vec![],
+            statuses: vec![DeliveryStatus {
+                id: "wamid.a".into(),
+                status: DeliveryStatusKind::Read,
+                timestamp: Some("4".into()),
+                errors: vec![],
+                recipient_id: None,
+                conversation: None,
+                pricing: None,
+            }],
+        };
+        ingest_parsed(&ledger, &read).unwrap();
+        let failed = InboundMessages {
+            site: Site::new("whatsapp_cloud"),
+            messages: vec![],
+            statuses: vec![DeliveryStatus {
+                id: "wamid.a".into(),
+                status: DeliveryStatusKind::Failed,
+                timestamp: Some("5".into()),
+                errors: vec![],
+                recipient_id: None,
+                conversation: None,
+                pricing: None,
+            }],
+        };
+        assert_eq!(
+            ingest_parsed(&ledger, &failed).unwrap()[0].1,
+            LedgerApply::Unchanged
+        );
+        assert_eq!(
+            ledger.get("wamid.a").unwrap().unwrap().status,
+            Some(DeliveryStatusKind::Read)
+        );
         assert!(customer_window_open(now_secs() - 60, now_secs()));
         assert!(!customer_window_open(now_secs() - CUSTOMER_WINDOW_SECS, now_secs()));
     }
