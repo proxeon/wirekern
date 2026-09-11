@@ -1138,6 +1138,41 @@ async fn put_token_refused_for_app_password_sites() {
 }
 
 #[cfg(feature = "whatsapp-cloud")]
+#[test]
+fn parse_whatsapp_webhook_reads_app_store_not_a_listener() {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let mut registry = Registry::new();
+    register_mock(&mut registry, Arc::new(MockPub::whatsapp("whatsapp_cloud")));
+    let apps = Arc::new(MemoryAppStore::new());
+    apps.put(&AppConfig {
+        site: Site::new("whatsapp_cloud"),
+        oauth: None,
+        extra: serde_json::json!({
+            "phone_number_id": "123456789",
+            "app_secret": "webhook-secret",
+        }),
+    })
+    .unwrap();
+    let client = Client::new(registry, Arc::new(MemoryVault::new()), apps);
+    let raw = br#"{"object":"whatsapp_business_account","entry":[{"changes":[{"field":"messages","value":{"metadata":{"phone_number_id":"123456789"},"messages":[]}}]}]}"#;
+    let mut mac = Hmac::<Sha256>::new_from_slice(b"webhook-secret").unwrap();
+    mac.update(raw);
+    let sig = format!(
+        "sha256={}",
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    let reply = client
+        .parse_whatsapp_webhook(&sig, raw, crate::whatsapp::WebhookParseOptions::default())
+        .unwrap();
+    assert!(reply.messages.is_empty());
+}
+
+#[cfg(feature = "whatsapp-cloud")]
 fn whatsapp_request(key: &str) -> WhatsAppSendRequest {
     WhatsAppSendRequest {
         message: WhatsAppMessage::Reply {

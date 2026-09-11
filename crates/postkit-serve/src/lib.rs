@@ -103,6 +103,7 @@ pub fn router(client: Arc<Client>, whatsapp: Arc<Client>, keys: Arc<FileKeyStore
     Router::new()
         .route("/v1/posts", post(posts))
         .route("/v1/whatsapp", post(whatsapp_send))
+        .route("/v1/whatsapp/webhook", post(whatsapp_webhook))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/accounts", get(accounts))
         .route("/v1/whoami", get(whoami))
@@ -172,6 +173,31 @@ async fn whatsapp_send(State(state): State<AppState>, headers: HeaderMap, body: 
         .send_whatsapp(&key, req.request, deadline_from(&headers))
         .await
     {
+        Ok(out) => (StatusCode::OK, Json(out)).into_response(),
+        Err(e) => wire_response(e),
+    }
+}
+
+async fn whatsapp_webhook(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Err(e) = authorize(&state, &headers).await {
+        return wire_response(e);
+    }
+    let signature = headers
+        .get("x-hub-signature-256")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let extras = headers
+        .get("x-postkit-status-extras")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    match state.client.parse_whatsapp_webhook(
+        signature,
+        &body,
+        postkit::WebhookParseOptions {
+            include_status_extras: extras,
+        },
+    ) {
         Ok(out) => (StatusCode::OK, Json(out)).into_response(),
         Err(e) => wire_response(e),
     }
@@ -423,6 +449,18 @@ mod tests {
             )
             .unwrap();
         let apps = Arc::new(MemoryAppStore::new());
+        postkit::AppStore::put(
+            &*apps,
+            &postkit::AppConfig {
+                site: Site::new("whatsapp_cloud"),
+                oauth: None,
+                extra: serde_json::json!({
+                    "phone_number_id": "123456789",
+                    "app_secret": "webhook-secret",
+                }),
+            },
+        )
+        .unwrap();
         let deny = Client::new(registry, vault.clone(), apps.clone());
         let mut registry_allow = Registry::new();
         registry_allow
@@ -632,6 +670,44 @@ mod tests {
         // generic post is unsupported — never a private send.
         assert_eq!(v["error"], "unsupported");
         assert_eq!(mock.sends.load(Ordering::SeqCst), 0);
+    }
+
+    fn webhook_sig(raw: &[u8]) -> String {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"webhook-secret").unwrap();
+        mac.update(raw);
+        let bytes = mac.finalize().into_bytes();
+        format!(
+            "sha256={}",
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        )
+    }
+
+    #[tokio::test]
+    async fn http_webhook_parse_is_hmac_not_a_listener() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (app, token, _) = test_router(tmp.path());
+        let raw = br#"{"object":"whatsapp_business_account","entry":[{"changes":[{"field":"messages","value":{"metadata":{"phone_number_id":"123456789"},"messages":[{"from":"1","id":"wamid.in","type":"text","text":{"body":"hi"}}]}}]}]}"#;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/whatsapp/webhook")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .header("x-hub-signature-256", webhook_sig(raw))
+                    .body(Body::from(raw.as_ref()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["messages"][0]["id"], "wamid.in");
+        assert!(v.get("ok").is_none());
     }
 
     #[test]

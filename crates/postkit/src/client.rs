@@ -258,6 +258,21 @@ impl Client {
         Ok(out)
     }
 
+    /// Verify and parse a forwarded Cloud API webhook. This is not a listener:
+    /// the caller supplies the exact raw body and `X-Hub-Signature-256`.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn parse_whatsapp_webhook(
+        &self,
+        signature: &str,
+        raw_body: &[u8],
+        options: crate::whatsapp::WebhookParseOptions,
+    ) -> Result<crate::whatsapp::InboundMessages, Error> {
+        let app = self.apps.get(&Site::new("whatsapp_cloud"))?;
+        crate::connectors::whatsapp_cloud::WhatsAppCloud::parse_signed_webhook_with(
+            &app, signature, raw_body, options,
+        )
+    }
+
     /// Shared load + optional proactive refresh. Every network verb that
     /// talks with stored OAuth creds goes through here so a missed retry
     /// cannot land on only one of insights/pages/ads.

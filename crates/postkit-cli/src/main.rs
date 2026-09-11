@@ -764,20 +764,15 @@ async fn dispatch(
             status_extras,
         })) => {
             let raw = read_whatsapp_webhook_stdin(json)?;
-            let apps = FileAppStore::new(home).map_err(|error| fail(&error, json))?;
-            let app = apps
-                .get(&Site::new("whatsapp_cloud"))
-                .map_err(|error| fail(&error, json))?;
-            let reply =
-                postkit::connectors::whatsapp_cloud::WhatsAppCloud::parse_signed_webhook_with(
-                    &app,
+            let reply = client
+                .parse_whatsapp_webhook(
                     &signature,
                     &raw,
                     postkit::WebhookParseOptions {
                         include_status_extras: status_extras,
                     },
                 )
-            .map_err(|error| fail(&error, json))?;
+                .map_err(|error| fail(&error, json))?;
             if json {
                 emit_raw(&serde_json::to_value(&reply).expect("webhook reply serializes"));
             } else {

@@ -268,7 +268,8 @@ For callers that cannot exec the binary. `keys create` prints `pk_live_` + 32 ra
 | HTTP | CLI |
 |------|-----|
 | `POST /v1/posts` | `postkit post --stdin --json` |
-| `POST /v1/whatsapp` | `postkit whatsapp reply\|template … --allow-send --json` |
+| `POST /v1/whatsapp` | `postkit whatsapp reply\|template\|text … --allow-send --json` |
+| `POST /v1/whatsapp/webhook` | `postkit whatsapp webhook parse --signature …` (raw body, HMAC; not a listener) |
 | `GET /v1/capabilities` | `postkit capabilities --json` |
 | `GET /v1/accounts?site=` | `postkit accounts list --json` |
 | `GET /v1/whoami?site=&account=` | `postkit whoami --json` |
