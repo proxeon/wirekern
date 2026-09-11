@@ -11,7 +11,7 @@ Credentials: copy [`.env.example`](../.env.example) to `.env` (gitignored). The 
 | [facebook-pages/](./facebook-pages/) | First live Facebook Page post (Page scopes, re-auth, discovery, explicit target). |
 | [instagram/](./instagram/) | First live Instagram image post (Instagram Login, professional account, public HTTPS image). |
 | [linkedin/](./linkedin/) | First live LinkedIn member text post (OIDC identity, Share on LinkedIn, versioned Posts API). |
-| [whatsapp-cloud/](./whatsapp-cloud/) | WhatsApp Cloud setup: System User token, explicit template/reply sends, and signed inbound webhook parsing. |
+| [whatsapp-cloud/](./whatsapp-cloud/) | WhatsApp Cloud setup: System User token, explicit template/reply sends, and signed inbound webhook parsing. Remaining work: [checklist.md](./whatsapp-cloud/checklist.md). |
 | [cli.md](./cli.md) | Flag-by-flag reference: `post` / `auth` semantics, vault layout, exit codes. |
 | [positioning.md](./positioning.md) | Comparison grid vs hosted APIs / schedulers / SDKs; roadmap rationale. |
 | [connectors.md](./connectors.md) | Add a site: 010 §8 checklist (feature flag, httpmock, runbook, CLI register). |
