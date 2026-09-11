@@ -1179,6 +1179,7 @@ fn whatsapp_request(key: &str) -> WhatsAppSendRequest {
             to: "60123456789".into(),
             reply_to_message_id: "wamid.inbound".into(),
             text: "Terima kasih".into(),
+            preview_url: false,
         },
         idempotency_key: key.into(),
     }

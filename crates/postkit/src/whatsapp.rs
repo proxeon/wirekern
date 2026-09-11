@@ -29,12 +29,18 @@ pub enum WhatsAppMessage {
         to: String,
         reply_to_message_id: String,
         text: String,
+        /// Meta link-preview fetch. Default false: a URL in the body stays
+        /// literal until the caller opts in.
+        #[serde(default)]
+        preview_url: bool,
     },
     /// Service-window text with no `context`. Meta allows this only while
     /// a customer-service window is open; Postkit does not track that clock.
     Text {
         to: String,
         text: String,
+        #[serde(default)]
+        preview_url: bool,
     },
     Template {
         to: String,
@@ -60,12 +66,17 @@ impl WhatsAppMessage {
                 to,
                 reply_to_message_id,
                 text,
+                preview_url: _,
             } => {
                 validate_recipient(to)?;
                 validate_context_id(reply_to_message_id)?;
                 validate_reply_text(text)?;
             }
-            Self::Text { to, text } => {
+            Self::Text {
+                to,
+                text,
+                preview_url: _,
+            } => {
                 validate_recipient(to)?;
                 validate_reply_text(text)?;
             }
@@ -370,6 +381,7 @@ mod tests {
             to: "60123456789".into(),
             reply_to_message_id: "wamid.abc".into(),
             text: "Terima kasih".into(),
+            preview_url: false,
         };
         assert!(reply.validate().is_ok());
         assert_eq!(
@@ -377,6 +389,7 @@ mod tests {
                 to: "+60123456789".into(),
                 reply_to_message_id: "wamid.abc".into(),
                 text: "ok".into(),
+                preview_url: false,
             }
             .validate()
             .unwrap_err(),
@@ -385,6 +398,7 @@ mod tests {
         assert!(WhatsAppMessage::Text {
             to: "60123456789".into(),
             text: "Hello".into(),
+            preview_url: false,
         }
         .validate()
         .is_ok());
@@ -392,6 +406,7 @@ mod tests {
             WhatsAppMessage::Text {
                 to: "60123456789".into(),
                 text: "   ".into(),
+                preview_url: false,
             }
             .validate()
             .unwrap_err(),
@@ -417,6 +432,7 @@ mod tests {
                 to: "60123456789".into(),
                 reply_to_message_id: "wamid.abc".into(),
                 text: "ok".into(),
+                preview_url: false,
             },
             idempotency_key: "not/a-filename".into(),
         };

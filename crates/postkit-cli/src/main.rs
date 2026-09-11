@@ -413,6 +413,8 @@ enum WhatsAppCmd {
         #[arg(long)]
         text: String,
         #[arg(long)]
+        preview_url: bool,
+        #[arg(long)]
         idempotency: String,
         #[arg(long)]
         allow_send: bool,
@@ -428,6 +430,9 @@ enum WhatsAppCmd {
         reply_to_message_id: String,
         #[arg(long)]
         text: String,
+        /// Ask Meta to unfurl URLs in the body (extra remote fetch).
+        #[arg(long)]
+        preview_url: bool,
         /// Required to prevent duplicate private sends on a confirmed retry.
         #[arg(long)]
         idempotency: String,
@@ -693,11 +698,16 @@ async fn dispatch(
         Commands::WhatsApp(WhatsAppCmd::Text {
             to,
             text,
+            preview_url,
             idempotency,
             ..
         }) => {
             let request = WhatsAppSendRequest {
-                message: WhatsAppMessage::Text { to, text },
+                message: WhatsAppMessage::Text {
+                    to,
+                    text,
+                    preview_url,
+                },
                 idempotency_key: idempotency,
             };
             one_whatsapp_send(
@@ -713,6 +723,7 @@ async fn dispatch(
             to,
             reply_to_message_id,
             text,
+            preview_url,
             idempotency,
             ..
         }) => {
@@ -721,6 +732,7 @@ async fn dispatch(
                     to,
                     reply_to_message_id,
                     text,
+                    preview_url,
                 },
                 idempotency_key: idempotency,
             };

@@ -37,7 +37,7 @@ Do these without becoming an inbox.
 - [x] Failed status `errors[]` (code / title only)
 - [x] Status extras (optional, privacy-gated): `recipient_id`, `conversation`, `pricing`
 - [x] HTTP webhook **parse**: `POST /v1/whatsapp/webhook` (same HMAC as CLI; no listener)
-- [ ] `preview_url` as a typed opt-in (today hardcoded `false`)
+- [x] `preview_url` as a typed opt-in (today hardcoded `false`)
 - [ ] Recipient grammar: Meta-supported `+` / formatting vs digits-only
 - [ ] README capability row: add `read.webhook_statuses`
 - [ ] Document uncertain idempotency (“request left, response lost” — no silent retry)

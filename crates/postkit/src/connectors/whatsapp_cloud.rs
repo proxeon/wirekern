@@ -289,25 +289,25 @@ pub fn send_payload(message: &WhatsAppMessage) -> Value {
             to,
             reply_to_message_id,
             text,
+            preview_url,
         } => json!({
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
             "to": to,
             "context": { "message_id": reply_to_message_id },
             "type": "text",
-            // URL previews are an additional remote fetch/rendering effect;
-            // v1 keeps replies literal until an operator requests a typed
-            // preview policy.
-            "text": { "body": text, "preview_url": false },
+            "text": { "body": text, "preview_url": preview_url },
         }),
-        WhatsAppMessage::Text { to, text } => json!({
+        WhatsAppMessage::Text {
+            to,
+            text,
+            preview_url,
+        } => json!({
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
             "to": to,
             "type": "text",
-            // No `context`: this is Meta's in-window service text, not a
-            // quoted reply. preview_url stays false until the typed opt-in.
-            "text": { "body": text, "preview_url": false },
+            "text": { "body": text, "preview_url": preview_url },
         }),
         WhatsAppMessage::Template {
             to,
@@ -734,6 +734,7 @@ mod tests {
                 to: "60123456789".into(),
                 reply_to_message_id: "wamid.inbound".into(),
                 text: "Terima kasih".into(),
+                preview_url: false,
             },
             idempotency_key: "reply-1".into(),
         }
@@ -791,6 +792,7 @@ mod tests {
             message: WhatsAppMessage::Text {
                 to: "60123456789".into(),
                 text: "Hello".into(),
+                preview_url: false,
             },
             idempotency_key: "text-1".into(),
         };
@@ -800,6 +802,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome.id.as_deref(), Some("wamid.text"));
+        assert_eq!(send.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn preview_url_opt_in_reaches_the_wire() {
+        let server = MockServer::start();
+        let payload = json!({
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": "60123456789",
+            "type": "text",
+            "text": { "body": "https://example.com", "preview_url": true },
+        });
+        let send = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/123456789/messages")
+                .json_body(payload);
+            then.status(200)
+                .json_body(json!({ "messages": [{ "id": "wamid.prev" }] }));
+        });
+        let request = WhatsAppSendRequest {
+            message: WhatsAppMessage::Text {
+                to: "60123456789".into(),
+                text: "https://example.com".into(),
+                preview_url: true,
+            },
+            idempotency_key: "prev-1".into(),
+        };
+        let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        connector
+            .send_whatsapp(&app(), &creds(), &request, Deadline::from_secs(30))
+            .await
+            .unwrap();
         assert_eq!(send.hits(), 1);
     }
 
@@ -860,6 +895,7 @@ mod tests {
                 to: "+60123456789".into(),
                 reply_to_message_id: "wamid.inbound".into(),
                 text: "ok".into(),
+                preview_url: false,
             },
             idempotency_key: "bad-1".into(),
         };
