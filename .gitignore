@@ -5,3 +5,5 @@
 *.swp
 issues/
 /plans/
+# Local captured network traffic may contain request metadata; keep it private.
+mitm_mcp_traffic.db
