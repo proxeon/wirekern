@@ -24,7 +24,8 @@ Last aligned with Meta Cloud API docs and
 - [x] Phone Number ID match on webhook (mismatch refuses the payload)
 - [x] Inbound extract: `id`, `from`, `type`, optional `text.body`, `context.id`
 - [x] Status extract: `sent` / `delivered` / `read` / `failed` + timestamp
-- [x] `POST /v1/whatsapp` send (not parse)
+- [x] `POST /v1/whatsapp` send
+- [x] `POST /v1/whatsapp/webhook` parse (HMAC; not a listener)
 - [x] `whoami` (id, display number, verified name — no token)
 
 ## Kernel holes (still in the v1 slice)

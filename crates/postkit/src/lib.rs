@@ -98,10 +98,9 @@ pub use vault::{MemoryVault, Vault};
 #[cfg(feature = "whatsapp-cloud")]
 pub use whatsapp::{
     DeliveryConversation, DeliveryError, DeliveryPricing, DeliveryStatus, DeliveryStatusKind,
-    InboundContact, InboundInteractive, InboundLocation,
-    InboundMedia, InboundMessage, InboundMessages, InboundOrder, InboundReaction, InboundReferral,
-    InboundUnsupported, WebhookParseOptions, WhatsAppMessage,
-    WhatsAppSendRequest, MAX_REPLY_TEXT,
+    InboundContact, InboundInteractive, InboundLocation, InboundMedia, InboundMessage,
+    InboundMessages, InboundOrder, InboundReaction, InboundReferral, InboundUnsupported,
+    WebhookParseOptions, WhatsAppMessage, WhatsAppSendRequest, MAX_REPLY_TEXT,
 };
 
 #[cfg(feature = "vault-file")]

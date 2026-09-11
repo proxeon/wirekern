@@ -12,9 +12,9 @@ use crate::registry::Connector;
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::whatsapp::{
     DeliveryConversation, DeliveryError, DeliveryPricing, DeliveryStatus, DeliveryStatusKind,
-    InboundContact, InboundInteractive, InboundLocation,
-    InboundMedia, InboundMessage, InboundMessages, InboundOrder, InboundReaction, InboundReferral,
-    InboundUnsupported, WebhookParseOptions, WhatsAppMessage, WhatsAppSendRequest,
+    InboundContact, InboundInteractive, InboundLocation, InboundMedia, InboundMessage,
+    InboundMessages, InboundOrder, InboundReaction, InboundReferral, InboundUnsupported,
+    WebhookParseOptions, WhatsAppMessage, WhatsAppSendRequest,
 };
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
@@ -283,6 +283,12 @@ impl WhatsAppSender for WhatsAppCloud {
 /// The exact limited JSON grammar Postkit allows on the message endpoint.
 /// Keeping it public makes wire tests and embedding callers inspectable
 /// without permitting arbitrary unreviewed JSON components.
+fn wire_recipient(to: &str) -> String {
+    // send_whatsapp validates first. This helper must not panic if a test
+    // or inspector calls send_payload on an unvalidated message.
+    crate::whatsapp::normalize_recipient(to).unwrap_or_else(|_| to.to_string())
+}
+
 pub fn send_payload(message: &WhatsAppMessage) -> Value {
     match message {
         WhatsAppMessage::Reply {
@@ -293,7 +299,7 @@ pub fn send_payload(message: &WhatsAppMessage) -> Value {
         } => json!({
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": crate::whatsapp::normalize_recipient(to).expect("validated"),
+            "to": wire_recipient(to),
             "context": { "message_id": reply_to_message_id },
             "type": "text",
             "text": { "body": text, "preview_url": preview_url },
@@ -305,7 +311,7 @@ pub fn send_payload(message: &WhatsAppMessage) -> Value {
         } => json!({
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": crate::whatsapp::normalize_recipient(to).expect("validated"),
+            "to": wire_recipient(to),
             "type": "text",
             "text": { "body": text, "preview_url": preview_url },
         }),
@@ -331,7 +337,7 @@ pub fn send_payload(message: &WhatsAppMessage) -> Value {
             json!({
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
-                "to": crate::whatsapp::normalize_recipient(to).expect("validated"),
+                "to": wire_recipient(to),
                 "type": "template",
                 "template": template,
             })
@@ -424,7 +430,10 @@ fn inbound_media(kind: &str, value: &Value) -> Option<InboundMedia> {
         _ => return None,
     };
     let object = value.get(key)?;
-    let id = object.get("id").and_then(value_string).filter(|id| !id.is_empty())?;
+    let id = object
+        .get("id")
+        .and_then(value_string)
+        .filter(|id| !id.is_empty())?;
     Some(InboundMedia {
         id,
         mime_type: object.get("mime_type").and_then(value_string),
@@ -555,7 +564,9 @@ fn delivery_status(value: &Value, include_extras: bool) -> Result<DeliveryStatus
         recipient_id: include_extras
             .then(|| value.get("recipient_id").and_then(value_string))
             .flatten(),
-        conversation: include_extras.then(|| delivery_conversation(value)).flatten(),
+        conversation: include_extras
+            .then(|| delivery_conversation(value))
+            .flatten(),
         pricing: include_extras.then(|| delivery_pricing(value)).flatten(),
     })
 }
@@ -1049,14 +1060,35 @@ mod tests {
           }]}]
         }"#;
         let reply = WhatsAppCloud::parse_signed_webhook(&app(), &signed(raw), raw).unwrap();
-        assert_eq!(reply.messages[0].location.as_ref().unwrap().name.as_deref(), Some("KL"));
-        assert_eq!(reply.messages[1].interactive.as_ref().unwrap().id.as_deref(), Some("yes"));
         assert_eq!(
-            reply.messages[2].reaction.as_ref().unwrap().emoji.as_deref(),
+            reply.messages[0].location.as_ref().unwrap().name.as_deref(),
+            Some("KL")
+        );
+        assert_eq!(
+            reply.messages[1]
+                .interactive
+                .as_ref()
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("yes")
+        );
+        assert_eq!(
+            reply.messages[2]
+                .reaction
+                .as_ref()
+                .unwrap()
+                .emoji
+                .as_deref(),
             Some("thumbs")
         );
         assert_eq!(
-            reply.messages[3].unsupported.as_ref().unwrap().code.as_deref(),
+            reply.messages[3]
+                .unsupported
+                .as_ref()
+                .unwrap()
+                .code
+                .as_deref(),
             Some("131051")
         );
     }

@@ -278,7 +278,7 @@ For callers that cannot exec the binary. `keys create` prints `pk_live_` + 32 ra
 
 `POST /v1/whatsapp` is the HTTP twin of `--allow-send`: the JSON body must include `"allow_send": true` plus a typed `message` and `idempotency_key`. Omitted or false is `policy_denied` before vault access. `/v1/posts` cannot send WhatsApp (`unsupported` / `use_whatsapp_command`).
 
-`POST /v1/whatsapp/webhook` parses one signed raw body (`X-Hub-Signature-256`). Optional `X-Postkit-Status-Extras: true` includes recipient/conversation/pricing. This is not a Meta listener: no challenge, no ACK, no store.
+`POST /v1/whatsapp/webhook` parses one signed raw body (`X-Hub-Signature-256`). Optional `?status_extras=true` or `X-Postkit-Status-Extras: true` includes recipient/conversation/pricing. This is not a Meta listener: no challenge, no ACK, no store.
 
 WhatsApp idempotency: a confirmed success is not resent. If the request left the machine and the response was lost, Postkit does not retry — reconcile via the delivery webhook first.
 

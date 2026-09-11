@@ -178,7 +178,12 @@ async fn whatsapp_send(State(state): State<AppState>, headers: HeaderMap, body: 
     }
 }
 
-async fn whatsapp_webhook(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn whatsapp_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<WebhookQuery>,
+    body: Bytes,
+) -> Response {
     if let Err(e) = authorize(&state, &headers).await {
         return wire_response(e);
     }
@@ -186,11 +191,7 @@ async fn whatsapp_webhook(State(state): State<AppState>, headers: HeaderMap, bod
         .get("x-hub-signature-256")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let extras = headers
-        .get("x-postkit-status-extras")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let extras = status_extras_requested(&headers, query.status_extras);
     match state.client.parse_whatsapp_webhook(
         signature,
         &body,
@@ -307,6 +308,23 @@ struct SiteQuery {
     account: Option<String>,
 }
 
+#[derive(Deserialize, Default)]
+struct WebhookQuery {
+    #[serde(default)]
+    status_extras: bool,
+}
+
+fn status_extras_requested(headers: &HeaderMap, query: bool) -> bool {
+    if query {
+        return true;
+    }
+    headers
+        .get("x-postkit-status-extras")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 async fn accounts(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -356,7 +374,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{HeaderMap, Request, StatusCode};
     use postkit::{
         AccountCreds, AllowWhatsAppSendsPolicy, AuthKind, Capability, Connector, MemoryAppStore,
         MemoryVault, Outcome, Publisher, Registry, Vault, WhatsAppSender, WhoAmI,
@@ -708,6 +726,15 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["messages"][0]["id"], "wamid.in");
         assert!(v.get("ok").is_none());
+    }
+
+    #[test]
+    fn status_extras_flag_accepts_header_or_query() {
+        let mut headers = HeaderMap::new();
+        assert!(!status_extras_requested(&headers, false));
+        assert!(status_extras_requested(&headers, true));
+        headers.insert("x-postkit-status-extras", "true".parse().unwrap());
+        assert!(status_extras_requested(&headers, false));
     }
 
     #[test]
