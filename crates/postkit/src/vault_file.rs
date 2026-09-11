@@ -338,6 +338,51 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
+/// Write `bytes` so `path` is created exactly once. Two racing callers: one
+/// `Ok`, the other `AlreadyExists`. Bytes go to a 0600 tmp first; `hard_link`
+/// into `path` is the exclusive step (link fails if the dest exists), so the
+/// dest is never an empty placeholder a concurrent `list` could parse.
+pub(crate) fn exclusive_atomic_write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    use std::io::{ErrorKind, Write};
+    let tmp = path.with_extension(format!(
+        "json.tmp.{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    #[cfg(unix)]
+    let mut f = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?
+    };
+    #[cfg(not(unix))]
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(bytes)?;
+    drop(f);
+    match fs::hard_link(&tmp, path) {
+        Ok(()) => {
+            let _ = fs::remove_file(&tmp);
+            set_mode(path, 0o600)?;
+            Ok(())
+        }
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(&tmp);
+            Err(e.into())
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(e.into())
+        }
+    }
+}
+
 fn set_mode(path: &Path, mode: u32) -> Result<(), Error> {
     #[cfg(unix)]
     {

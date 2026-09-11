@@ -7,7 +7,7 @@
 
 use crate::error::Error;
 use crate::types::{valid_name, Site};
-use crate::vault_file::{atomic_write, ensure_dir};
+use crate::vault_file::{ensure_dir, exclusive_atomic_write};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -55,12 +55,6 @@ impl FileKeyStore {
 
     pub fn create(&self, name: &str) -> Result<CreatedKey, Error> {
         let path = self.path(name)?;
-        if path.exists() {
-            return Err(Error::InvalidQuery {
-                site: Site::new(""),
-                reason: "key_exists".into(),
-            });
-        }
         let token = generate_token()?;
         let meta = KeyMeta {
             name: name.to_string(),
@@ -70,11 +64,22 @@ impl FileKeyStore {
                 .format(&Rfc3339)
                 .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into()),
         };
-        atomic_write(&path, &serde_json::to_vec_pretty(&meta)?)?;
-        Ok(CreatedKey {
-            name: name.to_string(),
-            token,
-        })
+        // Exclusive commit: the token is returned only after this succeeds.
+        // A racing create of the same name gets AlreadyExists → key_exists
+        // and never prints a pk_live_ that cannot verify.
+        match exclusive_atomic_write(&path, &serde_json::to_vec_pretty(&meta)?) {
+            Ok(()) => Ok(CreatedKey {
+                name: name.to_string(),
+                token,
+            }),
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(Error::InvalidQuery {
+                    site: Site::new(""),
+                    reason: "key_exists".into(),
+                })
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub fn list(&self) -> Result<Vec<KeyMeta>, Error> {
@@ -201,6 +206,41 @@ mod tests {
         let listed: Vec<_> = store.list().unwrap().into_iter().map(|k| k.name).collect();
         assert_eq!(listed, vec!["good".to_string()]);
         store.verify(&created.token).unwrap();
+    }
+
+    #[test]
+    fn concurrent_create_same_name_one_winner() {
+        // Same guarantee as Vault claim files: O_EXCL-shaped commit, not
+        // exists-then-write. Eight threads maximize overlap; even if the
+        // scheduler serializes them, exactly one Ok is required.
+        let tmp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(FileKeyStore::new(tmp.path()).unwrap());
+        let n = 8;
+        let mut joins = Vec::new();
+        for _ in 0..n {
+            let store = store.clone();
+            joins.push(std::thread::spawn(move || store.create("n8n")));
+        }
+        let mut winner: Option<String> = None;
+        let mut lost = 0usize;
+        for join in joins {
+            match join.join().expect("thread") {
+                Ok(created) => {
+                    assert!(
+                        winner.replace(created.token).is_none(),
+                        "two creates of n8n both returned Ok"
+                    );
+                }
+                Err(Error::InvalidQuery { reason, .. }) if reason == "key_exists" => {
+                    lost += 1;
+                }
+                Err(e) => panic!("unexpected {e:?}"),
+            }
+        }
+        assert_eq!(lost, n - 1);
+        let token = winner.expect("one winner");
+        store.verify(&token).unwrap();
+        assert_eq!(store.list().unwrap().len(), 1);
     }
 
     #[test]
