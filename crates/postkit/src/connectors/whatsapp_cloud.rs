@@ -5,8 +5,10 @@
 //! number and the later webhook delivery state are all part of the contract.
 
 use crate::error::Error;
+use crate::facets::WhatsAppSender;
 use crate::http::Http;
 use crate::publisher::{AuthKind, Publisher};
+use crate::registry::Connector;
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::whatsapp::{
     DeliveryStatus, DeliveryStatusKind, InboundMessage, InboundMessages, WhatsAppMessage,
@@ -46,6 +48,11 @@ impl WhatsAppCloud {
             site: Site::new(SITE),
             base: base.into().trim_end_matches('/').to_string(),
         })
+    }
+
+    pub fn connector(self) -> Connector {
+        let this = std::sync::Arc::new(self);
+        Connector::from_publisher(this.clone()).whatsapp(this)
     }
 
     /// Verify and parse raw `messages` webhook bytes. This is intentionally a
@@ -175,6 +182,45 @@ impl Publisher for WhatsAppCloud {
         })
     }
 
+    async fn whoami(&self, app: &AppConfig, creds: &AccountCreds) -> Result<WhoAmI, Error> {
+        let phone_number_id = phone_number_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .get(&format!(
+                        "{}/{phone_number_id}?fields=id,display_phone_number,verified_name",
+                        self.base
+                    ))
+                    .bearer_auth(token),
+                Deadline::from_secs(30),
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        let id = body
+            .get("id")
+            .and_then(value_string)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| Error::Platform {
+                site: self.site.clone(),
+                code: "missing_phone_number_id".into(),
+                message: "WhatsApp phone lookup returned no id".into(),
+            })?;
+        Ok(WhoAmI {
+            site: self.site.clone(),
+            id,
+            handle: body
+                .get("verified_name")
+                .and_then(value_string)
+                .or_else(|| body.get("display_phone_number").and_then(value_string)),
+        })
+    }
+}
+
+#[async_trait]
+impl WhatsAppSender for WhatsAppCloud {
     async fn send_whatsapp(
         &self,
         app: &AppConfig,
@@ -218,42 +264,6 @@ impl Publisher for WhatsAppCloud {
             id: Some(id),
             url: None,
             limits: None,
-        })
-    }
-
-    async fn whoami(&self, app: &AppConfig, creds: &AccountCreds) -> Result<WhoAmI, Error> {
-        let phone_number_id = phone_number_id(app)?;
-        let token = access_token(creds)?;
-        let response = self
-            .http
-            .send(
-                self.http
-                    .get(&format!(
-                        "{}/{phone_number_id}?fields=id,display_phone_number,verified_name",
-                        self.base
-                    ))
-                    .bearer_auth(token),
-                Deadline::from_secs(30),
-                &self.site,
-            )
-            .await?;
-        let body = read_json(response, &self.site).await?;
-        let id = body
-            .get("id")
-            .and_then(value_string)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| Error::Platform {
-                site: self.site.clone(),
-                code: "missing_phone_number_id".into(),
-                message: "WhatsApp phone lookup returned no id".into(),
-            })?;
-        Ok(WhoAmI {
-            site: self.site.clone(),
-            id,
-            handle: body
-                .get("verified_name")
-                .and_then(value_string)
-                .or_else(|| body.get("display_phone_number").and_then(value_string)),
         })
     }
 }

@@ -7,6 +7,9 @@ use crate::ads::{
 use crate::apps::{AppStore, MemoryAppStore};
 use crate::client::Client;
 use crate::error::Error;
+#[cfg(feature = "whatsapp-cloud")]
+use crate::facets::WhatsAppSender;
+use crate::facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 use crate::insights::{
     AdAccount, AdAccountsReply, AttributionWindow, InsightRow, InsightsLevel, InsightsQuery,
     InsightsReply, Metric,
@@ -17,7 +20,7 @@ use crate::pages::{PageAccount, PagesReply};
 use crate::policy::AllowWhatsAppSendsPolicy;
 use crate::policy::{AdsAction, AdsPolicy};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
-use crate::registry::Registry;
+use crate::registry::{Connector, Registry};
 use crate::types::{
     AccountCreds, AccountKey, AppConfig, Body, Capability, Deadline, Intent, Outcome, Probe, Site,
     WhoAmI,
@@ -202,8 +205,6 @@ impl Publisher for MockPub {
                 reason: "token_expired".into(),
             });
         }
-        // The mock models one text publish and one image publish; the
-        // distinct id keeps Client tests honest about which body routed.
         let label = match intent.body {
             Body::Text { text } => text,
             Body::Image { text, .. } => text.unwrap_or_else(|| "image".into()),
@@ -213,23 +214,6 @@ impl Publisher for MockPub {
             site: intent.site,
             id: Some(format!("id-{label}")),
             url: Some(format!("https://example.test/{label}")),
-            limits: None,
-        })
-    }
-
-    #[cfg(feature = "whatsapp-cloud")]
-    async fn send_whatsapp(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _request: &WhatsAppSendRequest,
-        _deadline: Deadline,
-    ) -> Result<Outcome, Error> {
-        let index = self.whatsapp_sends.fetch_add(1, Ordering::SeqCst);
-        Ok(Outcome {
-            site: self.site.clone(),
-            id: Some(format!("wamid-{index}")),
-            url: None,
             limits: None,
         })
     }
@@ -277,205 +261,6 @@ impl Publisher for MockPub {
             site: self.site.clone(),
             id: "user-1".into(),
             handle: Some("tester".into()),
-        })
-    }
-
-    async fn insights(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        query: &InsightsQuery,
-        _deadline: Deadline,
-    ) -> Result<InsightsReply, Error> {
-        let mut metrics = serde_json::Map::new();
-        metrics.insert("spend".into(), serde_json::json!(10.0));
-        Ok(InsightsReply {
-            site: self.site.clone(),
-            account_id: "act_1".into(),
-            currency: Some("MYR".into()),
-            rows: vec![InsightRow {
-                entity_id: "1".into(),
-                level: query.level,
-                date_start: query.range.from.clone(),
-                dimensions: serde_json::Map::new(),
-                metrics,
-            }],
-        })
-    }
-
-    async fn ad_accounts(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _deadline: Deadline,
-    ) -> Result<AdAccountsReply, Error> {
-        Ok(AdAccountsReply {
-            site: self.site.clone(),
-            accounts: vec![AdAccount {
-                id: "act_1".into(),
-                name: Some("Main".into()),
-                currency: Some("MYR".into()),
-                timezone: None,
-                status: Some("1".into()),
-            }],
-        })
-    }
-
-    async fn pages(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _deadline: Deadline,
-    ) -> Result<PagesReply, Error> {
-        let read = self.page_reads.fetch_add(1, Ordering::SeqCst);
-        if self.fail_auth_once && read == 0 {
-            return Err(Error::Auth {
-                site: self.site.clone(),
-                reason: "token_expired".into(),
-            });
-        }
-        Ok(PagesReply {
-            site: self.site.clone(),
-            pages: vec![PageAccount {
-                id: "10".into(),
-                name: Some("Test Page".into()),
-                tasks: vec!["CREATE_CONTENT".into()],
-            }],
-        })
-    }
-
-    async fn media(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        query: &MediaQuery,
-        _deadline: Deadline,
-    ) -> Result<MediaReply, Error> {
-        let read = self.media_reads.fetch_add(1, Ordering::SeqCst);
-        if self.fail_auth_once && read == 0 {
-            return Err(Error::Auth {
-                site: self.site.clone(),
-                reason: "token_expired".into(),
-            });
-        }
-        // Echo the query in a stable suffix so the Client test proves the
-        // operator-selected bounded limit reaches the connector unchanged.
-        Ok(MediaReply {
-            site: self.site.clone(),
-            media: vec![PublishedMedia {
-                id: format!("recent-{}", query.limit),
-                permalink: Some("https://example.test/recent".into()),
-                caption: Some("test post".into()),
-                media_type: Some("IMAGE".into()),
-                timestamp: None,
-            }],
-        })
-    }
-
-    async fn create_paused_ad(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        request: &CreatePausedAdRequest,
-        _deadline: Deadline,
-    ) -> Result<CreatedAd, Error> {
-        let n = self.paused_creates.fetch_add(1, Ordering::SeqCst);
-        Ok(CreatedAd {
-            site: self.site.clone(),
-            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
-            entity: request.create.entity(),
-            id: format!("draft-{n}"),
-            status: "PAUSED".into(),
-        })
-    }
-
-    async fn upload_ad_image(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        request: &UploadAdImageRequest,
-        _deadline: Deadline,
-    ) -> Result<UploadedAdImage, Error> {
-        let n = self.image_uploads.fetch_add(1, Ordering::SeqCst);
-        Ok(UploadedAdImage {
-            site: self.site.clone(),
-            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
-            hash: format!("image-{n}"),
-        })
-    }
-
-    async fn create_link_ad_creative(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        request: &CreateLinkAdCreativeRequest,
-        _deadline: Deadline,
-    ) -> Result<CreatedAdCreative, Error> {
-        let n = self.creative_creates.fetch_add(1, Ordering::SeqCst);
-        Ok(CreatedAdCreative {
-            site: self.site.clone(),
-            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
-            id: format!("creative-{n}"),
-        })
-    }
-
-    async fn preview_ad_creative(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        request: &CreativePreviewRequest,
-        _deadline: Deadline,
-    ) -> Result<CreativePreview, Error> {
-        let n = self.creative_previews.fetch_add(1, Ordering::SeqCst);
-        // Reuse the mock's one-shot expiry switch so this read path proves it
-        // gets the same token-refresh recovery as existing insights reads.
-        if self.fail_auth_once && n == 0 {
-            return Err(Error::Auth {
-                site: self.site.clone(),
-                reason: "token_expired".into(),
-            });
-        }
-        Ok(CreativePreview {
-            site: self.site.clone(),
-            creative_id: request.creative_id.clone(),
-            ad_format: request.ad_format,
-            body: format!("<iframe data-preview=\"{n}\"></iframe>"),
-        })
-    }
-
-    async fn ad_review_status(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        request: &AdReviewStatusRequest,
-        _deadline: Deadline,
-    ) -> Result<AdReviewStatus, Error> {
-        let n = self.review_status_reads.fetch_add(1, Ordering::SeqCst);
-        // The counter provides a deterministic PENDING_REVIEW → PAUSED
-        // sequence, so the Client test proves polling reads repeatedly without
-        // a real clock or Meta account.
-        let pending = n < self.review_status_pending_reads;
-        Ok(AdReviewStatus {
-            site: self.site.clone(),
-            entity: request.entity,
-            id: request.id.clone(),
-            name: Some("Paused draft".into()),
-            configured_status: "PAUSED".into(),
-            effective_status: if pending {
-                "PENDING_REVIEW".into()
-            } else {
-                "PAUSED".into()
-            },
-            issues: if pending {
-                vec![AdReviewIssue {
-                    code: Some("100".into()),
-                    summary: Some("Review pending".into()),
-                    message: None,
-                    level: Some("WARNING".into()),
-                }]
-            } else {
-                vec![]
-            },
         })
     }
 
@@ -533,6 +318,245 @@ impl Publisher for MockPub {
     }
 }
 
+#[async_trait]
+impl InsightsSource for MockPub {
+    async fn insights(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        query: &InsightsQuery,
+        _deadline: Deadline,
+    ) -> Result<InsightsReply, Error> {
+        let mut metrics = serde_json::Map::new();
+        metrics.insert("spend".into(), serde_json::json!(10.0));
+        Ok(InsightsReply {
+            site: self.site.clone(),
+            account_id: "act_1".into(),
+            currency: Some("MYR".into()),
+            rows: vec![InsightRow {
+                entity_id: "1".into(),
+                level: query.level,
+                date_start: query.range.from.clone(),
+                dimensions: serde_json::Map::new(),
+                metrics,
+            }],
+        })
+    }
+
+    async fn ad_accounts(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _deadline: Deadline,
+    ) -> Result<AdAccountsReply, Error> {
+        Ok(AdAccountsReply {
+            site: self.site.clone(),
+            accounts: vec![AdAccount {
+                id: "act_1".into(),
+                name: Some("Main".into()),
+                currency: Some("MYR".into()),
+                timezone: None,
+                status: Some("1".into()),
+            }],
+        })
+    }
+}
+
+#[async_trait]
+impl AdsManager for MockPub {
+    async fn create_paused_ad(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &CreatePausedAdRequest,
+        _deadline: Deadline,
+    ) -> Result<CreatedAd, Error> {
+        let n = self.paused_creates.fetch_add(1, Ordering::SeqCst);
+        Ok(CreatedAd {
+            site: self.site.clone(),
+            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
+            entity: request.create.entity(),
+            id: format!("draft-{n}"),
+            status: "PAUSED".into(),
+        })
+    }
+
+    async fn upload_ad_image(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &UploadAdImageRequest,
+        _deadline: Deadline,
+    ) -> Result<UploadedAdImage, Error> {
+        let n = self.image_uploads.fetch_add(1, Ordering::SeqCst);
+        Ok(UploadedAdImage {
+            site: self.site.clone(),
+            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
+            hash: format!("image-{n}"),
+        })
+    }
+
+    async fn create_link_ad_creative(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &CreateLinkAdCreativeRequest,
+        _deadline: Deadline,
+    ) -> Result<CreatedAdCreative, Error> {
+        let n = self.creative_creates.fetch_add(1, Ordering::SeqCst);
+        Ok(CreatedAdCreative {
+            site: self.site.clone(),
+            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
+            id: format!("creative-{n}"),
+        })
+    }
+
+    async fn preview_ad_creative(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &CreativePreviewRequest,
+        _deadline: Deadline,
+    ) -> Result<CreativePreview, Error> {
+        let n = self.creative_previews.fetch_add(1, Ordering::SeqCst);
+        if self.fail_auth_once && n == 0 {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "token_expired".into(),
+            });
+        }
+        Ok(CreativePreview {
+            site: self.site.clone(),
+            creative_id: request.creative_id.clone(),
+            ad_format: request.ad_format,
+            body: format!("<iframe data-preview=\"{n}\"></iframe>"),
+        })
+    }
+
+    async fn ad_review_status(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &AdReviewStatusRequest,
+        _deadline: Deadline,
+    ) -> Result<AdReviewStatus, Error> {
+        let n = self.review_status_reads.fetch_add(1, Ordering::SeqCst);
+        let pending = n < self.review_status_pending_reads;
+        Ok(AdReviewStatus {
+            site: self.site.clone(),
+            entity: request.entity,
+            id: request.id.clone(),
+            name: Some("Paused draft".into()),
+            configured_status: "PAUSED".into(),
+            effective_status: if pending {
+                "PENDING_REVIEW".into()
+            } else {
+                "PAUSED".into()
+            },
+            issues: if pending {
+                vec![AdReviewIssue {
+                    code: Some("100".into()),
+                    summary: Some("Review pending".into()),
+                    message: None,
+                    level: Some("WARNING".into()),
+                }]
+            } else {
+                vec![]
+            },
+        })
+    }
+}
+
+#[async_trait]
+impl PageDirectory for MockPub {
+    async fn pages(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _deadline: Deadline,
+    ) -> Result<PagesReply, Error> {
+        let read = self.page_reads.fetch_add(1, Ordering::SeqCst);
+        if self.fail_auth_once && read == 0 {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "token_expired".into(),
+            });
+        }
+        Ok(PagesReply {
+            site: self.site.clone(),
+            pages: vec![PageAccount {
+                id: "10".into(),
+                name: Some("Test Page".into()),
+                tasks: vec!["CREATE_CONTENT".into()],
+            }],
+        })
+    }
+}
+
+#[async_trait]
+impl MediaReader for MockPub {
+    async fn media(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        query: &MediaQuery,
+        _deadline: Deadline,
+    ) -> Result<MediaReply, Error> {
+        let read = self.media_reads.fetch_add(1, Ordering::SeqCst);
+        if self.fail_auth_once && read == 0 {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "token_expired".into(),
+            });
+        }
+        Ok(MediaReply {
+            site: self.site.clone(),
+            media: vec![PublishedMedia {
+                id: format!("recent-{}", query.limit),
+                permalink: Some("https://example.test/recent".into()),
+                caption: Some("test post".into()),
+                media_type: Some("IMAGE".into()),
+                timestamp: None,
+            }],
+        })
+    }
+}
+
+#[cfg(feature = "whatsapp-cloud")]
+#[async_trait]
+impl WhatsAppSender for MockPub {
+    async fn send_whatsapp(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _request: &WhatsAppSendRequest,
+        _deadline: Deadline,
+    ) -> Result<Outcome, Error> {
+        let index = self.whatsapp_sends.fetch_add(1, Ordering::SeqCst);
+        Ok(Outcome {
+            site: self.site.clone(),
+            id: Some(format!("wamid-{index}")),
+            url: None,
+            limits: None,
+        })
+    }
+}
+
+/// Attach every facet MockPub implements. Client still gates on
+/// `capabilities()`, so a text-only mock will not grow insights by accident.
+fn register_mock(reg: &mut Registry, mock: Arc<MockPub>) {
+    let connector = Connector::from_publisher(mock.clone())
+        .insights(mock.clone())
+        .ads(mock.clone())
+        .pages(mock.clone())
+        .media(mock.clone());
+    #[cfg(feature = "whatsapp-cloud")]
+    let connector = connector.whatsapp(mock);
+    #[cfg(not(feature = "whatsapp-cloud"))]
+    let _ = mock;
+    reg.register_connector(connector);
+}
+
 /// A deliberately strict application policy used to prove Client calls the
 /// policy before it looks up credentials or routes to a connector.
 struct DenyAds;
@@ -550,7 +574,7 @@ impl AdsPolicy for DenyAds {
 fn setup(p: MockPub) -> (Client, AccountKey) {
     let mut reg = Registry::new();
     let site = p.site.clone();
-    reg.register(Arc::new(p));
+    register_mock(&mut reg, Arc::new(p));
     let vault = Arc::new(MemoryVault::new());
     let apps = Arc::new(MemoryAppStore::new());
     let key = AccountKey::new(site.as_str(), "default");
@@ -587,7 +611,7 @@ fn intent(site: &str, text: &str) -> Intent {
 fn setup_expiring(p: MockPub) -> (Client, AccountKey) {
     let mut reg = Registry::new();
     let site = p.site.clone();
-    reg.register(Arc::new(p));
+    register_mock(&mut reg, Arc::new(p));
     let vault = Arc::new(MemoryVault::new());
     let apps = Arc::new(MemoryAppStore::new());
     let key = AccountKey::new(site.as_str(), "default");
@@ -628,7 +652,7 @@ fn intent_with_idem(site: &str, text: &str, idem: &str) -> Intent {
 fn setup_refresh_probe(mock: MockPub, expiring: bool) -> (Client, AccountKey, Arc<MockPub>) {
     let mock = Arc::new(mock);
     let mut reg = Registry::new();
-    reg.register(mock.clone());
+    register_mock(&mut reg, mock.clone());
     let vault = Arc::new(MemoryVault::new());
     let key = AccountKey::new("threads", "default");
     let extra = if expiring {
@@ -729,7 +753,7 @@ async fn unknown_account() {
 #[tokio::test]
 async fn publish_without_app_config() {
     let mut reg = Registry::new();
-    reg.register(Arc::new(MockPub::text("threads")));
+    register_mock(&mut reg, Arc::new(MockPub::text("threads")));
     let vault = Arc::new(MemoryVault::new());
     let apps = Arc::new(MemoryAppStore::new());
     let key = AccountKey::new("threads", "default");
@@ -777,7 +801,7 @@ async fn retries_once_on_token_expired() {
 #[tokio::test]
 async fn auth_start_without_app_config() {
     let mut reg = Registry::new();
-    reg.register(Arc::new(MockPub::text("bluesky")));
+    register_mock(&mut reg, Arc::new(MockPub::text("bluesky")));
     let c = Client::new(
         reg,
         Arc::new(MemoryVault::new()),
@@ -790,7 +814,7 @@ async fn auth_start_without_app_config() {
 #[tokio::test]
 async fn auth_finish_without_app_config() {
     let mut reg = Registry::new();
-    reg.register(Arc::new(MockPub::text("bluesky")));
+    register_mock(&mut reg, Arc::new(MockPub::text("bluesky")));
     let vault = Arc::new(MemoryVault::new());
     let c = Client::new(reg, vault.clone(), Arc::new(MemoryAppStore::new()));
     let key = AccountKey::new("bluesky", "you.bsky.social");
@@ -881,26 +905,29 @@ async fn default_probe_refuses_instead_of_publishing() {
     );
 }
 
-/// Page discovery defaults to the same fail-closed posture as probes: a
-/// connector must implement the exact token-scrubbing contract before it can
-/// expose this remote list.
+/// Page discovery is a facet, not a default method on Publisher. A
+/// publisher-only registration cannot list Pages even if a caller skips
+/// the capability check in their own code — Client fail-closes on the
+/// missing PageDirectory slot.
 #[tokio::test]
 async fn default_pages_refuses_without_an_explicit_connector_method() {
-    let publisher = Bare {
-        caps: vec![Capability::PublishText],
-    };
-    let error = publisher
-        .pages(
-            &AppConfig {
-                site: Site::new("bluesky"),
-                oauth: None,
-                extra: serde_json::json!({}),
-            },
+    let mut reg = Registry::new();
+    reg.register(Arc::new(Bare {
+        caps: vec![Capability::ReadPages],
+    }));
+    let vault = Arc::new(MemoryVault::new());
+    let key = AccountKey::new("bluesky", "default");
+    vault
+        .put(
+            &key,
             &AccountCreds::BotToken {
                 token: "not-used".into(),
             },
-            Deadline::from_secs(30),
         )
+        .unwrap();
+    let client = Client::new(reg, vault, Arc::new(MemoryAppStore::new()));
+    let error = client
+        .pages(&key, Deadline::from_secs(30))
         .await
         .unwrap_err();
     assert!(matches!(
@@ -909,26 +936,27 @@ async fn default_pages_refuses_without_an_explicit_connector_method() {
     ));
 }
 
-/// Media reads default to the same fail-closed posture as Page discovery: a
-/// connector must explicitly implement the endpoint and its data boundary.
+/// Media reads are a facet. Advertising `read.media` without attaching
+/// MediaReader is the same as not implementing it.
 #[tokio::test]
 async fn default_media_refuses_without_an_explicit_connector_method() {
-    let publisher = Bare {
-        caps: vec![Capability::PublishText],
-    };
-    let error = publisher
-        .media(
-            &AppConfig {
-                site: Site::new("bluesky"),
-                oauth: None,
-                extra: serde_json::json!({}),
-            },
+    let mut reg = Registry::new();
+    reg.register(Arc::new(Bare {
+        caps: vec![Capability::ReadMedia],
+    }));
+    let vault = Arc::new(MemoryVault::new());
+    let key = AccountKey::new("bluesky", "default");
+    vault
+        .put(
+            &key,
             &AccountCreds::BotToken {
                 token: "not-used".into(),
             },
-            &MediaQuery::default(),
-            Deadline::from_secs(30),
         )
+        .unwrap();
+    let client = Client::new(reg, vault, Arc::new(MemoryAppStore::new()));
+    let error = client
+        .media(&key, MediaQuery::default(), Deadline::from_secs(30))
         .await
         .unwrap_err();
     assert!(matches!(
@@ -961,7 +989,7 @@ async fn probe_checks_capability() {
 #[tokio::test]
 async fn probe_neither_reads_nor_writes_the_idempotency_ledger() {
     let mut reg = Registry::new();
-    reg.register(Arc::new(MockPub::text("threads")));
+    register_mock(&mut reg, Arc::new(MockPub::text("threads")));
     let vault = Arc::new(MemoryVault::new());
     let key = AccountKey::new("threads", "default");
     vault
@@ -1024,7 +1052,7 @@ async fn probe_retries_once_on_token_expired() {
 #[tokio::test]
 async fn put_token_then_whoami() {
     let mut reg = Registry::new();
-    reg.register(Arc::new(MockPub::text("threads")));
+    register_mock(&mut reg, Arc::new(MockPub::text("threads")));
     let c = Client::new(
         reg,
         Arc::new(MemoryVault::new()),
@@ -1040,7 +1068,7 @@ async fn put_token_persists_whoami_id() {
     // The id that whoami already fetches lands in extra — same shape as
     // the OAuth path — so both auth flows publish against /{user_id}/….
     let mut reg = Registry::new();
-    reg.register(Arc::new(MockPub::text("threads")));
+    register_mock(&mut reg, Arc::new(MockPub::text("threads")));
     let vault = Arc::new(MemoryVault::new());
     let c = Client::new(reg, vault.clone(), Arc::new(MemoryAppStore::new()));
     let key = AccountKey::new("threads", "default");
@@ -1064,7 +1092,7 @@ async fn put_token_rejects_bad_token_before_vault_write() {
     let mut p = MockPub::text("threads");
     p.whoami_fails = true;
     let mut reg = Registry::new();
-    reg.register(Arc::new(p));
+    register_mock(&mut reg, Arc::new(p));
     let vault = Arc::new(MemoryVault::new());
     let c = Client::new(reg, vault.clone(), Arc::new(MemoryAppStore::new()));
     let key = AccountKey::new("threads", "default");
@@ -1084,7 +1112,7 @@ async fn put_token_refused_for_app_password_sites() {
     let mut mock = MockPub::text("bluesky");
     mock.auth_kind = AuthKind::AppPassword;
     let mut reg = Registry::new();
-    reg.register(Arc::new(mock));
+    register_mock(&mut reg, Arc::new(mock));
     let vault = Arc::new(MemoryVault::new());
     let c = Client::new(reg, vault.clone(), Arc::new(MemoryAppStore::new()));
     let key = AccountKey::new("bluesky", "you.bsky.social");
@@ -1114,7 +1142,7 @@ fn whatsapp_request(key: &str) -> WhatsAppSendRequest {
 #[tokio::test]
 async fn static_token_bootstrap_uses_redacted_bot_token_shape() {
     let mut registry = Registry::new();
-    registry.register(Arc::new(MockPub::whatsapp("whatsapp_cloud")));
+    register_mock(&mut registry, Arc::new(MockPub::whatsapp("whatsapp_cloud")));
     let vault = Arc::new(MemoryVault::new());
     let client = Client::new(registry, vault.clone(), Arc::new(MemoryAppStore::new()));
     let key = AccountKey::new("whatsapp_cloud", "default");
@@ -1131,7 +1159,7 @@ async fn static_token_bootstrap_uses_redacted_bot_token_shape() {
 async fn whatsapp_default_policy_denies_before_vault_or_connector() {
     let publisher = Arc::new(MockPub::whatsapp("whatsapp_cloud"));
     let mut registry = Registry::new();
-    registry.register(publisher.clone());
+    register_mock(&mut registry, publisher.clone());
     let client = Client::new(
         registry,
         Arc::new(MemoryVault::new()),
@@ -1158,7 +1186,7 @@ async fn whatsapp_default_policy_denies_before_vault_or_connector() {
 async fn whatsapp_allowed_send_replays_confirmed_idempotency_outcome() {
     let publisher = Arc::new(MockPub::whatsapp("whatsapp_cloud"));
     let mut registry = Registry::new();
-    registry.register(publisher.clone());
+    register_mock(&mut registry, publisher.clone());
     let vault = Arc::new(MemoryVault::new());
     let client = Client::with_whatsapp_policy(
         registry,
@@ -1192,7 +1220,7 @@ async fn whatsapp_allowed_send_replays_confirmed_idempotency_outcome() {
 async fn whatsapp_missing_vault_account_releases_its_idempotency_claim() {
     let publisher = Arc::new(MockPub::whatsapp("whatsapp_cloud"));
     let mut registry = Registry::new();
-    registry.register(publisher.clone());
+    register_mock(&mut registry, publisher.clone());
     let vault = Arc::new(MemoryVault::new());
     let client = Client::with_whatsapp_policy(
         registry,
@@ -1236,7 +1264,7 @@ async fn concurrent_same_key_publishes_once() {
     mock.publish_gate = std::sync::Mutex::new(Some(gate_rx));
     let mock = Arc::new(mock);
     let mut reg = Registry::new();
-    reg.register(mock.clone());
+    register_mock(&mut reg, mock.clone());
     let vault = Arc::new(MemoryVault::new());
     let key = AccountKey::new("threads", "default");
     vault
@@ -1310,7 +1338,7 @@ async fn failed_publish_releases_the_claim() {
         ..MockPub::text("threads")
     });
     let mut reg = Registry::new();
-    reg.register(mock.clone());
+    register_mock(&mut reg, mock.clone());
     let vault = Arc::new(MemoryVault::new());
     let key = AccountKey::new("threads", "default");
     vault
@@ -1353,7 +1381,7 @@ async fn idempotency_retry_returns_stored_outcome() {
     // the stored Outcome without HTTP.
     let mock = Arc::new(MockPub::text("threads"));
     let mut reg = Registry::new();
-    reg.register(mock.clone());
+    register_mock(&mut reg, mock.clone());
     let vault = Arc::new(MemoryVault::new());
     let apps = Arc::new(MemoryAppStore::new());
     let key = AccountKey::new("threads", "default");
@@ -1541,6 +1569,78 @@ async fn client_insights_routes_and_checks_capability() {
     );
 }
 
+/// Advertising `read.metrics` on Publisher is not an implementation. A
+/// publisher-only registration must fail closed at the facet lookup, which
+/// is what keeps the next connector from inheriting a default insights
+/// method on the kernel trait.
+#[tokio::test]
+async fn advertised_capability_without_facet_is_unsupported() {
+    struct Lies {
+        site: Site,
+    }
+    #[async_trait]
+    impl Publisher for Lies {
+        fn site(&self) -> &Site {
+            &self.site
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[Capability::ReadMetrics]
+        }
+        fn auth_kind(&self) -> AuthKind {
+            AuthKind::None
+        }
+        async fn publish(
+            &self,
+            _app: &AppConfig,
+            _creds: &AccountCreds,
+            intent: Intent,
+            _deadline: Deadline,
+        ) -> Result<Outcome, Error> {
+            Ok(Outcome {
+                site: intent.site,
+                id: Some("p".into()),
+                url: None,
+                limits: None,
+            })
+        }
+        async fn whoami(&self, _app: &AppConfig, _creds: &AccountCreds) -> Result<WhoAmI, Error> {
+            Ok(WhoAmI {
+                site: self.site.clone(),
+                id: "1".into(),
+                handle: None,
+            })
+        }
+    }
+
+    let mut reg = Registry::new();
+    let site = Site::new("threads");
+    reg.register(Arc::new(Lies { site: site.clone() }));
+    let vault = Arc::new(MemoryVault::new());
+    let key = AccountKey::new("threads", "default");
+    vault
+        .put(
+            &key,
+            &AccountCreds::OAuth2 {
+                access_token: "tok".into(),
+                refresh_token: None,
+                extra: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    let client = Client::new(reg, vault, Arc::new(MemoryAppStore::new()));
+    let err = client
+        .insights(
+            &key,
+            insights_query("2026-06-01", "2026-06-02"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadMetrics)
+    );
+}
+
 /// Remote ad-account discovery is a separately gated read. This prevents a
 /// connector from accidentally treating local vault aliases as account IDs.
 #[tokio::test]
@@ -1577,7 +1677,7 @@ async fn client_pages_routes_retries_expired_token_and_checks_capability() {
     // `unknown_account` and making the caller provision a token for a site
     // that cannot list Pages anyway.
     let mut registry = Registry::new();
-    registry.register(Arc::new(MockPub::text("facebook_pages")));
+    register_mock(&mut registry, Arc::new(MockPub::text("facebook_pages")));
     let client = Client::new(
         registry,
         Arc::new(MemoryVault::new()),
@@ -1614,7 +1714,7 @@ async fn client_media_routes_retries_expired_token_and_checks_bounds() {
     // Limit validation comes before even the capability lookup/vault read;
     // an embedding caller receives the same safe local error as the CLI.
     let mut registry = Registry::new();
-    registry.register(Arc::new(MockPub::text("instagram")));
+    register_mock(&mut registry, Arc::new(MockPub::text("instagram")));
     let client = Client::new(
         registry,
         Arc::new(MemoryVault::new()),
@@ -1673,7 +1773,7 @@ async fn client_paused_create_routes_and_refuses_before_vault_access() {
     // Deliberately leave the vault empty. Policy denial must win over an
     // `unknown_account` error, proving the gate is before credential access.
     let mut registry = Registry::new();
-    registry.register(Arc::new(MockPub::paused_ads("meta_ads")));
+    register_mock(&mut registry, Arc::new(MockPub::paused_ads("meta_ads")));
     let denied = Client::with_ads_policy(
         registry,
         Arc::new(MemoryVault::new()),
@@ -1770,7 +1870,10 @@ async fn client_creative_assets_route_and_refuse_before_vault_access() {
     // token lookup, proving an asset write cannot cause a credential side
     // effect when an embedding application disallows it.
     let mut registry = Registry::new();
-    registry.register(Arc::new(MockPub::creative_assets("meta_ads")));
+    register_mock(
+        &mut registry,
+        Arc::new(MockPub::creative_assets("meta_ads")),
+    );
     let denied = Client::with_ads_policy(
         registry,
         Arc::new(MemoryVault::new()),
@@ -2138,9 +2241,10 @@ mod draft_tests {
         PausedDraftState, RunPausedDraft,
     };
     use crate::error::Error;
+    use crate::facets::AdsManager;
     use crate::policy::{AdsAction, AdsPolicy};
     use crate::publisher::{AuthKind, Publisher};
-    use crate::registry::Registry;
+    use crate::registry::{Connector, Registry};
     use crate::types::{AccountCreds, AccountKey, AppConfig, Capability, Deadline, Site, WhoAmI};
     use crate::vault::{MemoryVault, Vault};
     use async_trait::async_trait;
@@ -2257,6 +2361,10 @@ mod draft_tests {
                 handle: Some("operator".into()),
             })
         }
+    }
+
+    #[async_trait]
+    impl AdsManager for DraftMock {
         async fn create_paused_ad(
             &self,
             _app: &AppConfig,
@@ -2476,7 +2584,7 @@ mod draft_tests {
 
     fn setup(mock: Arc<DraftMock>) -> (Client, AccountKey, Arc<MemStore>) {
         let mut reg = Registry::new();
-        reg.register(mock);
+        reg.register_connector(Connector::from_publisher(mock.clone()).ads(mock));
         let vault = Arc::new(MemoryVault::new());
         let key = AccountKey::new("meta_ads", "default");
         vault
@@ -2808,7 +2916,7 @@ mod draft_tests {
     async fn policy_denial_happens_before_any_remote_write() {
         let mock = DraftMock::new();
         let mut reg = Registry::new();
-        reg.register(mock.clone());
+        reg.register_connector(Connector::from_publisher(mock.clone()).ads(mock.clone()));
         let vault = Arc::new(MemoryVault::new());
         let key = AccountKey::new("meta_ads", "default");
         vault

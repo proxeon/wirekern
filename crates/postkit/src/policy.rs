@@ -79,12 +79,14 @@ impl AdsPolicy for PausedOnlyAdsPolicy {
 /// Every private WhatsApp send receives its own decision. A message is not a
 /// public post: templates can be billable and even replies must obey Meta's
 /// customer-service rules, so falling through to allow would be unsafe.
+#[cfg(feature = "whatsapp-cloud")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WhatsAppAction {
     SendReply,
     SendTemplate,
 }
 
+#[cfg(feature = "whatsapp-cloud")]
 impl WhatsAppAction {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -97,6 +99,7 @@ impl WhatsAppAction {
 /// Policy for outbound WhatsApp Cloud messages. It is independent of
 /// `AdsPolicy`: Meta Ads spend and customer messaging have different risk and
 /// approval models, and an application should be able to choose each one.
+#[cfg(feature = "whatsapp-cloud")]
 pub trait WhatsAppPolicy: Send + Sync {
     fn authorize(&self, site: &Site, action: WhatsAppAction) -> Result<(), Error>;
 }
@@ -104,9 +107,11 @@ pub trait WhatsAppPolicy: Send + Sync {
 /// Production default: no private message leaves the process merely because
 /// a caller registered a WhatsApp connector. The CLI replaces this only for a
 /// command carrying its explicit `--allow-send` acknowledgement.
+#[cfg(feature = "whatsapp-cloud")]
 #[derive(Default)]
 pub struct NoWhatsAppSendsPolicy;
 
+#[cfg(feature = "whatsapp-cloud")]
 impl WhatsAppPolicy for NoWhatsAppSendsPolicy {
     fn authorize(&self, site: &Site, action: WhatsAppAction) -> Result<(), Error> {
         Err(Error::PolicyDenied {
@@ -120,9 +125,11 @@ impl WhatsAppPolicy for NoWhatsAppSendsPolicy {
 /// Opt-in policy for callers that have made their own consent, template and
 /// billing decision. It does not claim Meta will deliver the message; the
 /// signed status webhook is still the source of the final delivery state.
+#[cfg(feature = "whatsapp-cloud")]
 #[derive(Default)]
 pub struct AllowWhatsAppSendsPolicy;
 
+#[cfg(feature = "whatsapp-cloud")]
 impl WhatsAppPolicy for AllowWhatsAppSendsPolicy {
     fn authorize(&self, _site: &Site, _action: WhatsAppAction) -> Result<(), Error> {
         Ok(())
@@ -150,6 +157,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "whatsapp-cloud")]
     #[test]
     fn whatsapp_sends_are_deny_by_default_and_explicitly_opt_in() {
         let site = Site::new("whatsapp_cloud");

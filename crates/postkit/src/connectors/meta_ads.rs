@@ -12,6 +12,7 @@ use crate::ads::{
     PausedAdCreate, UploadAdImageRequest, UploadedAdImage,
 };
 use crate::error::Error;
+use crate::facets::{AdsManager, InsightsSource};
 use crate::form::form;
 use crate::http::Http;
 use crate::insights::{
@@ -20,6 +21,7 @@ use crate::insights::{
 };
 use crate::oauth::{authorize_url, exchange_code, extract_code, new_state};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
+use crate::registry::Connector;
 use crate::types::{
     AccountCreds, AppConfig, Capability, Deadline, Intent, OAuthApp, Outcome, Site, WhoAmI,
 };
@@ -78,6 +80,15 @@ impl MetaAds {
             base: publish_base.into().trim_end_matches('/').to_string(),
             graph_origin: graph_origin.into().trim_end_matches('/').to_string(),
         })
+    }
+
+    /// Publisher + insights + paused-ads manager. Extra verbs stay off
+    /// `Publisher` so a Threads-only build never compiles this surface.
+    pub fn connector(self) -> Connector {
+        let this = std::sync::Arc::new(self);
+        Connector::from_publisher(this.clone())
+            .insights(this.clone())
+            .ads(this)
     }
 }
 
@@ -221,7 +232,10 @@ impl Publisher for MetaAds {
         }
         Ok(creds)
     }
+}
 
+#[async_trait]
+impl InsightsSource for MetaAds {
     async fn insights(
         &self,
         _app: &AppConfig,
@@ -354,7 +368,10 @@ impl Publisher for MetaAds {
             accounts,
         })
     }
+}
 
+#[async_trait]
+impl AdsManager for MetaAds {
     async fn create_paused_ad(
         &self,
         _app: &AppConfig,

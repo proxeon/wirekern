@@ -94,7 +94,7 @@ Use `crate::http::Http` (feature `client`). It sets `User-Agent: postkit/<ver>` 
 
 ### 3. No Graph-shaped types in core
 
-Do not add fields to `Client`, `Site` (open string), or `Publisher` “for this site.”
+Do not add fields to `Client`, `Site` (open string), or `Publisher` “for this site.” `Publisher` is frozen to publish + auth + probe. Extra verbs (insights, ads, pages, media, WhatsApp) are facet traits on `Connector` (`crates/postkit/src/facets.rs`). A publish-only site implements `Publisher` and calls `Registry::register`. A site that also reads metrics implements `InsightsSource` and registers with `Registry::register_connector(Connector::from_publisher(arc.clone()).insights(arc))`.
 
 Allowed vault shapes today (`types.rs`): `OAuth2`, `AppPassword`, `BotToken`. Pick one. Redacting `Debug` already covers secrets.
 
@@ -140,6 +140,7 @@ Link it from [README.md](./README.md). Secrets stay in `.env` (copy [`.env.examp
 
 ```rust
 registry.register(Arc::new(postkit::connectors::mysite::MySite::new()?));
+// Extra verbs: registry.register_connector(MySite::new()?.connector());
 ```
 
 Enable the feature on the `postkit` dep in `crates/postkit-cli/Cargo.toml`.
@@ -150,7 +151,7 @@ Enable the feature on the `postkit` dep in `crates/postkit-cli/Cargo.toml`.
 
 ## Outsiders
 
-Implement `Publisher`, call `Registry::register`. No core PR required. In-tree sites still get a feature flag so `cargo add postkit` default stays empty.
+Implement `Publisher`, call `Registry::register`. Extra verbs are optional facets on `Connector`, not new methods on `Publisher`. No core PR required. In-tree sites still get a feature flag so `cargo add postkit` default stays empty.
 
 ---
 

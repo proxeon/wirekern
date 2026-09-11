@@ -1,17 +1,7 @@
-use crate::ads::{
-    AdReviewStatus, AdReviewStatusRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
-    CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest, UploadAdImageRequest,
-    UploadedAdImage,
-};
 use crate::error::Error;
-use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
-use crate::media::{MediaQuery, MediaReply};
-use crate::pages::PagesReply;
 use crate::types::{
     AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
 };
-#[cfg(feature = "whatsapp-cloud")]
-use crate::whatsapp::WhatsAppSendRequest;
 use async_trait::async_trait;
 
 // 012 wants native async fn; `dyn Publisher` in Registry is not object-safe
@@ -54,6 +44,13 @@ pub enum AuthReply {
     },
 }
 
+/// Kernel seam: social publish + auth.
+///
+/// Frozen. Do not add insights, ads, pages, media, or messaging methods
+/// here. Those are optional [`crate::facets`] attached on
+/// [`crate::Connector`]. A new site implements this trait; extra verbs are
+/// extra traits. Probe stays because it is the create-only half of publish,
+/// not a new product surface.
 #[async_trait]
 pub trait Publisher: Send + Sync {
     fn site(&self) -> &Site;
@@ -68,31 +65,12 @@ pub trait Publisher: Send + Sync {
         deadline: Deadline,
     ) -> Result<Outcome, Error>;
 
-    /// Send a typed private business message. It is deliberately separate
-    /// from `publish`: recipient, reply context, template approval and
-    /// billing semantics cannot be represented safely by a social `Intent`.
-    #[cfg(feature = "whatsapp-cloud")]
-    async fn send_whatsapp(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        request: &WhatsAppSendRequest,
-        _deadline: Deadline,
-    ) -> Result<Outcome, Error> {
-        Err(Error::UnsupportedCapability {
-            site: self.site().clone(),
-            need: request.required_capability(),
-        })
-    }
-
     /// Create-only publish probe (027): run every step of a publish except
     /// the one that makes it visible. The default refusal keeps connectors
     /// honest — only a site whose API genuinely splits creation from
     /// publication can offer a probe, and a connector that forgets to
     /// implement it cannot silently publish for real on a dry-run the way
-    /// it could if dry-run were a flag inside `publish`. Same error shape
-    /// as `thread_unsupported`: a flag the site cannot honor is a usage
-    /// error, surfaced before any HTTP.
+    /// it could if dry-run were a flag inside `publish`.
     async fn probe(
         &self,
         _app: &AppConfig,
@@ -108,150 +86,6 @@ pub trait Publisher: Send + Sync {
     }
 
     async fn whoami(&self, app: &AppConfig, creds: &AccountCreds) -> Result<WhoAmI, Error>;
-
-    /// Read metrics for a bounded range (026 §3 flag 1: the read seam).
-    /// The default refusal keeps the capability honest — a connector that
-    /// has not implemented insights cannot let a read slip through as
-    /// something else, and the error lands before any HTTP.
-    async fn insights(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _query: &InsightsQuery,
-        _deadline: Deadline,
-    ) -> Result<InsightsReply, Error> {
-        Err(Error::UnsupportedCapability {
-            site: self.site().clone(),
-            need: Capability::ReadMetrics,
-        })
-    }
-
-    /// List credential-visible advertising accounts. It has its own
-    /// capability because local vault aliases and remote ad accounts answer
-    /// different operator questions; a metrics-only connector must refuse it.
-    async fn ad_accounts(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _deadline: Deadline,
-    ) -> Result<AdAccountsReply, Error> {
-        Err(Error::UnsupportedCapability {
-            site: self.site().clone(),
-            need: Capability::ReadAdAccounts,
-        })
-    }
-
-    /// List credential-visible Pages without ever exposing their access
-    /// tokens. It is separate from ad accounts because Page selection is the
-    /// target of an organic post, not a property of an advertising account.
-    /// The default refusal keeps every existing connector fail-closed.
-    async fn pages(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _deadline: Deadline,
-    ) -> Result<PagesReply, Error> {
-        Err(Error::UnsupportedCapability {
-            site: self.site().clone(),
-            need: Capability::ReadPages,
-        })
-    }
-
-    /// Read a connector's bounded first page of already-published media. A
-    /// separate capability prevents a write-only social connector from
-    /// accidentally becoming a profile reader just by accepting images.
-    async fn media(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _query: &MediaQuery,
-        _deadline: Deadline,
-    ) -> Result<MediaReply, Error> {
-        Err(Error::UnsupportedCapability {
-            site: self.site().clone(),
-            need: Capability::ReadMedia,
-        })
-    }
-
-    /// Create one advertising entity that is structurally paused. The
-    /// default closes the management path for every connector that has not
-    /// explicitly implemented it; a capability declaration alone is never
-    /// permission to issue a write.
-    async fn create_paused_ad(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _request: &CreatePausedAdRequest,
-        _deadline: Deadline,
-    ) -> Result<CreatedAd, Error> {
-        Err(Error::UnsupportedCapability {
-            site: self.site().clone(),
-            need: Capability::CreatePausedAds,
-        })
-    }
-
-    /// Upload one account-scoped image for later creative construction. The
-    /// default refusal prevents a generic connector from accepting local media
-    /// bytes merely because it can create some other advertising object.
-    async fn upload_ad_image(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _request: &UploadAdImageRequest,
-        _deadline: Deadline,
-    ) -> Result<UploadedAdImage, Error> {
-        Err(Error::UnsupportedCapability {
-            site: self.site().clone(),
-            need: Capability::CreateAdCreative,
-        })
-    }
-
-    /// Create one non-delivering image-link creative. A separate ad must
-    /// still reference its returned ID and is forced to `PAUSED` by Tier B.
-    async fn create_link_ad_creative(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _request: &CreateLinkAdCreativeRequest,
-        _deadline: Deadline,
-    ) -> Result<CreatedAdCreative, Error> {
-        Err(Error::UnsupportedCapability {
-            site: self.site().clone(),
-            need: Capability::CreateAdCreative,
-        })
-    }
-
-    /// Render a stored ad creative without creating an ad. A connector must
-    /// opt in explicitly because preview response bodies are remote HTML and
-    /// their parsing/output contract must be reviewed per platform.
-    async fn preview_ad_creative(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _request: &CreativePreviewRequest,
-        _deadline: Deadline,
-    ) -> Result<CreativePreview, Error> {
-        Err(Error::UnsupportedCapability {
-            site: self.site().clone(),
-            need: Capability::ReadAdPreviews,
-        })
-    }
-
-    /// Inspect a paused draft's configured and effective state. This stays a
-    /// distinct capability from creative previews: a connector must opt in to
-    /// the exact lifecycle fields and issue parsing it can truthfully support.
-    async fn ad_review_status(
-        &self,
-        _app: &AppConfig,
-        _creds: &AccountCreds,
-        _request: &AdReviewStatusRequest,
-        _deadline: Deadline,
-    ) -> Result<AdReviewStatus, Error> {
-        Err(Error::UnsupportedCapability {
-            site: self.site().clone(),
-            need: Capability::ReadAdReviewStatus,
-        })
-    }
 
     /// Re-issue stored credentials. `deadline` is the *caller's* budget —
     /// issue 024: refresh shares the same end-to-end deadline as the

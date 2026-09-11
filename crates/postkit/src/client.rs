@@ -7,6 +7,9 @@ use crate::ads::{
 };
 use crate::apps::AppStore;
 use crate::error::Error;
+#[cfg(feature = "whatsapp-cloud")]
+use crate::facets::WhatsAppSender;
+use crate::facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
 use crate::media::{MediaQuery, MediaReply};
 use crate::pages::PagesReply;
@@ -244,11 +247,10 @@ impl Client {
         // call. A missing/corrupt vault entry must release the claim just like
         // a rejected platform request, otherwise a later corrected command
         // would be blocked behind an abandoned idempotency key.
+        let sender = self.whatsapp_sender(&key.site, need)?;
         let attempt = async {
             let creds = self.vault.get(key)?;
-            publisher
-                .send_whatsapp(&app, &creds, &request, deadline)
-                .await
+            sender.send_whatsapp(&app, &creds, &request, deadline).await
         }
         .await;
         let out = match attempt {
@@ -350,11 +352,12 @@ impl Client {
         creds = self
             .maybe_refresh(&*publisher, &app, key, creds, deadline)
             .await?;
-        match publisher.insights(&app, &creds, &query, deadline).await {
+        let source = self.insights_source(&key.site, Capability::ReadMetrics)?;
+        match source.insights(&app, &creds, &query, deadline).await {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
                 let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
-                publisher.insights(&app, &new, &query, deadline).await
+                source.insights(&app, &new, &query, deadline).await
             }
             other => other,
         }
@@ -386,11 +389,12 @@ impl Client {
         creds = self
             .maybe_refresh(&*publisher, &app, key, creds, deadline)
             .await?;
-        match publisher.ad_accounts(&app, &creds, deadline).await {
+        let source = self.insights_source(&key.site, Capability::ReadAdAccounts)?;
+        match source.ad_accounts(&app, &creds, deadline).await {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
                 let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
-                publisher.ad_accounts(&app, &new, deadline).await
+                source.ad_accounts(&app, &new, deadline).await
             }
             other => other,
         }
@@ -415,11 +419,12 @@ impl Client {
         creds = self
             .maybe_refresh(&*publisher, &app, key, creds, deadline)
             .await?;
-        match publisher.pages(&app, &creds, deadline).await {
+        let directory = self.page_directory(&key.site)?;
+        match directory.pages(&app, &creds, deadline).await {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
                 let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
-                publisher.pages(&app, &new, deadline).await
+                directory.pages(&app, &new, deadline).await
             }
             other => other,
         }
@@ -453,11 +458,12 @@ impl Client {
         creds = self
             .maybe_refresh(&*publisher, &app, key, creds, deadline)
             .await?;
-        match publisher.media(&app, &creds, &query, deadline).await {
+        let reader = self.media_reader(&key.site)?;
+        match reader.media(&app, &creds, &query, deadline).await {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
                 let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
-                publisher.media(&app, &new, &query, deadline).await
+                reader.media(&app, &new, &query, deadline).await
             }
             other => other,
         }
@@ -496,16 +502,12 @@ impl Client {
         creds = self
             .maybe_refresh(&*publisher, &app, key, creds, deadline)
             .await?;
-        match publisher
-            .create_paused_ad(&app, &creds, &request, deadline)
-            .await
-        {
+        let ads = self.ads_manager(&key.site, Capability::CreatePausedAds)?;
+        match ads.create_paused_ad(&app, &creds, &request, deadline).await {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
                 let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
-                publisher
-                    .create_paused_ad(&app, &new, &request, deadline)
-                    .await
+                ads.create_paused_ad(&app, &new, &request, deadline).await
             }
             other => other,
         }
@@ -544,16 +546,12 @@ impl Client {
         creds = self
             .maybe_refresh(&*publisher, &app, key, creds, deadline)
             .await?;
-        match publisher
-            .upload_ad_image(&app, &creds, &request, deadline)
-            .await
-        {
+        let ads = self.ads_manager(&key.site, Capability::CreateAdCreative)?;
+        match ads.upload_ad_image(&app, &creds, &request, deadline).await {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
                 let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
-                publisher
-                    .upload_ad_image(&app, &new, &request, deadline)
-                    .await
+                ads.upload_ad_image(&app, &new, &request, deadline).await
             }
             other => other,
         }
@@ -592,15 +590,15 @@ impl Client {
         creds = self
             .maybe_refresh(&*publisher, &app, key, creds, deadline)
             .await?;
-        match publisher
+        let ads = self.ads_manager(&key.site, Capability::CreateAdCreative)?;
+        match ads
             .create_link_ad_creative(&app, &creds, &request, deadline)
             .await
         {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
                 let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
-                publisher
-                    .create_link_ad_creative(&app, &new, &request, deadline)
+                ads.create_link_ad_creative(&app, &new, &request, deadline)
                     .await
             }
             other => other,
@@ -639,15 +637,15 @@ impl Client {
         creds = self
             .maybe_refresh(&*publisher, &app, key, creds, deadline)
             .await?;
-        match publisher
+        let ads = self.ads_manager(&key.site, Capability::ReadAdPreviews)?;
+        match ads
             .preview_ad_creative(&app, &creds, &request, deadline)
             .await
         {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
                 let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
-                publisher
-                    .preview_ad_creative(&app, &new, &request, deadline)
+                ads.preview_ad_creative(&app, &new, &request, deadline)
                     .await
             }
             other => other,
@@ -685,16 +683,12 @@ impl Client {
         creds = self
             .maybe_refresh(&*publisher, &app, key, creds, deadline)
             .await?;
-        match publisher
-            .ad_review_status(&app, &creds, &request, deadline)
-            .await
-        {
+        let ads = self.ads_manager(&key.site, Capability::ReadAdReviewStatus)?;
+        match ads.ad_review_status(&app, &creds, &request, deadline).await {
             Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
                 let new = publisher.refresh(&app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
-                publisher
-                    .ad_review_status(&app, &new, &request, deadline)
-                    .await
+                ads.ad_review_status(&app, &new, &request, deadline).await
             }
             other => other,
         }
@@ -749,13 +743,11 @@ impl Client {
         creds = self
             .maybe_refresh(&*publisher, &app, key, creds, deadline)
             .await?;
+        let ads = self.ads_manager(&key.site, Capability::ReadAdReviewStatus)?;
         let mut retried_expired_token = false;
 
         loop {
-            let status = match publisher
-                .ad_review_status(&app, &creds, &request, deadline)
-                .await
-            {
+            let status = match ads.ad_review_status(&app, &creds, &request, deadline).await {
                 Err(Error::Auth { ref reason, .. })
                     if reason == "token_expired" && !retried_expired_token =>
                 {
@@ -918,6 +910,61 @@ impl Client {
         self.registry
             .get(site)
             .ok_or_else(|| Error::UnknownSite(site.clone()))
+    }
+
+    /// Facet lookup is fail-closed: advertising a capability without attaching
+    /// the matching trait is the same as not implementing it. That is what
+    /// keeps `Publisher` frozen — extra verbs cannot sneak in as default
+    /// methods the next connector would inherit.
+    fn missing_facet(site: &Site, need: Capability) -> Error {
+        Error::UnsupportedCapability {
+            site: site.clone(),
+            need,
+        }
+    }
+
+    fn insights_source(
+        &self,
+        site: &Site,
+        need: Capability,
+    ) -> Result<Arc<dyn InsightsSource>, Error> {
+        self.registry
+            .connector(site)
+            .and_then(|c| c.insights_facet())
+            .ok_or_else(|| Self::missing_facet(site, need))
+    }
+
+    fn ads_manager(&self, site: &Site, need: Capability) -> Result<Arc<dyn AdsManager>, Error> {
+        self.registry
+            .connector(site)
+            .and_then(|c| c.ads_facet())
+            .ok_or_else(|| Self::missing_facet(site, need))
+    }
+
+    fn page_directory(&self, site: &Site) -> Result<Arc<dyn PageDirectory>, Error> {
+        self.registry
+            .connector(site)
+            .and_then(|c| c.pages_facet())
+            .ok_or_else(|| Self::missing_facet(site, Capability::ReadPages))
+    }
+
+    fn media_reader(&self, site: &Site) -> Result<Arc<dyn MediaReader>, Error> {
+        self.registry
+            .connector(site)
+            .and_then(|c| c.media_facet())
+            .ok_or_else(|| Self::missing_facet(site, Capability::ReadMedia))
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    fn whatsapp_sender(
+        &self,
+        site: &Site,
+        need: Capability,
+    ) -> Result<Arc<dyn WhatsAppSender>, Error> {
+        self.registry
+            .connector(site)
+            .and_then(|c| c.whatsapp_facet())
+            .ok_or_else(|| Self::missing_facet(site, need))
     }
 
     async fn maybe_refresh(

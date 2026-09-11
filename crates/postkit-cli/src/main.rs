@@ -2012,16 +2012,16 @@ fn parse_params(param: &[String], json: bool) -> Result<serde_json::Value, i32> 
 
 fn make_client(home: &std::path::Path, allow_whatsapp_send: bool) -> Result<Client, Error> {
     let mut registry = Registry::new();
+    // Publisher-only sites register the frozen seam. Extra verbs attach as
+    // facets on Connector so the next site cannot enlarge Publisher.
     registry.register(Arc::new(postkit::connectors::threads::Threads::new()?));
     registry.register(Arc::new(postkit::connectors::bluesky::Bluesky::new()?));
-    registry.register(Arc::new(postkit::connectors::meta_ads::MetaAds::new()?));
-    registry.register(Arc::new(
-        postkit::connectors::facebook_pages::FacebookPages::new()?,
-    ));
-    registry.register(Arc::new(postkit::connectors::instagram::Instagram::new()?));
-    registry.register(Arc::new(
-        postkit::connectors::whatsapp_cloud::WhatsAppCloud::new()?,
-    ));
+    registry.register_connector(postkit::connectors::meta_ads::MetaAds::new()?.connector());
+    registry
+        .register_connector(postkit::connectors::facebook_pages::FacebookPages::new()?.connector());
+    registry.register_connector(postkit::connectors::instagram::Instagram::new()?.connector());
+    registry
+        .register_connector(postkit::connectors::whatsapp_cloud::WhatsAppCloud::new()?.connector());
     let vault = Arc::new(FileVault::new(home)?);
     let apps = Arc::new(FileAppStore::new(home)?);
     if allow_whatsapp_send {

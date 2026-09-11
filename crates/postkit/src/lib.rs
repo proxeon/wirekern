@@ -6,6 +6,7 @@ mod ads;
 mod apps;
 mod client;
 mod error;
+mod facets;
 mod insights;
 mod media;
 mod pages;
@@ -70,6 +71,9 @@ pub use draft::{
     CONFIGURED_PAUSED, MIN_DAILY_BUDGET,
 };
 pub use error::{Error, WireError};
+#[cfg(feature = "whatsapp-cloud")]
+pub use facets::WhatsAppSender;
+pub use facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 pub use insights::{
     AdAccount, AdAccountsReply, AttributionWindow, Breakdown, DateRange, InsightRow, InsightsLevel,
     InsightsQuery, InsightsReply, Metric, MAX_RANGE_DAYS,
@@ -80,7 +84,7 @@ pub use policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};
 #[cfg(feature = "whatsapp-cloud")]
 pub use policy::{AllowWhatsAppSendsPolicy, NoWhatsAppSendsPolicy, WhatsAppAction, WhatsAppPolicy};
 pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};
-pub use registry::Registry;
+pub use registry::{Connector, Registry};
 pub use types::{
     valid_name, AccountCreds, AccountKey, AppConfig, Body, Capability, Deadline, Image, Intent,
     Limits, OAuthApp, Outcome, PostRequest, Probe, Site, WhoAmI, USER_AGENT,

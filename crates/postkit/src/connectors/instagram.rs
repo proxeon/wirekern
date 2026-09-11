@@ -5,11 +5,13 @@
 //! stored `user_id` is the only v1 publish target.
 
 use crate::error::Error;
+use crate::facets::MediaReader;
 use crate::form::form;
 use crate::http::Http;
 use crate::media::{MediaQuery, MediaReply, PublishedMedia};
 use crate::oauth::{authorize_url, exchange_code, extract_code, new_state};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
+use crate::registry::Connector;
 use crate::types::{
     AccountCreds, AppConfig, Body, Capability, Deadline, Image, Intent, OAuthApp, Outcome, Site,
     WhoAmI,
@@ -86,6 +88,11 @@ impl Instagram {
     pub fn with_container_poll_interval(mut self, interval: Duration) -> Self {
         self.container_poll_interval = interval;
         self
+    }
+
+    pub fn connector(self) -> Connector {
+        let this = std::sync::Arc::new(self);
+        Connector::from_publisher(this.clone()).media(this)
     }
 }
 
@@ -185,28 +192,6 @@ impl Publisher for Instagram {
         .await
     }
 
-    async fn media(
-        &self,
-        _app: &AppConfig,
-        creds: &AccountCreds,
-        query: &MediaQuery,
-        deadline: Deadline,
-    ) -> Result<MediaReply, Error> {
-        // The credential's resolved user ID is intentionally the only read
-        // target too. A read command must not become a side door for probing
-        // arbitrary Instagram accounts by ID.
-        let user_id = stored_user_id(creds)?;
-        list_published_media(
-            &self.http,
-            &self.base,
-            access_token(creds)?,
-            &user_id,
-            query,
-            deadline,
-        )
-        .await
-    }
-
     async fn auth_start(&self, app: &AppConfig) -> Result<AuthStart, Error> {
         let oauth = require_oauth(app)?;
         let state = new_state()?;
@@ -285,6 +270,31 @@ impl Publisher for Instagram {
         let body = read_json(response, &self.site).await?;
         let refreshed = token_from_response(&body)?;
         Ok(creds_from_token(&refreshed, user_id))
+    }
+}
+
+#[async_trait]
+impl MediaReader for Instagram {
+    async fn media(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        query: &MediaQuery,
+        deadline: Deadline,
+    ) -> Result<MediaReply, Error> {
+        // The credential's resolved user ID is intentionally the only read
+        // target too. A read command must not become a side door for probing
+        // arbitrary Instagram accounts by ID.
+        let user_id = stored_user_id(creds)?;
+        list_published_media(
+            &self.http,
+            &self.base,
+            access_token(creds)?,
+            &user_id,
+            query,
+            deadline,
+        )
+        .await
     }
 }
 

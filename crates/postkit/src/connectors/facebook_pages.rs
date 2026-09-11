@@ -5,11 +5,13 @@
 //! Page selection nor Page credentials belong to an advertising account.
 
 use crate::error::Error;
+use crate::facets::PageDirectory;
 use crate::form::form;
 use crate::http::Http;
 use crate::oauth::{authorize_url, exchange_code, extract_code, new_state};
 use crate::pages::{PageAccount, PagesReply};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
+use crate::registry::Connector;
 use crate::types::{
     AccountCreds, AppConfig, Body, Capability, Deadline, Image, Intent, OAuthApp, Outcome, Site,
     WhoAmI,
@@ -66,6 +68,11 @@ impl FacebookPages {
             base: base.into().trim_end_matches('/').to_string(),
             graph_origin: graph_origin.into().trim_end_matches('/').to_string(),
         })
+    }
+
+    pub fn connector(self) -> Connector {
+        let this = std::sync::Arc::new(self);
+        Connector::from_publisher(this.clone()).pages(this)
     }
 }
 
@@ -152,22 +159,6 @@ impl Publisher for FacebookPages {
         whoami(&self.http, &self.base, token, Deadline::from_secs(30)).await
     }
 
-    async fn pages(
-        &self,
-        _app: &AppConfig,
-        creds: &AccountCreds,
-        deadline: Deadline,
-    ) -> Result<PagesReply, Error> {
-        let token = access_token(creds)?;
-        let pages = list_pages(&self.http, &self.base, token, deadline).await?;
-        Ok(PagesReply {
-            site: self.site.clone(),
-            // The public reply deliberately crosses a one-way boundary:
-            // internal Page tokens are discarded instead of serialised.
-            pages: pages.into_iter().map(|page| page.public()).collect(),
-        })
-    }
-
     async fn auth_start(&self, app: &AppConfig) -> Result<AuthStart, Error> {
         let oauth = require_oauth(app)?;
         let state = new_state()?;
@@ -239,6 +230,25 @@ impl Publisher for FacebookPages {
         )
         .await?;
         Ok(creds_from_long(&long, extra_string(creds, "user_id")))
+    }
+}
+
+#[async_trait]
+impl PageDirectory for FacebookPages {
+    async fn pages(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<PagesReply, Error> {
+        let token = access_token(creds)?;
+        let pages = list_pages(&self.http, &self.base, token, deadline).await?;
+        Ok(PagesReply {
+            site: self.site.clone(),
+            // The public reply deliberately crosses a one-way boundary:
+            // internal Page tokens are discarded instead of serialised.
+            pages: pages.into_iter().map(|page| page.public()).collect(),
+        })
     }
 }
 
