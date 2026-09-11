@@ -160,11 +160,30 @@ impl Server {
         if name.is_empty() {
             return Err(rpc_error(Value::Null, INVALID_PARAMS, "Missing tool name"));
         }
-        Err(rpc_error(
-            Value::Null,
-            INVALID_PARAMS,
-            &tools::unknown_tool_message(name),
-        ))
+        if !tools::catalog().iter().any(|tool| tool.name == name) {
+            return Err(rpc_error(
+                Value::Null,
+                INVALID_PARAMS,
+                &tools::unknown_tool_message(name),
+            ));
+        }
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let result = match name {
+            "capabilities" => tools::capabilities(&self.client, arguments),
+            "accounts_list" => tools::accounts_list(&self.client, arguments),
+            "whoami" => tools::whoami(&self.client, arguments).await,
+            other => {
+                return Err(rpc_error(
+                    Value::Null,
+                    INVALID_PARAMS,
+                    &tools::unknown_tool_message(other),
+                ))
+            }
+        };
+        Ok(result)
     }
 }
 
@@ -294,7 +313,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_starts_empty_and_unknown_tool_is_invalid_params() {
+    async fn tools_list_names_core_reads_and_unknown_tool_is_invalid_params() {
         let server = server();
         let _ = rpc(
             &server,
@@ -306,7 +325,13 @@ mod tests {
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
         )
         .await;
-        assert_eq!(listed["result"]["tools"], json!([]));
+        let names: Vec<&str> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["capabilities", "accounts_list", "whoami"]);
         let missing = rpc(
             &server,
             json!({
@@ -319,6 +344,61 @@ mod tests {
         .await;
         assert_eq!(missing["error"]["code"], INVALID_PARAMS);
         assert_eq!(missing["error"]["message"], "Unknown tool: post");
+    }
+
+    async fn call(server: &Server, name: &str, arguments: Value) -> Value {
+        rpc(
+            server,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "tools/call",
+                "params": { "name": name, "arguments": arguments }
+            }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn capabilities_and_accounts_are_local_reads() {
+        let server = server();
+        let _ = rpc(
+            &server,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        )
+        .await;
+        let caps = call(&server, "capabilities", json!({})).await;
+        assert_eq!(caps["result"]["isError"], false);
+        assert!(caps["result"]["structuredContent"]["threads"].is_array());
+        let unknown = call(&server, "capabilities", json!({ "site": "nope" })).await;
+        assert_eq!(unknown["result"]["isError"], true);
+        assert_eq!(
+            unknown["result"]["structuredContent"]["error"],
+            "unknown_site"
+        );
+        let accounts = call(&server, "accounts_list", json!({})).await;
+        assert_eq!(
+            accounts["result"]["structuredContent"]["accounts"],
+            json!([])
+        );
+    }
+
+    #[tokio::test]
+    async fn whoami_without_an_account_is_a_tool_error() {
+        let server = server();
+        let _ = rpc(
+            &server,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        )
+        .await;
+        let missing = call(&server, "whoami", json!({})).await;
+        assert_eq!(missing["result"]["isError"], true);
+        let unknown = call(&server, "whoami", json!({ "site": "threads" })).await;
+        assert_eq!(unknown["result"]["isError"], true);
+        assert_eq!(
+            unknown["result"]["structuredContent"]["error"],
+            "unknown_account"
+        );
     }
 
     #[tokio::test]

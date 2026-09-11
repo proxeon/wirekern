@@ -22,9 +22,9 @@ stays **1.80**.
 
 ## Core tools
 
-- [ ] `capabilities`
-- [ ] `accounts_list`
-- [ ] `whoami`
+- [x] `capabilities`
+- [x] `accounts_list`
+- [x] `whoami`
 
 ## Writes (policy-gated)
 
