@@ -173,6 +173,7 @@ impl Publisher for WhatsAppCloud {
             Capability::SendText,
             Capability::SendTemplate,
             Capability::SendMedia,
+            Capability::SendInteractive,
             Capability::ManageWhatsAppMedia,
             Capability::ReadWhatsAppMedia,
             Capability::ReadWebhookMessages,
@@ -555,7 +556,125 @@ pub fn send_payload(message: &WhatsAppMessage) -> Value {
             media,
             reply_to_message_id,
         } => media_payload(to, "sticker", media, None, None, reply_to_message_id.as_deref()),
+        WhatsAppMessage::Buttons {
+            to,
+            body,
+            buttons,
+            header,
+            footer,
+            reply_to_message_id,
+        } => {
+            let interactive = json!({
+                "type": "button",
+                "body": { "text": body },
+                "action": {
+                    "buttons": buttons.iter().map(|b| json!({
+                        "type": "reply",
+                        "reply": { "id": b.id, "title": b.title },
+                    })).collect::<Vec<_>>(),
+                },
+            });
+            interactive_payload(to, interactive, header.as_deref(), footer.as_deref(), reply_to_message_id.as_deref())
+        }
+        WhatsAppMessage::List {
+            to,
+            body,
+            button,
+            sections,
+            header,
+            footer,
+            reply_to_message_id,
+        } => {
+            let interactive = json!({
+                "type": "list",
+                "body": { "text": body },
+                "action": {
+                    "button": button,
+                    "sections": sections,
+                },
+            });
+            interactive_payload(to, interactive, header.as_deref(), footer.as_deref(), reply_to_message_id.as_deref())
+        }
+        WhatsAppMessage::CtaUrl {
+            to,
+            body,
+            display_text,
+            url,
+            header,
+            footer,
+            reply_to_message_id,
+        } => {
+            let interactive = json!({
+                "type": "cta_url",
+                "body": { "text": body },
+                "action": {
+                    "name": "cta_url",
+                    "parameters": { "display_text": display_text, "url": url },
+                },
+            });
+            interactive_payload(to, interactive, header.as_deref(), footer.as_deref(), reply_to_message_id.as_deref())
+        }
+        WhatsAppMessage::LocationRequest {
+            to,
+            body,
+            reply_to_message_id,
+        } => {
+            let interactive = json!({
+                "type": "location_request_message",
+                "body": { "text": body },
+                "action": { "name": "send_location" },
+            });
+            interactive_payload(to, interactive, None, None, reply_to_message_id.as_deref())
+        }
+        WhatsAppMessage::VoiceCall {
+            to,
+            body,
+            display_text,
+            ttl_minutes,
+            payload,
+            reply_to_message_id,
+        } => {
+            let mut parameters = json!({ "display_text": display_text.as_deref().unwrap_or("Call Now") });
+            if let Some(ttl) = ttl_minutes {
+                parameters["ttl_minutes"] = json!(ttl);
+            }
+            if let Some(payload) = payload {
+                parameters["payload"] = json!(payload);
+            }
+            let interactive = json!({
+                "type": "voice_call",
+                "body": { "text": body },
+                "action": { "name": "voice_call", "parameters": parameters },
+            });
+            interactive_payload(to, interactive, None, None, reply_to_message_id.as_deref())
+        }
     }
+}
+
+fn interactive_payload(
+    to: &str,
+    mut interactive: Value,
+    header: Option<&str>,
+    footer: Option<&str>,
+    reply_to: Option<&str>,
+) -> Value {
+    if let Some(header) = header {
+        interactive["header"] = json!({ "type": "text", "text": header });
+    }
+    if let Some(footer) = footer {
+        interactive["footer"] = json!({ "text": footer });
+    }
+    let mut payload = json!({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": wire_recipient(to),
+        "type": "interactive",
+        "interactive": interactive,
+    });
+    if let Some(id) = reply_to {
+        payload["context"] = json!({ "message_id": id });
+    }
+    payload
 }
 
 fn media_payload(
@@ -1103,6 +1222,71 @@ mod tests {
             },
             reply_to_message_id: None,
         })["type"], "sticker");
+    }
+
+    #[test]
+    fn interactive_payloads_match_cloud_api() {
+        use crate::whatsapp::{ListRow, ListSection, ReplyButton};
+        let buttons = send_payload(&WhatsAppMessage::Buttons {
+            to: "60123456789".into(),
+            body: "Pick".into(),
+            buttons: vec![ReplyButton {
+                id: "yes".into(),
+                title: "Yes".into(),
+            }],
+            header: None,
+            footer: None,
+            reply_to_message_id: None,
+        });
+        assert_eq!(buttons["interactive"]["type"], "button");
+        assert_eq!(buttons["interactive"]["action"]["buttons"][0]["reply"]["id"], "yes");
+        let list = send_payload(&WhatsAppMessage::List {
+            to: "60123456789".into(),
+            body: "Menu".into(),
+            button: "Open".into(),
+            sections: vec![ListSection {
+                title: Some("A".into()),
+                rows: vec![ListRow {
+                    id: "r1".into(),
+                    title: "One".into(),
+                    description: None,
+                }],
+            }],
+            header: None,
+            footer: None,
+            reply_to_message_id: None,
+        });
+        assert_eq!(list["interactive"]["type"], "list");
+        let cta = send_payload(&WhatsAppMessage::CtaUrl {
+            to: "60123456789".into(),
+            body: "See".into(),
+            display_text: "Open".into(),
+            url: "https://example.com".into(),
+            header: None,
+            footer: None,
+            reply_to_message_id: None,
+        });
+        assert_eq!(cta["interactive"]["type"], "cta_url");
+        assert_eq!(cta["interactive"]["action"]["parameters"]["url"], "https://example.com");
+        assert_eq!(
+            send_payload(&WhatsAppMessage::LocationRequest {
+                to: "60123456789".into(),
+                body: "Share pin".into(),
+                reply_to_message_id: None,
+            })["interactive"]["type"],
+            "location_request_message"
+        );
+        assert_eq!(
+            send_payload(&WhatsAppMessage::VoiceCall {
+                to: "60123456789".into(),
+                body: "Call us".into(),
+                display_text: Some("Call".into()),
+                ttl_minutes: Some(60),
+                payload: None,
+                reply_to_message_id: None,
+            })["interactive"]["type"],
+            "voice_call"
+        );
     }
 
     #[tokio::test]

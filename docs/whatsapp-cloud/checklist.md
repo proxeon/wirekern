@@ -58,11 +58,11 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 
 ### Interactive and other service messages
 
-- [ ] Reply buttons (≤ 3)
-- [ ] List messages
-- [ ] CTA URL button
-- [ ] Location request button
-- [ ] Voice-call button
+- [x] Reply buttons (≤ 3)
+- [x] List messages
+- [x] CTA URL button
+- [x] Location request button
+- [x] Voice-call button
 - [ ] Location send
 - [ ] Contacts send
 - [ ] Address request

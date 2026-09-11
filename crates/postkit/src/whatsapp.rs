@@ -92,6 +92,80 @@ pub enum WhatsAppMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply_to_message_id: Option<String>,
     },
+    Buttons {
+        to: String,
+        body: String,
+        buttons: Vec<ReplyButton>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        footer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    List {
+        to: String,
+        body: String,
+        button: String,
+        sections: Vec<ListSection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        footer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    CtaUrl {
+        to: String,
+        body: String,
+        display_text: String,
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        footer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    LocationRequest {
+        to: String,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    VoiceCall {
+        to: String,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_minutes: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReplyButton {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ListSection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub rows: Vec<ListRow>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ListRow {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 impl WhatsAppMessage {
@@ -105,6 +179,11 @@ impl WhatsAppMessage {
             | Self::Audio { .. }
             | Self::Video { .. }
             | Self::Sticker { .. } => Capability::SendMedia,
+            Self::Buttons { .. }
+            | Self::List { .. }
+            | Self::CtaUrl { .. }
+            | Self::LocationRequest { .. }
+            | Self::VoiceCall { .. } => Capability::SendInteractive,
         }
     }
 
@@ -204,6 +283,128 @@ impl WhatsAppMessage {
                 media.validate()?;
                 validate_optional_caption(caption)?;
                 validate_optional_context(reply_to_message_id)?;
+            }
+            Self::Buttons {
+                to,
+                body,
+                buttons,
+                header,
+                footer,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                validate_body(body)?;
+                validate_optional_header(header)?;
+                validate_optional_footer(footer)?;
+                validate_optional_context(reply_to_message_id)?;
+                if !(1..=3).contains(&buttons.len()) {
+                    return Err("reply_buttons_count".into());
+                }
+                for b in buttons {
+                    if b.id.is_empty() || b.id.len() > 256 {
+                        return Err("reply_button_id_invalid".into());
+                    }
+                    if b.title.is_empty() || b.title.chars().count() > 20 {
+                        return Err("reply_button_title_invalid".into());
+                    }
+                }
+            }
+            Self::List {
+                to,
+                body,
+                button,
+                sections,
+                header,
+                footer,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                validate_body(body)?;
+                validate_optional_header(header)?;
+                validate_optional_footer(footer)?;
+                validate_optional_context(reply_to_message_id)?;
+                if button.is_empty() || button.chars().count() > 20 {
+                    return Err("list_button_invalid".into());
+                }
+                if sections.is_empty() || sections.len() > 10 {
+                    return Err("list_sections_count".into());
+                }
+                for section in sections {
+                    if let Some(title) = &section.title {
+                        if title.chars().count() > 24 {
+                            return Err("list_section_title_invalid".into());
+                        }
+                    }
+                    if section.rows.is_empty() || section.rows.len() > 10 {
+                        return Err("list_rows_count".into());
+                    }
+                    for row in &section.rows {
+                        if row.id.is_empty() || row.id.len() > 200 {
+                            return Err("list_row_id_invalid".into());
+                        }
+                        if row.title.is_empty() || row.title.chars().count() > 24 {
+                            return Err("list_row_title_invalid".into());
+                        }
+                        if row
+                            .description
+                            .as_ref()
+                            .is_some_and(|d| d.chars().count() > 72)
+                        {
+                            return Err("list_row_description_invalid".into());
+                        }
+                    }
+                }
+            }
+            Self::CtaUrl {
+                to,
+                body,
+                display_text,
+                url,
+                header,
+                footer,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                validate_body(body)?;
+                validate_optional_header(header)?;
+                validate_optional_footer(footer)?;
+                validate_optional_context(reply_to_message_id)?;
+                if display_text.is_empty() || display_text.chars().count() > 20 {
+                    return Err("cta_display_text_invalid".into());
+                }
+                if !url.starts_with("https://") {
+                    return Err("cta_url_must_be_https".into());
+                }
+            }
+            Self::LocationRequest {
+                to,
+                body,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                validate_body(body)?;
+                validate_optional_context(reply_to_message_id)?;
+            }
+            Self::VoiceCall {
+                to,
+                body,
+                display_text,
+                ttl_minutes,
+                payload: _,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                validate_body(body)?;
+                validate_optional_context(reply_to_message_id)?;
+                if display_text
+                    .as_ref()
+                    .is_some_and(|t| t.is_empty() || t.chars().count() > 20)
+                {
+                    return Err("voice_call_display_text_invalid".into());
+                }
+                if ttl_minutes.is_some_and(|m| !(1..=43200).contains(&m)) {
+                    return Err("voice_call_ttl_invalid".into());
+                }
             }
         }
         Ok(())
@@ -557,6 +758,27 @@ pub fn normalize_recipient(value: &str) -> Result<String, String> {
         return Err("recipient_must_be_whatsapp_id".into());
     }
     Ok(if plus { format!("+{digits}") } else { digits })
+}
+
+fn validate_body(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() || text.chars().count() > 1024 {
+        return Err("interactive_body_invalid".into());
+    }
+    Ok(())
+}
+
+fn validate_optional_header(header: &Option<String>) -> Result<(), String> {
+    if header.as_ref().is_some_and(|t| t.chars().count() > 60) {
+        return Err("interactive_header_invalid".into());
+    }
+    Ok(())
+}
+
+fn validate_optional_footer(footer: &Option<String>) -> Result<(), String> {
+    if footer.as_ref().is_some_and(|t| t.chars().count() > 60) {
+        return Err("interactive_footer_invalid".into());
+    }
+    Ok(())
 }
 
 fn validate_optional_caption(caption: &Option<String>) -> Result<(), String> {

@@ -193,6 +193,11 @@ impl Client {
             | WhatsAppMessage::Audio { .. }
             | WhatsAppMessage::Video { .. }
             | WhatsAppMessage::Sticker { .. } => WhatsAppAction::SendMedia,
+            WhatsAppMessage::Buttons { .. }
+            | WhatsAppMessage::List { .. }
+            | WhatsAppMessage::CtaUrl { .. }
+            | WhatsAppMessage::LocationRequest { .. }
+            | WhatsAppMessage::VoiceCall { .. } => WhatsAppAction::SendInteractive,
         };
         // Do this before registry/vault lookup. A denied send must reveal
         // neither whether an account is configured nor a bearer token to the
