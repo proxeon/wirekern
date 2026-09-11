@@ -76,7 +76,7 @@ Kernel-level, all sites: 0600 vault with atomic writes, CSPRNG OAuth `state`, re
 | Text reply | ✓ Requires recipient WhatsApp ID, inbound `wamid`, idempotency key, and `--allow-send` |
 | Approved template | ✓ Existing approved template; ordered text body variables only |
 | Inbound messages | ✓ Parse a signed raw webhook body; no listener or persistent inbox |
-| Delivery/read status | ✗ Webhook transport/storage is the caller's responsibility |
+| Delivery/read status | ✓ Parse signed `sent`/`delivered`/`read`/`failed` callbacks; no transport or storage |
 | Media, interactive messages, Flows, bulk sends | ✗ roadmap; each requires a separate consent/payload contract |
 | Token refresh | ✗ Static System User token is operator-managed |
 

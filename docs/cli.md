@@ -145,6 +145,11 @@ static System User token in the vault. The config secret is never displayed by
 for example, an environment sender ID retains a file-backed app secret unless
 the environment also supplies a replacement secret.
 
+`whatsapp webhook parse` performs no HTTP request and returns verified inbound
+messages plus `sent`, `delivered`, `read`, and `failed` callbacks for the
+outbound `wamid`. It does not host a webhook, persist/deduplicate events, or
+infer a final delivery state; those need application-owned storage.
+
 `reply` and `template` are intentionally not `post` subcommands. They are
 private, recipient-specific writes: both require an idempotency key and exact
 `--allow-send` acknowledgement. The default `WhatsAppPolicy` refuses before

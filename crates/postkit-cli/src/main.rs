@@ -10,11 +10,12 @@ use postkit::{
     AppConfig, AppStore, AttributionWindow, AuthReply, BidStrategy, Body, Breakdown,
     CampaignObjective, Client, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
     CreatedAdCreative, CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply,
-    DraftStep, Error, FileAppStore, FileDraftStore, FileVault, Image, InsightRow, InsightsLevel,
-    InsightsQuery, Intent, LinkAdCreative, LinkCallToAction, MediaQuery, Metric, OAuthApp,
-    PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
-    PostRequest, PublishedMedia, Registry, RunPausedDraft, Site, UploadAdImageRequest,
-    UploadedAdImage, Vault, WhatsAppMessage, WhatsAppSendRequest, DEFAULT_MEDIA_LIMIT,
+    DraftStep, Error, FileAppStore, FileDraftStore, FileVault, Image, InboundMessages, InsightRow,
+    InsightsLevel, InsightsQuery, Intent, LinkAdCreative, LinkCallToAction, MediaQuery, Metric,
+    OAuthApp, PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest,
+    PausedDraftResult, PostRequest, PublishedMedia, Registry, RunPausedDraft, Site,
+    UploadAdImageRequest, UploadedAdImage, Vault, WhatsAppMessage, WhatsAppSendRequest,
+    DEFAULT_MEDIA_LIMIT,
 };
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
@@ -684,10 +685,7 @@ async fn dispatch(
             } else {
                 // Do not echo phone numbers or customer text to a terminal by
                 // default. Scripts that explicitly need the PII use --json.
-                human_line(format!(
-                    "whatsapp_cloud verified webhook: {} inbound message(s)",
-                    reply.messages.len()
-                ));
+                human_line(whatsapp_webhook_line(&reply));
             }
             Ok(())
         }
@@ -2058,6 +2056,16 @@ fn whatsapp_send_allowed(command: &Commands) -> bool {
     )
 }
 
+/// Keep terminal output aggregate-only: a `wamid` still identifies a private
+/// message, and customer data belongs solely in the explicit `--json` output.
+fn whatsapp_webhook_line(reply: &InboundMessages) -> String {
+    format!(
+        "whatsapp_cloud verified webhook: {} inbound message(s), {} delivery status(es)",
+        reply.messages.len(),
+        reply.statuses.len()
+    )
+}
+
 /// The parser receives exact raw request bytes, so cap stdin before HMAC or
 /// JSON work. This CLI is an adapter tool, not an unbounded webhook server.
 fn read_whatsapp_webhook_stdin(json: bool) -> Result<Vec<u8>, i32> {
@@ -2827,6 +2835,32 @@ mod tests {
         assert!(cfg.oauth.is_none());
         assert_eq!(cfg.extra["phone_number_id"].as_str(), Some("123456789"));
         assert!(whatsapp_app_config("+6012".into(), None).is_err());
+    }
+
+    #[test]
+    fn whatsapp_webhook_human_output_reports_counts_without_message_identifiers() {
+        let reply = InboundMessages {
+            site: Site::new("whatsapp_cloud"),
+            messages: vec![],
+            statuses: vec![
+                postkit::DeliveryStatus {
+                    id: "wamid.private-one".into(),
+                    status: postkit::DeliveryStatusKind::Delivered,
+                    timestamp: Some("1".into()),
+                },
+                postkit::DeliveryStatus {
+                    id: "wamid.private-two".into(),
+                    status: postkit::DeliveryStatusKind::Read,
+                    timestamp: Some("2".into()),
+                },
+            ],
+        };
+        let line = whatsapp_webhook_line(&reply);
+        assert_eq!(
+            line,
+            "whatsapp_cloud verified webhook: 0 inbound message(s), 2 delivery status(es)"
+        );
+        assert!(!line.contains("wamid.private"));
     }
 
     #[test]

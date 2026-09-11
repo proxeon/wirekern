@@ -62,6 +62,8 @@ pub enum Capability {
     SendTemplate,
     #[serde(rename = "read.webhook_messages")]
     ReadWebhookMessages,
+    #[serde(rename = "read.webhook_statuses")]
+    ReadWebhookStatuses,
     #[serde(rename = "read.metrics")]
     ReadMetrics,
     #[serde(rename = "read.ad_accounts")]
@@ -90,6 +92,7 @@ impl Capability {
             Self::SendReply => "send.reply",
             Self::SendTemplate => "send.template",
             Self::ReadWebhookMessages => "read.webhook_messages",
+            Self::ReadWebhookStatuses => "read.webhook_statuses",
             Self::ReadMetrics => "read.metrics",
             Self::ReadAdAccounts => "read.ad_accounts",
             Self::ReadPages => "read.pages",

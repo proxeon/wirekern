@@ -88,7 +88,8 @@ pub use types::{
 pub use vault::{MemoryVault, Vault};
 #[cfg(feature = "whatsapp-cloud")]
 pub use whatsapp::{
-    InboundMessage, InboundMessages, WhatsAppMessage, WhatsAppSendRequest, MAX_REPLY_TEXT,
+    DeliveryStatus, DeliveryStatusKind, InboundMessage, InboundMessages, WhatsAppMessage,
+    WhatsAppSendRequest, MAX_REPLY_TEXT,
 };
 
 #[cfg(feature = "vault-file")]

@@ -117,7 +117,7 @@ per-conversation/template pricing are Meta business decisions. Review them in
 WhatsApp Manager before adding `--allow-send`. A Postkit success means Meta
 accepted the request; monitor signed status webhooks for delivery/failure.
 
-## 5. Parse incoming messages safely
+## 5. Parse inbound messages and delivery statuses safely
 
 Forward the **unchanged raw bytes** and exact signature header from your HTTPS
 webhook application to this command. Do not parse/reformat JSON before passing
@@ -130,7 +130,8 @@ postkit --json whatsapp webhook parse \
 
 The parser has a 1 MiB body bound, requires the `sha256=` signature format,
 uses constant-time HMAC-SHA256 verification, checks the event belongs to the
-configured Phone number ID, and returns messages in Meta's order:
+configured Phone number ID, and returns inbound messages and the supported
+outbound status callbacks in Meta's payload order:
 
 ```json
 {
@@ -141,14 +142,22 @@ configured Phone number ID, and returns messages in Meta's order:
     "type": "text",
     "timestamp": "1720000000",
     "text": "Hello"
+  }],
+  "statuses": [{
+    "id": "wamid.HBgL…",
+    "status": "delivered",
+    "timestamp": "1720000001"
   }]
 }
 ```
 
 Human output prints only the count to avoid copying customer phone numbers and
-message text into terminal scrollback. `--json` intentionally returns that
-personal data to the explicit caller; Postkit does not persist it, deduplicate
-events, or answer Meta's HTTP request.
+message text or message IDs into terminal scrollback. `--json` intentionally
+returns that personal data and opaque `wamid` to the explicit caller. Postkit
+does not persist, deduplicate, reorder, or infer a final status from events;
+your application needs durable state for that. It exposes only `sent`,
+`delivered`, `read`, and `failed`; recipient IDs, failure bodies, conversation
+and pricing fields, and unsupported statuses are deliberately excluded.
 
 ## Idempotency and uncertain outcomes
 
@@ -171,13 +180,14 @@ an intentional operational decision.
 | Meta template/window error | Postkit sent a valid wire shape; correct the template approval, customer opt-in, recipient, or policy in WhatsApp Manager. |
 | `webhook_signature_invalid` | Pass the unchanged body and exact `X-Hub-Signature-256` value; check the configured app secret. |
 | `webhook_phone_number_mismatch` | The signed event belongs to another phone number. Route it to the Postkit configuration for that sender. |
+| `webhook_status_unsupported` | Meta sent a delivery state this version does not model. Preserve the raw signed payload in your own webhook system and upgrade Postkit after reviewing it. |
 
 ## Deliberate v1 boundary
 
 Implemented: static System User token validation, explicit sender
 configuration, text replies, approved text-template sends, mandatory
-idempotency, deny-by-default messaging policy, and verified inbound webhook
-message extraction.
+idempotency, deny-by-default messaging policy, and verified inbound-message
+and delivery-status webhook extraction.
 
 Not implemented: webhook HTTP hosting/challenge/acknowledgement, inbox or
 status persistence, template CRUD/review, pricing/billing surfaces, recipient

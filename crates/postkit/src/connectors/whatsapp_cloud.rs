@@ -8,7 +8,10 @@ use crate::error::Error;
 use crate::http::Http;
 use crate::publisher::{AuthKind, Publisher};
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
-use crate::whatsapp::{InboundMessage, InboundMessages, WhatsAppMessage, WhatsAppSendRequest};
+use crate::whatsapp::{
+    DeliveryStatus, DeliveryStatusKind, InboundMessage, InboundMessages, WhatsAppMessage,
+    WhatsAppSendRequest,
+};
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
@@ -48,6 +51,8 @@ impl WhatsAppCloud {
     /// Verify and parse raw `messages` webhook bytes. This is intentionally a
     /// pure adapter for an application's HTTP endpoint: Postkit does not run
     /// a public listener, acknowledge Meta's delivery, or persist an inbox.
+    /// It returns delivery callbacks in Meta's payload order but does not
+    /// deduplicate or infer a final state from potentially reordered events.
     pub fn parse_signed_webhook(
         app: &AppConfig,
         signature: &str,
@@ -80,14 +85,15 @@ impl WhatsAppCloud {
             .and_then(Value::as_array)
             .ok_or_else(|| webhook_error("webhook_entry_invalid"))?;
         let mut messages = Vec::new();
+        let mut statuses = Vec::new();
         for entry in entries {
             let Some(changes) = entry.get("changes").and_then(Value::as_array) else {
                 return Err(webhook_error("webhook_changes_invalid"));
             };
             for change in changes {
-                // Meta batches statuses and other notifications beside
-                // inbound messages. Ignore those without recasting a status
-                // callback as a customer message.
+                // Meta batches inbound messages and outbound delivery status
+                // callbacks on this same field. The configured phone check
+                // applies before either kind is returned to the caller.
                 if change.get("field").and_then(Value::as_str) != Some("messages") {
                     continue;
                 }
@@ -107,8 +113,16 @@ impl WhatsAppCloud {
                 if phone_number_id != expected_phone_number_id {
                     return Err(webhook_error("webhook_phone_number_mismatch"));
                 }
+                if let Some(delivery_statuses) = value.get("statuses") {
+                    let delivery_statuses = delivery_statuses
+                        .as_array()
+                        .ok_or_else(|| webhook_error("webhook_statuses_invalid"))?;
+                    for status in delivery_statuses {
+                        statuses.push(delivery_status(status)?);
+                    }
+                }
                 let Some(inbound) = value.get("messages").and_then(Value::as_array) else {
-                    continue; // status-only messages change
+                    continue; // a valid status-only change
                 };
                 for message in inbound {
                     messages.push(inbound_message(message)?);
@@ -118,6 +132,7 @@ impl WhatsAppCloud {
         Ok(InboundMessages {
             site: Site::new(SITE),
             messages,
+            statuses,
         })
     }
 }
@@ -129,13 +144,14 @@ impl Publisher for WhatsAppCloud {
     }
 
     fn capabilities(&self) -> &[Capability] {
-        // `read.webhook_messages` means verified callback parsing, not a
-        // fictional remote inbox listing. Cloud API delivers inbound events
-        // to the business' configured webhook endpoint.
+        // These read capabilities mean verified callback parsing, not a
+        // fictional remote inbox/status API. Cloud API delivers both event
+        // kinds to the business' configured webhook endpoint.
         &[
             Capability::SendReply,
             Capability::SendTemplate,
             Capability::ReadWebhookMessages,
+            Capability::ReadWebhookStatuses,
         ]
     }
 
@@ -358,6 +374,34 @@ fn inbound_message(value: &Value) -> Result<InboundMessage, Error> {
             .get("context")
             .and_then(|context| context.get("id"))
             .and_then(value_string),
+    })
+}
+
+fn delivery_status(value: &Value) -> Result<DeliveryStatus, Error> {
+    let id = value
+        .get("id")
+        .and_then(value_string)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| webhook_error("webhook_status_id_missing"))?;
+    let status = match value
+        .get("status")
+        .and_then(Value::as_str)
+        .filter(|status| !status.is_empty())
+    {
+        Some("sent") => DeliveryStatusKind::Sent,
+        Some("delivered") => DeliveryStatusKind::Delivered,
+        Some("read") => DeliveryStatusKind::Read,
+        Some("failed") => DeliveryStatusKind::Failed,
+        // Meta can add statuses over time. Refusing an unmodeled value is
+        // safer than presenting it as a known delivery outcome or quietly
+        // dropping a signed event that an operator needs to investigate.
+        Some(_) => return Err(webhook_error("webhook_status_unsupported")),
+        None => return Err(webhook_error("webhook_status_missing")),
+    };
+    Ok(DeliveryStatus {
+        id,
+        status,
+        timestamp: value.get("timestamp").and_then(value_string),
     })
 }
 
@@ -624,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_webhook_extracts_only_matching_inbound_messages() {
+    fn signed_webhook_extracts_inbound_messages_and_delivery_statuses() {
         let raw = br#"{
           "object":"whatsapp_business_account",
           "entry":[{"changes":[{
@@ -639,7 +683,13 @@ mod tests {
                 "text":{"body":"Hello"},
                 "context":{"id":"wamid.parent"}
               }],
-              "statuses":[{"id":"wamid.outbound","status":"delivered"}]
+              "statuses":[{
+                "id":"wamid.outbound",
+                "status":"delivered",
+                "timestamp":"1720000001",
+                "recipient_id":"60123456789",
+                "conversation":{"id":"billing-data-not-returned"}
+              }]
             }
           }]}]
         }"#;
@@ -651,6 +701,15 @@ mod tests {
             reply.messages[0].context_message_id.as_deref(),
             Some("wamid.parent")
         );
+        assert_eq!(reply.statuses.len(), 1);
+        assert_eq!(reply.statuses[0].id, "wamid.outbound");
+        assert_eq!(reply.statuses[0].status, DeliveryStatusKind::Delivered);
+        assert_eq!(reply.statuses[0].timestamp.as_deref(), Some("1720000001"));
+        // The status model intentionally does not reproduce recipient or
+        // conversation data from the signed payload.
+        let wire = serde_json::to_value(&reply).unwrap();
+        assert!(wire["statuses"][0].get("recipient_id").is_none());
+        assert!(wire["statuses"][0].get("conversation").is_none());
     }
 
     #[test]
@@ -670,7 +729,46 @@ mod tests {
     }
 
     #[test]
-    fn webhook_rejects_malformed_json_and_ignores_status_only_changes() {
+    fn signed_status_only_webhook_preserves_all_supported_states_in_order() {
+        let status_only = br#"{
+          "object":"whatsapp_business_account",
+          "entry":[{"changes":[{
+            "field":"messages",
+            "value":{
+              "metadata":{"phone_number_id":"123456789"},
+              "statuses":[
+                {"id":"wamid.sent","status":"sent","timestamp":"1"},
+                {"id":"wamid.delivered","status":"delivered","timestamp":2},
+                {"id":"wamid.read","status":"read","timestamp":"3"},
+                {"id":"wamid.failed","status":"failed"}
+              ]
+            }
+          }]}]
+        }"#;
+        let reply =
+            WhatsAppCloud::parse_signed_webhook(&app(), &signed(status_only), status_only).unwrap();
+        assert!(reply.messages.is_empty());
+        assert_eq!(
+            reply
+                .statuses
+                .iter()
+                .map(|status| (
+                    status.id.as_str(),
+                    &status.status,
+                    status.timestamp.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("wamid.sent", &DeliveryStatusKind::Sent, Some("1")),
+                ("wamid.delivered", &DeliveryStatusKind::Delivered, Some("2")),
+                ("wamid.read", &DeliveryStatusKind::Read, Some("3")),
+                ("wamid.failed", &DeliveryStatusKind::Failed, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn webhook_rejects_malformed_json_and_unmodeled_statuses_without_echoing_them() {
         let malformed = b"not-json";
         let error =
             WhatsAppCloud::parse_signed_webhook(&app(), &signed(malformed), malformed).unwrap_err();
@@ -678,19 +776,52 @@ mod tests {
             matches!(error, Error::InvalidQuery { reason, .. } if reason == "webhook_json_invalid")
         );
 
-        let status_only = br#"{
+        let unsupported = br#"{
           "object":"whatsapp_business_account",
           "entry":[{"changes":[{
             "field":"messages",
             "value":{
               "metadata":{"phone_number_id":"123456789"},
-              "statuses":[{"id":"wamid.outbound","status":"read"}]
+              "statuses":[{"id":"wamid.outbound","status":"deleted"}]
             }
           }]}]
         }"#;
-        let reply =
-            WhatsAppCloud::parse_signed_webhook(&app(), &signed(status_only), status_only).unwrap();
-        assert!(reply.messages.is_empty());
+        let error = WhatsAppCloud::parse_signed_webhook(&app(), &signed(unsupported), unsupported)
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidQuery { ref reason, .. } if reason == "webhook_status_unsupported")
+        );
+        assert!(!error.to_string().contains("deleted"));
+    }
+
+    #[test]
+    fn webhook_refuses_a_statuses_object_instead_of_an_array() {
+        let malformed = br#"{
+          "object":"whatsapp_business_account",
+          "entry":[{"changes":[{
+            "field":"messages",
+            "value":{
+              "metadata":{"phone_number_id":"123456789"},
+              "statuses":{"id":"wamid.outbound","status":"sent"}
+            }
+          }]}]
+        }"#;
+        let error =
+            WhatsAppCloud::parse_signed_webhook(&app(), &signed(malformed), malformed).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidQuery { reason, .. } if reason == "webhook_statuses_invalid")
+        );
+    }
+
+    #[test]
+    fn capabilities_describe_both_verified_webhook_read_surfaces() {
+        let connector = WhatsAppCloud::new().unwrap();
+        assert!(connector
+            .capabilities()
+            .contains(&Capability::ReadWebhookMessages));
+        assert!(connector
+            .capabilities()
+            .contains(&Capability::ReadWebhookStatuses));
     }
 
     #[test]

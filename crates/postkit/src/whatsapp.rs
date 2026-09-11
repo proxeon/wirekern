@@ -127,13 +127,41 @@ pub struct InboundMessage {
     pub context_message_id: Option<String>,
 }
 
-/// The ordered messages contained in one signed webhook delivery. It has no
-/// status field because `sent`/`delivered`/`read` callbacks are different
-/// events; treating a synchronous send response as delivery would be false.
+/// The small, closed set of outbound delivery states Postkit can interpret.
+/// Keeping this enum closed makes a new Meta state an explicit compatibility
+/// decision instead of silently reporting an unreviewed string as delivery.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryStatusKind {
+    Sent,
+    Delivered,
+    Read,
+    Failed,
+}
+
+/// One status callback for the exact outbound `wamid` returned by a prior
+/// send. Recipient IDs, failure bodies, conversation and pricing details are
+/// intentionally excluded: correlating the opaque message ID is sufficient
+/// here and the omitted fields need separate privacy/billing contracts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryStatus {
+    pub id: String,
+    pub status: DeliveryStatusKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+}
+
+/// The ordered events contained in one signed webhook delivery. `messages`
+/// remains the existing inbound surface; `statuses` is optional in JSON so
+/// inbound-only callers receive the same shape they did before this addition.
+/// Postkit does not deduplicate, reorder, persist, or infer a final state from
+/// these callbacks because each behavior requires application-owned storage.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InboundMessages {
     pub site: Site,
     pub messages: Vec<InboundMessage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub statuses: Vec<DeliveryStatus>,
 }
 
 pub fn validate_recipient(value: &str) -> Result<(), String> {
