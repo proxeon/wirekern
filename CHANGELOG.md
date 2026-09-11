@@ -14,6 +14,19 @@ same detail by subject.
 
 ### Changed
 
+- WhatsApp production hardening: outbound Cloud API calls share a
+  process-local ~80 messages/second queue **per configured phone**, and
+  batch items wait on that queue instead of taking a fake local
+  rate-limit. The delivery ledger keeps correlation metadata only
+  (`wamid`, sender, type, timestamps, reply context, final status,
+  limited conversation/pricing) and drops inbound text, captions, media,
+  and raw bodies. Ledger and consent files are `0600`. `purge` expires
+  delivery/window/dead-letter rows at an operator cutoff and never
+  touches consent. Recipients may include a leading `+` and
+  spaces/hyphens/parentheses; those decorations are stripped, a country
+  code is never invented. An ignored `POSTKIT_LIVE_WHATSAPP=1` suite
+  exercises read-only live Graph contracts.
+
 - HTTP listen/router moved to the `postkit-serve` crate. `postkit serve`
   still works; it calls that crate. Operator `Client` construction is
   `Client::from_home` / `bundled_registry` so CLI, serve, and a later MCP
@@ -25,6 +38,46 @@ same detail by subject.
   connectors, not a second product.
 
 ### Added
+
+- WhatsApp Cloud CLI, pagination, and sender routing: `whatsapp send` /
+  `send-batch` deserialize the same closed `WhatsAppSendRequest` as the
+  library and HTTP (not arbitrary Graph JSON). Typed `whatsapp media`,
+  `templates`, `flows`, `account`, `ledger`, and `consent` subcommands
+  cover the existing library verbs; customer sends still need
+  `--allow-send` and an idempotency key, while management writes need
+  `--yes`. Collection lists return Meta's opaque `after` cursor only —
+  `paging.next` URLs are not replayed. `--sender <alias>` selects a
+  configured phone; a raw Phone Number ID is refused. Pacing and
+  idempotency are namespaced by that phone. HTTP `POST /v1/whatsapp`
+  accepts the same `sender` field. HTTP still has no management
+  endpoints.
+
+- WhatsApp receive/operate: `postkit serve` answers Meta's GET
+  `hub.verify_token` challenge and POSTs with HMAC verification plus
+  HTTP 200 ACK on `/v1/whatsapp/callback` (no bearer; sit it behind
+  your TLS reverse proxy). Authenticated BYO parse stays on
+  `POST /v1/whatsapp/webhook`. A local wamid ledger deduplicates inbound
+  events, reduces `sent` → `delivered` → `read` / `failed`, stores
+  conversation/pricing extras when requested, and keeps hash-only
+  dead-letter rows for signed parse failures — not inbound text, media,
+  or raw bodies. Opt-in/opt-out records and a 24h window clock are
+  query-only operator signals. Account reads cover paginated WABAs,
+  phone numbers, and system users; Cloud API phone register and
+  two-step PIN are typed. Configured extra senders are accepted on the
+  shared webhook. This is transport/correlation, not a hosted inbox.
+
+- WhatsApp typed Cloud API sends beyond reply and body-text template:
+  media upload/metadata/download/delete and image/document/audio/video/
+  sticker send (id or https); interactive buttons, list, CTA URL,
+  location request, voice-call, location, contacts, address request,
+  and reaction; mark-as-read and typing; `recipient_type: group`;
+  richer template components (header/footer/buttons/named params/
+  limited-time offer) plus WABA template list/get/create/edit/delete;
+  catalog, product, order-status, and WhatsApp Flows (own `/flows`
+  endpoint and publish). `send_whatsapp_many` / `send-batch` cap at
+  ten messages and wait on a process-local ~80/s queue per phone.
+  Default policy still denies every customer send until
+  `--allow-send`. Unknown post-send failures are still not retried.
 
 - LinkedIn member text publishing: the new `linkedin` connector uses
   paste-code OAuth with the self-serve `openid,profile,w_member_social`
@@ -45,20 +98,20 @@ same detail by subject.
   `"allow_send": true` (the HTTP twin of `--allow-send`). `serve --json` is one
   listen document (`listening: true`) then the process stays up.
 
-- WhatsApp Cloud business messaging: the new `whatsapp_cloud` connector uses
+- WhatsApp Cloud business messaging: the `whatsapp_cloud` connector uses
   a configured Phone number ID and a verified static System User token, not a
-  fictional OAuth redirect. It sends only two typed, private shapes: a text
-  reply tied to an inbound `wamid`, or an existing Meta-approved template with
-  ordered text-body substitutions. Both require a mandatory idempotency key
-  and per-command `--allow-send`; the default client policy refuses every
-  WhatsApp write before vault or network access. A successful `Outcome.id` is
-  Meta's accepted outbound `wamid`, never a delivery/read claim. Inbound
-  support is a bounded raw webhook parser: it verifies Meta's
-  `X-Hub-Signature-256` HMAC in constant time, requires the configured Phone
-  number ID, and returns only inbound messages in provider order. There is no
-  listener, webhook acknowledgement, inbox persistence, status store,
-  template CRUD/review, billing surface, recipient discovery, bulk send,
-  media, interactive message, Flow, or retry-on-unknown-write behavior.
+  fictional OAuth redirect. The first slice sent two typed private shapes — a
+  text reply tied to an inbound `wamid`, or an existing Meta-approved template
+  with ordered text-body substitutions — each with a mandatory idempotency
+  key and per-command `--allow-send`. The default client policy still refuses
+  every customer send before vault or network access. A successful
+  `Outcome.id` is Meta's accepted outbound `wamid`, never a delivery/read
+  claim. Inbound support began as a bounded raw webhook parser: constant-time
+  `X-Hub-Signature-256` HMAC over the exact body, configured Phone Number ID
+  match, provider-order extract. Unknown post-send failures are not retried.
+  Later unreleased work (typed send types, receive/operate, CLI/sender
+  routing) is listed above; hosted inbox, calendar, billing dashboard, and
+  audience campaigns remain out.
 
 - Instagram organic image publishing: the new `instagram` connector uses the
   direct Instagram Login authorization path, stores only its long-lived token

@@ -295,7 +295,7 @@ an intentional operational decision.
 | `missing_phone_number_id` | Run `whatsapp configure …`, or set `POSTKIT_WHATSAPP_PHONE_NUMBER_ID`. Use the numeric Phone number ID, not the display number/WABA ID. |
 | `token_invalid` | Create/renew the authorised System User token, then re-run `auth whatsapp_cloud --token …`. |
 | `policy_denied` / `explicit_whatsapp_send_required` | Review consent, window, template and pricing, then repeat the exact typed command with `--allow-send`. |
-| `recipient_must_be_whatsapp_id` | Use country code + digits only, no `+`, spaces, or local formatting. |
+| `recipient_must_be_whatsapp_id` | Use country code + 7–15 digits. A leading `+` and spaces, hyphens, or parentheses are stripped; Postkit does not invent a country code. Letters and other punctuation are refused. |
 | `template_name_invalid` | V1 accepts lowercase letters, digits and underscores only; use the approved name exactly. |
 | Meta template/window error | Postkit sent a valid wire shape; correct the template approval, customer opt-in, recipient, or policy in WhatsApp Manager. |
 | `webhook_signature_invalid` | Pass the unchanged body and exact `X-Hub-Signature-256` value; check the configured app secret. |

@@ -48,7 +48,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | `linkedin` | `publish.text` | Paste-code OAuth (`openid,profile,w_member_social`); UserInfo resolves the member ID | Public organic member text only; ≤ 3,000 Unicode characters; no author params, media, organization/Page, analytics, or ads |
 | `meta_ads` | `read.metrics`, `read.ad_accounts`, `create.paused_ads`, `create.ad_creative` | OAuth paste-code (`ads_read,ads_management,pages_show_list,pages_manage_ads`), long-lived via `fb_exchange_token` | ≤ 90-day reads; ads are fixed `PAUSED` |
 | `facebook_pages` | `read.pages`, `publish.text`, `publish.image` | OAuth paste-code (`pages_show_list,pages_manage_posts,pages_read_engagement`), long-lived via `fb_exchange_token` | Page ID required per post; local images upload as multipart bytes |
-| `whatsapp_cloud` | `send.reply`, `send.text`, `send.template`, `read.webhook_messages`, `read.webhook_statuses` | Static System User token (`auth whatsapp_cloud --token`), Phone number ID config | Private send requires `--allow-send` + idempotency; inbound messages arrive as signed webhooks |
+| `whatsapp_cloud` | `send.reply`, `send.text`, `send.template`, `send.media`, `send.interactive`, `send.flow`, `read.webhook_messages`, `read.webhook_statuses` | Static System User token (`auth whatsapp_cloud --token`), Phone number ID config | Private send requires `--allow-send` + idempotency; inbound via signed webhooks; HTTPS for Meta is your reverse proxy |
 
 ### Feature coverage
 
@@ -75,12 +75,16 @@ Kernel-level, all sites: 0600 vault with atomic writes, CSPRNG OAuth `state`, re
 
 | Capability | Status |
 |------------|--------|
-| Text reply | ✓ Requires recipient WhatsApp ID, inbound `wamid`, idempotency key, and `--allow-send` |
+| Text reply | ✓ Recipient WhatsApp ID, inbound `wamid`, idempotency key, and `--allow-send` |
 | Session text | ✓ In-window `type=text` without `context`; same `--allow-send` + idempotency |
-| Approved template | ✓ Existing approved template; ordered text body variables only |
-| Inbound messages | ✓ Parse a signed raw webhook body (text, media ids, structured fields); no listener or persistent inbox |
-| Delivery/read status | ✓ Parse signed `sent`/`delivered`/`read`/`failed` plus error code/title; extras opt-in |
-| Media, interactive messages, Flows, bulk sends | ✗ roadmap; each requires a separate consent/payload contract |
+| Approved templates | ✓ Short `template` command for ordered body params; typed `whatsapp send` for header/footer/buttons/named params/LTO; WABA list/get/create/edit/delete |
+| Media | ✓ Upload/metadata/download/delete; send image, document, audio, video, sticker (id or https) |
+| Interactive and service | ✓ Buttons, list, CTA URL, location request, voice-call, location, contacts, address request, reaction, mark-as-read, typing; `recipient_type: group` |
+| Catalog / order / Flows | ✓ Typed catalog, product, and order-status sends; Flow list/get/create/publish |
+| Inbound / status | ✓ Signed raw-body parse; `postkit serve` GET/POST callback with HTTP 200 ACK; local wamid ledger (not an inbox) |
+| Account / multi-sender | ✓ Paginated WABA/phone/system-user reads; phone register and two-step PIN; configured sender aliases (`--sender` on `send` / `send-batch` / HTTP) |
+| Bounded fan-out | ✓ `send-batch` / `send_whatsapp_many` ≤ 10, process-paced per phone; not campaigns |
+| Hosted inbox, calendar, billing dashboard | ✗ by design |
 | Token refresh | ✗ Static System User token is operator-managed |
 
 ## CLI
@@ -104,6 +108,7 @@ postkit ads create-draft meta_ads --manifest launch.paused.json --state launch.s
 postkit pages accounts facebook_pages --json
 postkit post facebook_pages --param page_id=123 --text 'Hello from Postkit'
 postkit whatsapp reply --to 60123456789 --reply-to wamid.inbound --text 'Hello' --idempotency reply-1 --allow-send
+postkit whatsapp send --request message.json --sender marketing --allow-send
 postkit whatsapp webhook parse --signature "$X_HUB_SIGNATURE_256" < webhook.json
 postkit whoami <site>
 postkit capabilities [site]
