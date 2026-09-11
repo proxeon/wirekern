@@ -241,15 +241,25 @@ pub enum DeliveryStatusKind {
 }
 
 /// One status callback for the exact outbound `wamid` returned by a prior
-/// send. Recipient IDs, failure bodies, conversation and pricing details are
-/// intentionally excluded: correlating the opaque message ID is sufficient
-/// here and the omitted fields need separate privacy/billing contracts.
+/// send. Recipient, conversation and pricing stay off this type unless the
+/// caller opts into [`WebhookParseOptions::include_status_extras`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeliveryStatus {
     pub id: String,
     pub status: DeliveryStatusKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
+    /// Meta `statuses[].errors` — code and title only, no href/raw dump.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<DeliveryError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryError {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// The ordered events contained in one signed webhook delivery. `messages`

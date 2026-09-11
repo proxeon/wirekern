@@ -34,7 +34,7 @@ Do these without becoming an inbox.
 - [x] Session text: `type=text` **without** `context` (Meta’s 24h customer-service window send)
 - [x] Inbound media: image/audio/video/document/sticker **ids**, mime, caption
 - [x] Inbound structured: location, contacts, interactive reply, reaction, referral, order, unsupported
-- [ ] Failed status `errors[]` (code / title only)
+- [x] Failed status `errors[]` (code / title only)
 - [ ] Status extras (optional, privacy-gated): `recipient_id`, `conversation`, `pricing`
 - [ ] HTTP webhook **parse**: `POST /v1/whatsapp/webhook` (same HMAC as CLI; no listener)
 - [ ] `preview_url` as a typed opt-in (today hardcoded `false`)

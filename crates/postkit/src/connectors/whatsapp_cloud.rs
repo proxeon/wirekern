@@ -11,7 +11,8 @@ use crate::publisher::{AuthKind, Publisher};
 use crate::registry::Connector;
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::whatsapp::{
-    DeliveryStatus, DeliveryStatusKind, InboundContact, InboundInteractive, InboundLocation,
+    DeliveryError, DeliveryStatus, DeliveryStatusKind, InboundContact, InboundInteractive,
+    InboundLocation,
     InboundMedia, InboundMessage, InboundMessages, InboundOrder, InboundReaction, InboundReferral,
     InboundUnsupported, WhatsAppMessage, WhatsAppSendRequest,
 };
@@ -541,7 +542,20 @@ fn delivery_status(value: &Value) -> Result<DeliveryStatus, Error> {
         id,
         status,
         timestamp: value.get("timestamp").and_then(value_string),
+        errors: delivery_errors(value),
     })
+}
+
+fn delivery_errors(value: &Value) -> Vec<DeliveryError> {
+    let Some(list) = value.get("errors").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    list.iter()
+        .map(|error| DeliveryError {
+            code: error.get("code").and_then(value_string),
+            title: error.get("title").and_then(value_string),
+        })
+        .collect()
 }
 
 fn value_string(value: &Value) -> Option<String> {
@@ -942,6 +956,33 @@ mod tests {
             reply.messages[3].unsupported.as_ref().unwrap().code.as_deref(),
             Some("131051")
         );
+    }
+
+    #[test]
+    fn failed_status_exposes_code_and_title_only() {
+        let raw = br#"{
+          "object":"whatsapp_business_account",
+          "entry":[{"changes":[{
+            "field":"messages",
+            "value":{
+              "metadata":{"phone_number_id":"123456789"},
+              "statuses":[{
+                "id":"wamid.fail",
+                "status":"failed",
+                "errors":[{"code":131026,"title":"Message undeliverable","href":"https://example.invalid"}]
+              }]
+            }
+          }]}]
+        }"#;
+        let reply = WhatsAppCloud::parse_signed_webhook(&app(), &signed(raw), raw).unwrap();
+        assert_eq!(reply.statuses[0].status, DeliveryStatusKind::Failed);
+        assert_eq!(reply.statuses[0].errors[0].code.as_deref(), Some("131026"));
+        assert_eq!(
+            reply.statuses[0].errors[0].title.as_deref(),
+            Some("Message undeliverable")
+        );
+        let wire = serde_json::to_value(&reply).unwrap();
+        assert!(wire["statuses"][0]["errors"][0].get("href").is_none());
     }
 
     #[test]
