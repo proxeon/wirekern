@@ -6,11 +6,12 @@ send names one recipient, requires an idempotency key, and needs an explicit
 `--allow-send` acknowledgement because templates and conversations can have
 consent and billing consequences.
 
-The connector supports a text reply attached to an inbound message, an
-existing approved text template, and parsing **signed inbound webhooks**. It
+The connector sends typed Cloud API messages (text, media, interactive,
+templates, catalog/order, Flows) and parses **signed inbound webhooks**. It
 does not provide an inbox API or a server. WhatsApp delivers inbound messages
 and final sent/delivered/read/failed status to your HTTPS webhook; Postkit can
-verify and parse the exact raw body that endpoint receives.
+verify and parse the exact raw body that endpoint receives. Every customer
+send still needs `--allow-send` and an idempotency key.
 
 Meta's current Cloud API requirements and message examples are in its
 [official WhatsApp Cloud API collection](https://www.postman.com/meta/whatsapp-business-platform/documentation/wlk6lh4/whatsapp-cloud-api?entity=request-13382743-f2eb9575-f109-4767-ab47-4cf74c14444f).

@@ -548,8 +548,8 @@ impl WhatsAppTemplates for WhatsAppCloud {
                 message: "WhatsApp template list returned no data array".into(),
             })?
             .iter()
-            .map(parse_template_record)
-            .collect();
+            .map(|v| parse_template_record(v, "template_list_invalid"))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(WhatsAppTemplateList { templates })
     }
 
@@ -581,7 +581,7 @@ impl WhatsAppTemplates for WhatsAppCloud {
             )
             .await?;
         let body = read_json(response, &self.site).await?;
-        Ok(parse_template_record(&body))
+        parse_template_record(&body, "missing_template_id")
     }
 
     async fn create_template(
@@ -610,7 +610,7 @@ impl WhatsAppTemplates for WhatsAppCloud {
             )
             .await?;
         let body = read_json(response, &self.site).await?;
-        Ok(parse_template_record(&body))
+        parse_template_record(&body, "missing_template_id")
     }
 
     async fn edit_template(
@@ -648,7 +648,7 @@ impl WhatsAppTemplates for WhatsAppCloud {
             )
             .await?;
         let body = read_json(response, &self.site).await?;
-        Ok(parse_template_record(&body))
+        parse_template_record(&body, "missing_template_id")
     }
 
     async fn delete_template(
@@ -723,8 +723,8 @@ impl WhatsAppFlows for WhatsAppCloud {
                 message: "WhatsApp flow list returned no data array".into(),
             })?
             .iter()
-            .map(parse_flow_record)
-            .collect();
+            .map(|v| parse_flow_record(v, "flow_list_invalid"))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(WhatsAppFlowList { flows })
     }
 
@@ -756,7 +756,7 @@ impl WhatsAppFlows for WhatsAppCloud {
             )
             .await?;
         let body = read_json(response, &self.site).await?;
-        Ok(parse_flow_record(&body))
+        parse_flow_record(&body, "missing_flow_id")
     }
 
     async fn create_flow(
@@ -789,7 +789,18 @@ impl WhatsAppFlows for WhatsAppCloud {
             )
             .await?;
         let body = read_json(response, &self.site).await?;
-        Ok(parse_flow_record(&body))
+        if body
+            .get("validation_errors")
+            .and_then(Value::as_array)
+            .is_some_and(|errors| !errors.is_empty())
+        {
+            return Err(Error::Platform {
+                site: self.site.clone(),
+                code: "flow_validation_errors".into(),
+                message: "WhatsApp rejected the Flow JSON schema".into(),
+            });
+        }
+        parse_flow_record(&body, "missing_flow_id")
     }
 
     async fn publish_flow(
@@ -806,23 +817,37 @@ impl WhatsAppFlows for WhatsAppCloud {
         })?;
         let _waba = waba_id(app)?;
         let token = access_token(creds)?;
+        // Official publish has no JSON body and returns `{success: true}`,
+        // not a Flow object. Requiring `id` here would treat a successful
+        // publish as a platform error.
         let response = self
             .http
             .send(
                 self.http
                     .post(&format!("{}/{flow_id}/publish", self.base))
-                    .bearer_auth(token)
-                    .json(&json!({})),
+                    .bearer_auth(token),
                 deadline,
                 &self.site,
             )
             .await?;
         let body = read_json(response, &self.site).await?;
-        Ok(parse_flow_record(&body))
+        if body.get("success").and_then(Value::as_bool) != Some(true) {
+            return Err(Error::Platform {
+                site: self.site.clone(),
+                code: "flow_publish_failed".into(),
+                message: "WhatsApp Flow publish did not return success".into(),
+            });
+        }
+        Ok(WhatsAppFlowRecord {
+            id: flow_id.to_string(),
+            name: None,
+            status: Some("PUBLISHED".into()),
+            categories: vec![],
+        })
     }
 }
 
-fn parse_flow_record(value: &Value) -> WhatsAppFlowRecord {
+fn parse_flow_record(value: &Value, missing: &str) -> Result<WhatsAppFlowRecord, Error> {
     let categories = value
         .get("categories")
         .and_then(Value::as_array)
@@ -832,12 +857,21 @@ fn parse_flow_record(value: &Value) -> WhatsAppFlowRecord {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    WhatsAppFlowRecord {
-        id: value.get("id").and_then(value_string).unwrap_or_default(),
+    let id = value
+        .get("id")
+        .and_then(value_string)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| Error::Platform {
+            site: Site::new(SITE),
+            code: missing.into(),
+            message: "WhatsApp Flow response had no id".into(),
+        })?;
+    Ok(WhatsAppFlowRecord {
+        id,
         name: value.get("name").and_then(value_string),
         status: value.get("status").and_then(value_string),
         categories,
-    }
+    })
 }
 
 /// The exact limited JSON grammar Postkit allows on the message endpoint.
@@ -1444,20 +1478,29 @@ fn validate_template_status_filter(status: &str) -> Result<(), String> {
     }
 }
 
-fn parse_template_record(value: &Value) -> WhatsAppTemplateRecord {
+fn parse_template_record(value: &Value, missing: &str) -> Result<WhatsAppTemplateRecord, Error> {
     let quality = value
         .get("quality_score")
         .and_then(|q| q.get("score"))
         .and_then(value_string)
         .or_else(|| value.get("quality").and_then(value_string));
-    WhatsAppTemplateRecord {
-        id: value.get("id").and_then(value_string).unwrap_or_default(),
+    let id = value
+        .get("id")
+        .and_then(value_string)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| Error::Platform {
+            site: Site::new(SITE),
+            code: missing.into(),
+            message: "WhatsApp template response had no id".into(),
+        })?;
+    Ok(WhatsAppTemplateRecord {
+        id,
         name: value.get("name").and_then(value_string),
         language: value.get("language").and_then(value_string),
         status: value.get("status").and_then(value_string),
         category: value.get("category").and_then(value_string),
         quality,
-    }
+    })
 }
 
 fn template_draft_payload(draft: &WhatsAppTemplateDraft) -> Value {
@@ -2719,7 +2762,7 @@ mod tests {
         });
         let publish = server.mock(|when, then| {
             when.method(POST).path("/v26.0/123/publish");
-            then.status(200).json_body(json!({ "id": "123", "status": "PUBLISHED" }));
+            then.status(200).json_body(json!({ "success": true }));
         });
         let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
         let listed = connector

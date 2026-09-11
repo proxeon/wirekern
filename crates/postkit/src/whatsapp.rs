@@ -7,6 +7,7 @@
 
 use crate::types::{valid_name, Capability, Site};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// WhatsApp's documented maximum for a text message body. Count Unicode
 /// scalar values, not bytes, so multilingual support is not accidentally
@@ -569,9 +570,13 @@ impl WhatsAppMessage {
                 if !(1..=3).contains(&buttons.len()) {
                     return Err("reply_buttons_count".into());
                 }
+                let mut ids = HashSet::new();
                 for b in buttons {
                     if b.id.is_empty() || b.id.len() > 256 {
                         return Err("reply_button_id_invalid".into());
+                    }
+                    if !ids.insert(b.id.as_str()) {
+                        return Err("reply_button_id_duplicate".into());
                     }
                     if b.title.is_empty() || b.title.chars().count() > 20 {
                         return Err("reply_button_title_invalid".into());
@@ -598,18 +603,37 @@ impl WhatsAppMessage {
                 if sections.is_empty() || sections.len() > 10 {
                     return Err("list_sections_count".into());
                 }
+                // Cloud API: up to 10 sections, but only 10 rows across all
+                // sections combined — not 10 per section.
+                let mut total_rows = 0usize;
+                let mut ids = HashSet::new();
                 for section in sections {
+                    if sections.len() > 1
+                        && section
+                            .title
+                            .as_ref()
+                            .is_none_or(|t| t.trim().is_empty() || t.chars().count() > 24)
+                    {
+                        return Err("list_section_title_invalid".into());
+                    }
                     if let Some(title) = &section.title {
                         if title.chars().count() > 24 {
                             return Err("list_section_title_invalid".into());
                         }
                     }
-                    if section.rows.is_empty() || section.rows.len() > 10 {
+                    if section.rows.is_empty() {
+                        return Err("list_rows_count".into());
+                    }
+                    total_rows += section.rows.len();
+                    if total_rows > 10 {
                         return Err("list_rows_count".into());
                     }
                     for row in &section.rows {
                         if row.id.is_empty() || row.id.len() > 200 {
                             return Err("list_row_id_invalid".into());
+                        }
+                        if !ids.insert(row.id.as_str()) {
+                            return Err("list_row_id_duplicate".into());
                         }
                         if row.title.is_empty() || row.title.chars().count() > 24 {
                             return Err("list_row_title_invalid".into());
@@ -2039,6 +2063,37 @@ mod tests {
             .unwrap_err(),
             "flow_id_or_name_required"
         );
+        let too_many_rows = WhatsAppMessage::List {
+            to: "60123456789".into(),
+            body: "Menu".into(),
+            button: "Open".into(),
+            sections: vec![
+                ListSection {
+                    title: Some("A".into()),
+                    rows: (0..6)
+                        .map(|i| ListRow {
+                            id: format!("a{i}"),
+                            title: format!("A{i}"),
+                            description: None,
+                        })
+                        .collect(),
+                },
+                ListSection {
+                    title: Some("B".into()),
+                    rows: (0..5)
+                        .map(|i| ListRow {
+                            id: format!("b{i}"),
+                            title: format!("B{i}"),
+                            description: None,
+                        })
+                        .collect(),
+                },
+            ],
+            header: None,
+            footer: None,
+            reply_to_message_id: None,
+        };
+        assert_eq!(too_many_rows.validate().unwrap_err(), "list_rows_count");
         assert!(WhatsAppFlowDraft {
             name: "booking".into(),
             categories: vec!["OTHER".into()],
