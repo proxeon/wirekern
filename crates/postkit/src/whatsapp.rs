@@ -1141,6 +1141,19 @@ pub struct WhatsAppPhoneNumber {
     pub code_verification_status: Option<String>,
 }
 
+fn percent_encode(value: &str) -> String {
+    let mut out = String::new();
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 pub fn validate_two_step_pin(pin: &str) -> Result<(), String> {
     if pin.len() != 6 || !pin.bytes().all(|b| b.is_ascii_digit()) {
         return Err("whatsapp_pin_invalid".into());
@@ -1163,7 +1176,8 @@ pub fn embedded_signup_url(
         return Err("embedded_signup_params_invalid".into());
     }
     Ok(format!(
-        "https://www.facebook.com/v26.0/dialog/oauth?client_id={app_id}&config_id={config_id}&response_type=code&override_default_response_type=true&redirect_uri={redirect_uri}"
+        "https://www.facebook.com/v26.0/dialog/oauth?client_id={app_id}&config_id={config_id}&response_type=code&override_default_response_type=true&redirect_uri={}",
+        percent_encode(redirect_uri)
     ))
 }
 
@@ -1456,7 +1470,8 @@ pub fn media_max_bytes(mime: &str) -> Option<usize> {
         "audio/aac" | "audio/amr" | "audio/mpeg" | "audio/mp4" | "audio/ogg" => {
             Some(16 * 1024 * 1024)
         }
-        "video/mp4" | "video/3gpp" => Some(16 * 1024 * 1024),
+        // Meta's table writes `video/3gp`; IANA is `video/3gpp`. Accept both.
+        "video/mp4" | "video/3gp" | "video/3gpp" => Some(16 * 1024 * 1024),
         "text/plain"
         | "application/pdf"
         | "application/msword"
@@ -2156,7 +2171,13 @@ mod tests {
             validate_two_step_pin("abc").unwrap_err(),
             "whatsapp_pin_invalid"
         );
-        assert!(embedded_signup_url("123", "cfg_1", "https://example.com/x").is_ok());
+        let signup = embedded_signup_url(
+            "123",
+            "cfg_1",
+            "https://example.com/cb?x=1",
+        )
+        .unwrap();
+        assert!(signup.contains("redirect_uri=https%3A%2F%2Fexample.com%2Fcb%3Fx%3D1"));
         assert_eq!(
             embedded_signup_url("123", "cfg", "http://insecure.example/x").unwrap_err(),
             "embedded_signup_params_invalid"

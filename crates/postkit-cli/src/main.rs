@@ -565,6 +565,11 @@ async fn run(cli: Cli) -> Result<(), i32> {
                     .get("app_secret")
                     .and_then(serde_json::Value::as_str)
                     .is_some_and(|secret| !secret.is_empty());
+                let webhook_verify = cfg
+                    .extra
+                    .get("verify_token")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|token| !token.is_empty());
                 let source = app_source(&Site::new(&site));
                 if json {
                     emit_raw(&serde_json::json!({
@@ -572,10 +577,11 @@ async fn run(cli: Cli) -> Result<(), i32> {
                         "source": source,
                         "phone_number_id": phone_number_id,
                         "webhook_signing": webhook_signing,
+                        "webhook_verify": webhook_verify,
                     }));
                 } else {
                     human_line(format!(
-                        "site=whatsapp_cloud source={source} phone_number_id={phone_number_id} webhook_signing={webhook_signing} app_secret=[redacted]"
+                        "site=whatsapp_cloud source={source} phone_number_id={phone_number_id} webhook_signing={webhook_signing} webhook_verify={webhook_verify} app_secret=[redacted] verify_token=[redacted]"
                     ));
                 }
                 return Ok(());
