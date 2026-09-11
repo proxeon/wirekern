@@ -145,6 +145,51 @@ pub enum WhatsAppMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply_to_message_id: Option<String>,
     },
+    /// Location pin. Cloud API takes latitude/longitude as decimal strings;
+    /// name/address are optional map labels, not a geocode lookup.
+    Location {
+        to: String,
+        latitude: String,
+        longitude: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        address: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    /// Contact card(s). Meta requires `name.formatted_name`; extra phones are
+    /// card fields, not a substitute for the recipient `to`.
+    Contacts {
+        to: String,
+        contacts: Vec<OutboundContact>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    /// Interactive `address_message`. `country` is ISO 3166-1 alpha-2; Meta
+    /// only collects addresses in supported countries.
+    AddressRequest {
+        to: String,
+        body: String,
+        country: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    /// Emoji reaction on an inbound `wamid`. Empty emoji is refused: Meta
+    /// treats an omitted emoji as "remove reaction", which must be explicit
+    /// later rather than a silent default.
+    Reaction {
+        to: String,
+        message_id: String,
+        emoji: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OutboundContact {
+    pub formatted_name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phones: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -183,7 +228,11 @@ impl WhatsAppMessage {
             | Self::List { .. }
             | Self::CtaUrl { .. }
             | Self::LocationRequest { .. }
-            | Self::VoiceCall { .. } => Capability::SendInteractive,
+            | Self::VoiceCall { .. }
+            | Self::AddressRequest { .. } => Capability::SendInteractive,
+            Self::Location { .. } => Capability::SendLocation,
+            Self::Contacts { .. } => Capability::SendContacts,
+            Self::Reaction { .. } => Capability::SendReaction,
         }
     }
 
@@ -404,6 +453,58 @@ impl WhatsAppMessage {
                 }
                 if ttl_minutes.is_some_and(|m| !(1..=43200).contains(&m)) {
                     return Err("voice_call_ttl_invalid".into());
+                }
+            }
+            Self::Location {
+                to,
+                latitude,
+                longitude,
+                name: _,
+                address: _,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                validate_optional_context(reply_to_message_id)?;
+                validate_coordinates(latitude, longitude)?;
+            }
+            Self::Contacts {
+                to,
+                contacts,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                validate_optional_context(reply_to_message_id)?;
+                if contacts.is_empty() {
+                    return Err("contacts_empty".into());
+                }
+                for c in contacts {
+                    if c.formatted_name.trim().is_empty() {
+                        return Err("contact_name_empty".into());
+                    }
+                }
+            }
+            Self::AddressRequest {
+                to,
+                body,
+                country,
+                reply_to_message_id,
+            } => {
+                validate_recipient(to)?;
+                validate_body(body)?;
+                validate_optional_context(reply_to_message_id)?;
+                if country.len() != 2 || !country.bytes().all(|b| b.is_ascii_alphabetic()) {
+                    return Err("address_country_invalid".into());
+                }
+            }
+            Self::Reaction {
+                to,
+                message_id,
+                emoji,
+            } => {
+                validate_recipient(to)?;
+                validate_context_id(message_id)?;
+                if emoji.trim().is_empty() {
+                    return Err("reaction_emoji_empty".into());
                 }
             }
         }
@@ -831,6 +932,19 @@ fn validate_template_name(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_coordinates(latitude: &str, longitude: &str) -> Result<(), String> {
+    let lat: f64 = latitude
+        .parse()
+        .map_err(|_| "location_coordinates_invalid".to_string())?;
+    let lon: f64 = longitude
+        .parse()
+        .map_err(|_| "location_coordinates_invalid".to_string())?;
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return Err("location_coordinates_invalid".into());
+    }
+    Ok(())
+}
+
 fn validate_language(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MAX_LANGUAGE
@@ -990,5 +1104,88 @@ mod tests {
             validate_media_upload(&bad).unwrap_err(),
             "media_mime_unsupported"
         );
+    }
+
+    #[test]
+    fn location_contacts_address_and_reaction_validate_locally() {
+        assert!(WhatsAppMessage::Location {
+            to: "60123456789".into(),
+            latitude: "3.139".into(),
+            longitude: "101.687".into(),
+            name: Some("KL".into()),
+            address: None,
+            reply_to_message_id: None,
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            WhatsAppMessage::Location {
+                to: "60123456789".into(),
+                latitude: "91".into(),
+                longitude: "0".into(),
+                name: None,
+                address: None,
+                reply_to_message_id: None,
+            }
+            .validate()
+            .unwrap_err(),
+            "location_coordinates_invalid"
+        );
+        assert_eq!(
+            WhatsAppMessage::Contacts {
+                to: "60123456789".into(),
+                contacts: vec![],
+                reply_to_message_id: None,
+            }
+            .validate()
+            .unwrap_err(),
+            "contacts_empty"
+        );
+        assert!(WhatsAppMessage::Contacts {
+            to: "60123456789".into(),
+            contacts: vec![OutboundContact {
+                formatted_name: "Ada".into(),
+                phones: vec!["6011".into()],
+            }],
+            reply_to_message_id: None,
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            WhatsAppMessage::AddressRequest {
+                to: "60123456789".into(),
+                body: "Share address".into(),
+                country: "MYS".into(),
+                reply_to_message_id: None,
+            }
+            .validate()
+            .unwrap_err(),
+            "address_country_invalid"
+        );
+        assert!(WhatsAppMessage::AddressRequest {
+            to: "60123456789".into(),
+            body: "Share address".into(),
+            country: "MY".into(),
+            reply_to_message_id: None,
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            WhatsAppMessage::Reaction {
+                to: "60123456789".into(),
+                message_id: "wamid.in".into(),
+                emoji: "   ".into(),
+            }
+            .validate()
+            .unwrap_err(),
+            "reaction_emoji_empty"
+        );
+        assert!(WhatsAppMessage::Reaction {
+            to: "60123456789".into(),
+            message_id: "wamid.in".into(),
+            emoji: "thumbs".into(),
+        }
+        .validate()
+        .is_ok());
     }
 }

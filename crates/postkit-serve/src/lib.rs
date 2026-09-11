@@ -169,7 +169,11 @@ async fn whatsapp_send(State(state): State<AppState>, headers: HeaderMap, body: 
             | WhatsAppMessage::List { .. }
             | WhatsAppMessage::CtaUrl { .. }
             | WhatsAppMessage::LocationRequest { .. }
-            | WhatsAppMessage::VoiceCall { .. } => "send_whatsapp_interactive",
+            | WhatsAppMessage::VoiceCall { .. }
+            | WhatsAppMessage::AddressRequest { .. } => "send_whatsapp_interactive",
+            WhatsAppMessage::Location { .. } => "send_whatsapp_location",
+            WhatsAppMessage::Contacts { .. } => "send_whatsapp_contacts",
+            WhatsAppMessage::Reaction { .. } => "send_whatsapp_reaction",
         };
         return wire_response(Error::PolicyDenied {
             site: Site::new("whatsapp_cloud"),

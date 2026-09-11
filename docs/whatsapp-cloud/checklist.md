@@ -63,10 +63,10 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 - [x] CTA URL button
 - [x] Location request button
 - [x] Voice-call button
-- [ ] Location send
-- [ ] Contacts send
-- [ ] Address request
-- [ ] Reaction (emoji on inbound `wamid`)
+- [x] Location send
+- [x] Contacts send
+- [x] Address request
+- [x] Reaction (emoji on inbound `wamid`)
 - [ ] Mark as read
 - [ ] Typing indicator
 - [ ] Group send (`recipient_type: group`)

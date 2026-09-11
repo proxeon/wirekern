@@ -174,6 +174,9 @@ impl Publisher for WhatsAppCloud {
             Capability::SendTemplate,
             Capability::SendMedia,
             Capability::SendInteractive,
+            Capability::SendLocation,
+            Capability::SendContacts,
+            Capability::SendReaction,
             Capability::ManageWhatsAppMedia,
             Capability::ReadWhatsAppMedia,
             Capability::ReadWebhookMessages,
@@ -648,6 +651,91 @@ pub fn send_payload(message: &WhatsAppMessage) -> Value {
             });
             interactive_payload(to, interactive, None, None, reply_to_message_id.as_deref())
         }
+        WhatsAppMessage::Location {
+            to,
+            latitude,
+            longitude,
+            name,
+            address,
+            reply_to_message_id,
+        } => {
+            let mut location = json!({ "latitude": latitude, "longitude": longitude });
+            if let Some(name) = name {
+                location["name"] = json!(name);
+            }
+            if let Some(address) = address {
+                location["address"] = json!(address);
+            }
+            let mut payload = json!({
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": wire_recipient(to),
+                "type": "location",
+                "location": location,
+            });
+            if let Some(id) = reply_to_message_id {
+                payload["context"] = json!({ "message_id": id });
+            }
+            payload
+        }
+        WhatsAppMessage::Contacts {
+            to,
+            contacts,
+            reply_to_message_id,
+        } => {
+            let contacts: Vec<_> = contacts
+                .iter()
+                .map(|c| {
+                    let mut o = json!({ "name": { "formatted_name": c.formatted_name } });
+                    if !c.phones.is_empty() {
+                        o["phones"] = json!(c
+                            .phones
+                            .iter()
+                            .map(|p| json!({ "phone": p }))
+                            .collect::<Vec<_>>());
+                    }
+                    o
+                })
+                .collect();
+            let mut payload = json!({
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": wire_recipient(to),
+                "type": "contacts",
+                "contacts": contacts,
+            });
+            if let Some(id) = reply_to_message_id {
+                payload["context"] = json!({ "message_id": id });
+            }
+            payload
+        }
+        WhatsAppMessage::AddressRequest {
+            to,
+            body,
+            country,
+            reply_to_message_id,
+        } => {
+            let interactive = json!({
+                "type": "address_message",
+                "body": { "text": body },
+                "action": {
+                    "name": "address_message",
+                    "parameters": { "country": country.to_uppercase() },
+                },
+            });
+            interactive_payload(to, interactive, None, None, reply_to_message_id.as_deref())
+        }
+        WhatsAppMessage::Reaction {
+            to,
+            message_id,
+            emoji,
+        } => json!({
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": wire_recipient(to),
+            "type": "reaction",
+            "reaction": { "message_id": message_id, "emoji": emoji },
+        }),
     }
 }
 
@@ -1287,6 +1375,53 @@ mod tests {
             })["interactive"]["type"],
             "voice_call"
         );
+    }
+
+    #[test]
+    fn location_contacts_address_and_reaction_payloads_match_cloud_api() {
+        use crate::whatsapp::OutboundContact;
+        let loc = send_payload(&WhatsAppMessage::Location {
+            to: "60123456789".into(),
+            latitude: "3.139".into(),
+            longitude: "101.687".into(),
+            name: Some("KLCC".into()),
+            address: Some("Kuala Lumpur".into()),
+            reply_to_message_id: Some("wamid.in".into()),
+        });
+        assert_eq!(loc["type"], "location");
+        assert_eq!(loc["location"]["latitude"], "3.139");
+        assert_eq!(loc["location"]["name"], "KLCC");
+        assert_eq!(loc["context"]["message_id"], "wamid.in");
+        let contacts = send_payload(&WhatsAppMessage::Contacts {
+            to: "60123456789".into(),
+            contacts: vec![OutboundContact {
+                formatted_name: "Ada".into(),
+                phones: vec!["6011".into()],
+            }],
+            reply_to_message_id: None,
+        });
+        assert_eq!(contacts["type"], "contacts");
+        assert_eq!(contacts["contacts"][0]["name"]["formatted_name"], "Ada");
+        assert_eq!(contacts["contacts"][0]["phones"][0]["phone"], "6011");
+        let addr = send_payload(&WhatsAppMessage::AddressRequest {
+            to: "60123456789".into(),
+            body: "Share address".into(),
+            country: "my".into(),
+            reply_to_message_id: None,
+        });
+        assert_eq!(addr["interactive"]["type"], "address_message");
+        assert_eq!(
+            addr["interactive"]["action"]["parameters"]["country"],
+            "MY"
+        );
+        let reaction = send_payload(&WhatsAppMessage::Reaction {
+            to: "60123456789".into(),
+            message_id: "wamid.in".into(),
+            emoji: "thumbs".into(),
+        });
+        assert_eq!(reaction["type"], "reaction");
+        assert_eq!(reaction["reaction"]["message_id"], "wamid.in");
+        assert_eq!(reaction["reaction"]["emoji"], "thumbs");
     }
 
     #[tokio::test]
