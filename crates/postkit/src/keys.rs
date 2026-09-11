@@ -95,8 +95,16 @@ impl FileKeyStore {
             if !valid_name(stem) {
                 continue;
             }
-            let data = fs::read(ent.path())?;
-            out.push(serde_json::from_slice(&data)?);
+            let data = match fs::read(ent.path()) {
+                Ok(data) => data,
+                Err(_) => continue,
+            };
+            // A corrupt sibling must not turn every HTTP request into 503.
+            // Same posture as vault list skipping illegal names.
+            let Ok(meta) = serde_json::from_slice::<KeyMeta>(&data) else {
+                continue;
+            };
+            out.push(meta);
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
@@ -182,6 +190,17 @@ mod tests {
         assert_eq!(meta.name, "n8n");
         let err = store.verify("pk_live_not-a-real-key").unwrap_err();
         assert!(matches!(err, Error::Auth { reason, .. } if reason == "invalid_key"));
+    }
+
+    #[test]
+    fn corrupt_sibling_does_not_block_a_valid_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FileKeyStore::new(tmp.path()).unwrap();
+        let created = store.create("good").unwrap();
+        fs::write(tmp.path().join("keys/bad.json"), b"{not-json").unwrap();
+        let listed: Vec<_> = store.list().unwrap().into_iter().map(|k| k.name).collect();
+        assert_eq!(listed, vec!["good".to_string()]);
+        store.verify(&created.token).unwrap();
     }
 
     #[test]

@@ -148,11 +148,34 @@ async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), Error> {
             site: Site::new(""),
             reason: "missing_key".into(),
         })?;
-    let token = raw.strip_prefix("Bearer ").ok_or_else(|| Error::Auth {
-        site: Site::new(""),
-        reason: "missing_key".into(),
-    })?;
+    // RFC 7235: the scheme is case-insensitive. n8n and some HTTP libs send
+    // `bearer` rather than `Bearer`.
+    let token = bearer_token(raw)?;
     state.keys.verify(token).map(|_| ())
+}
+
+pub(crate) fn bearer_token(header: &str) -> Result<&str, Error> {
+    let header = header.trim();
+    let Some((scheme, rest)) = header.split_once(char::is_whitespace) else {
+        return Err(Error::Auth {
+            site: Site::new(""),
+            reason: "missing_key".into(),
+        });
+    };
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return Err(Error::Auth {
+            site: Site::new(""),
+            reason: "invalid_key".into(),
+        });
+    }
+    let token = rest.trim();
+    if token.is_empty() {
+        return Err(Error::Auth {
+            site: Site::new(""),
+            reason: "missing_key".into(),
+        });
+    }
+    Ok(token)
 }
 
 fn wire_response(err: Error) -> Response {
@@ -302,6 +325,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lowercase_bearer_and_wrong_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (app, token) = test_router(tmp.path());
+        let ok = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/capabilities")
+                    .header(AUTHORIZATION, format!("bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        let bad = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/capabilities")
+                    .header(AUTHORIZATION, "Bearer pk_live_nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn valid_key_lists_capabilities() {
         let tmp = tempfile::tempdir().unwrap();
         let (app, token) = test_router(tmp.path());
@@ -354,5 +407,20 @@ mod tests {
         let lan = parse_bind(Some("0.0.0.0:9999")).unwrap();
         assert!(lan.ip().is_unspecified());
         assert_eq!(lan.port(), 9999);
+    }
+
+    #[test]
+    fn bearer_scheme_is_case_insensitive() {
+        assert_eq!(bearer_token("Bearer abc").unwrap(), "abc");
+        assert_eq!(bearer_token("bearer abc").unwrap(), "abc");
+        assert_eq!(bearer_token("  BEARER   abc  ").unwrap(), "abc");
+        assert!(matches!(
+            bearer_token("Basic abc"),
+            Err(Error::Auth { reason, .. }) if reason == "invalid_key"
+        ));
+        assert!(matches!(
+            bearer_token("Bearer"),
+            Err(Error::Auth { reason, .. }) if reason == "missing_key"
+        ));
     }
 }
