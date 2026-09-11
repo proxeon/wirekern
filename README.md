@@ -1,6 +1,6 @@
 # postkit
 
-Send posts to **Threads**, **Bluesky**, **Facebook Pages**, and **Instagram** through the official APIs, with credentials that never leave your machine. Rust library + CLI. No scheduler, no inbox, no cloud.
+Send posts to **Threads**, **Bluesky**, **Facebook Pages**, and **Instagram**, plus narrowly typed **WhatsApp Cloud** business messages, through official APIs with credentials that never leave your machine. Rust library + CLI. No scheduler, no hosted inbox, no cloud.
 
 Success is an `Outcome` with `id` and `url`; failure is a `WireError` you can branch on. No `"ok": true`.
 
@@ -35,7 +35,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | | |
 |--|--|
 | **Job** | Send **now** through official APIs. `Outcome.id` + `url`, or `WireError`. |
-| **Not** | Scheduler, inbox, drafts, `--at`, media download/hosting, `serve` |
+| **Not** | Scheduler, persistent inbox, drafts, `--at`, media download/hosting, `serve` |
 | **You hold** | Tokens on disk. BYO Meta app / Bluesky app password. |
 | **Surfaces** | `cargo add postkit` (`Client`) and the `postkit` CLI. HTTP (`pk_live_`) only when a caller cannot exec. |
 
@@ -46,6 +46,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | `instagram` | `publish.image`, `publish.carousel`, `read.media` | Instagram Login paste-code (`instagram_business_basic,instagram_business_content_publish`), long-lived via `ig_exchange_token` | Professional account only; public HTTPS image URLs; carousel 2–10 slides; caption ≤ 2,200 characters; recent-media read is 1–25, first page only |
 | `meta_ads` | `read.metrics`, `read.ad_accounts`, `create.paused_ads`, `create.ad_creative` | OAuth paste-code (`ads_read,ads_management,pages_show_list,pages_manage_ads`), long-lived via `fb_exchange_token` | ≤ 90-day reads; ads are fixed `PAUSED` |
 | `facebook_pages` | `read.pages`, `publish.text`, `publish.image` | OAuth paste-code (`pages_show_list,pages_manage_posts,pages_read_engagement`), long-lived via `fb_exchange_token` | Page ID required per post; local images upload as multipart bytes |
+| `whatsapp_cloud` | `send.reply`, `send.template`, `read.webhook_messages` | Static System User token (`auth whatsapp_cloud --token`), Phone number ID config | Private send requires `--allow-send` + idempotency; inbound messages arrive as signed webhooks |
 
 ### Feature coverage
 
@@ -68,6 +69,17 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 
 Kernel-level, all sites: 0600 vault with atomic writes, CSPRNG OAuth `state`, redirect-following off, per-target results on fan-out.
 
+### WhatsApp Cloud feature coverage
+
+| Capability | Status |
+|------------|--------|
+| Text reply | ✓ Requires recipient WhatsApp ID, inbound `wamid`, idempotency key, and `--allow-send` |
+| Approved template | ✓ Existing approved template; ordered text body variables only |
+| Inbound messages | ✓ Parse a signed raw webhook body; no listener or persistent inbox |
+| Delivery/read status | ✗ Webhook transport/storage is the caller's responsibility |
+| Media, interactive messages, Flows, bulk sends | ✗ roadmap; each requires a separate consent/payload contract |
+| Token refresh | ✗ Static System User token is operator-managed |
+
 ## CLI
 
 ```text
@@ -85,6 +97,8 @@ postkit ads upload-image meta_ads --file hero.png
 postkit ads create-draft meta_ads --manifest launch.paused.json --state launch.state.json
 postkit pages accounts facebook_pages --json
 postkit post facebook_pages --param page_id=123 --text 'Hello from Postkit'
+postkit whatsapp reply --to 60123456789 --reply-to wamid.inbound --text 'Hello' --idempotency reply-1 --allow-send
+postkit whatsapp webhook parse --signature "$X_HUB_SIGNATURE_256" < webhook.json
 postkit whoami <site>
 postkit capabilities [site]
 postkit accounts list|delete
@@ -109,9 +123,9 @@ Fan-out returns one result per target: `{ "results": [ Outcome | WireError, … 
 postkit = { version = "0.1", features = ["vault-file", "threads", "bluesky"] }
 ```
 
-Default features are empty: `vault-file`, `client`, `oauth` (implies `client`), `threads`, `bluesky`, `instagram`, `meta-ads`, `facebook-pages`, `draft` (manifest-orchestrated paused launches). `cargo add postkit --features threads` pulls no Bluesky, no scheduler, nothing you did not ask for.
+Default features are empty: `vault-file`, `client`, `oauth` (implies `client`), `threads`, `bluesky`, `instagram`, `meta-ads`, `facebook-pages`, `whatsapp-cloud`, `draft` (manifest-orchestrated paused launches). `cargo add postkit --features threads` pulls no Bluesky, no scheduler, nothing you did not ask for.
 
-`Client::{publish, whoami, insights, pages, media, auth_start, auth_finish, put_token, run_paused_draft}`. Connectors register on `Registry`. Refresh (Threads/Facebook/Instagram long-lived) runs in `Client`, not in `publish`.
+`Client::{publish, send_whatsapp, whoami, insights, pages, media, auth_start, auth_finish, put_token, run_paused_draft}`. Connectors register on `Registry`. Refresh (Threads/Facebook/Instagram long-lived) runs in `Client`, not in `publish`.
 
 ## Positioning & roadmap
 
@@ -121,7 +135,7 @@ Roadmap, in order: images/video, then HTTP `serve` mode with `pk_live_` keys.
 
 ## Not in this version
 
-`serve` / `pk_live_`, `--listen`, video, schedule, inbox, LinkedIn, Telegram, Mastodon. Add a site: [docs/connectors.md](./docs/connectors.md).
+`serve` / `pk_live_`, `--listen`, video, schedule, persistent inbox, LinkedIn, Telegram, Mastodon. Add a site: [docs/connectors.md](./docs/connectors.md).
 
 Notable changes, release by release: [CHANGELOG.md](./CHANGELOG.md).
 

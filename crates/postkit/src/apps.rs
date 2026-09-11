@@ -46,9 +46,26 @@ impl AppStore for MemoryAppStore {
     }
 }
 
-/// `POSTKIT_THREADS_CLIENT_ID` / `_CLIENT_SECRET` / `_REDIRECT_URI` (site uppercased).
+/// OAuth sites use `POSTKIT_THREADS_CLIENT_ID` / `_CLIENT_SECRET` /
+/// `_REDIRECT_URI` (site uppercased). WhatsApp Cloud is intentionally the
+/// exception: it has a static System User token in the vault and needs only a
+/// phone-number ID plus optional webhook app secret as application config.
 pub fn env_override(site: &Site) -> Option<AppConfig> {
     let key = site.as_str().to_ascii_uppercase().replace('-', "_");
+    if site.as_str() == "whatsapp_cloud" {
+        let phone_number_id = std::env::var("POSTKIT_WHATSAPP_PHONE_NUMBER_ID").ok()?;
+        let app_secret = std::env::var("POSTKIT_WHATSAPP_APP_SECRET").ok();
+        return Some(AppConfig {
+            site: site.clone(),
+            oauth: None,
+            // `AppConfig::Debug` keeps extra opaque: a webhook app secret
+            // must be as safe in diagnostics as the bearer token in vault.
+            extra: serde_json::json!({
+                "phone_number_id": phone_number_id,
+                "app_secret": app_secret,
+            }),
+        });
+    }
     let id = std::env::var(format!("POSTKIT_{key}_CLIENT_ID")).ok()?;
     let secret = std::env::var(format!("POSTKIT_{key}_CLIENT_SECRET")).ok()?;
     let redirect = std::env::var(format!("POSTKIT_{key}_REDIRECT_URI"))

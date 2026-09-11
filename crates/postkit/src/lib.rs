@@ -14,6 +14,8 @@ mod publisher;
 mod registry;
 mod types;
 mod vault;
+#[cfg(feature = "whatsapp-cloud")]
+mod whatsapp;
 
 #[cfg(feature = "vault-file")]
 mod vault_file;
@@ -48,7 +50,8 @@ pub use oauth::{
     feature = "bluesky",
     feature = "meta-ads",
     feature = "facebook-pages",
-    feature = "instagram"
+    feature = "instagram",
+    feature = "whatsapp-cloud"
 ))]
 pub mod connectors;
 
@@ -74,6 +77,8 @@ pub use insights::{
 pub use media::{MediaQuery, MediaReply, PublishedMedia, DEFAULT_MEDIA_LIMIT, MAX_MEDIA_LIMIT};
 pub use pages::{PageAccount, PagesReply};
 pub use policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};
+#[cfg(feature = "whatsapp-cloud")]
+pub use policy::{AllowWhatsAppSendsPolicy, NoWhatsAppSendsPolicy, WhatsAppAction, WhatsAppPolicy};
 pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 pub use registry::Registry;
 pub use types::{
@@ -81,6 +86,10 @@ pub use types::{
     Limits, OAuthApp, Outcome, PostRequest, Probe, Site, WhoAmI, USER_AGENT,
 };
 pub use vault::{MemoryVault, Vault};
+#[cfg(feature = "whatsapp-cloud")]
+pub use whatsapp::{
+    InboundMessage, InboundMessages, WhatsAppMessage, WhatsAppSendRequest, MAX_REPLY_TEXT,
+};
 
 #[cfg(feature = "vault-file")]
 pub use vault_file::{FileAppStore, FileVault};

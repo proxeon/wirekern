@@ -6,15 +6,15 @@ use postkit::connectors::instagram::MAX_CAROUSEL_IMAGES;
 use postkit::connectors::threads::validate_text;
 use postkit::{
     app_source, extract_code, valid_name, verify_state, AccountKey, AdAccount, AdEntity,
-    AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest, AdReviewWait, AppConfig, AppStore,
-    AttributionWindow, AuthReply, BidStrategy, Body, Breakdown, CampaignObjective, Client,
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, DraftStep, Error,
-    FileAppStore, FileDraftStore, FileVault, Image, InsightRow, InsightsLevel, InsightsQuery,
-    Intent, LinkAdCreative, LinkCallToAction, MediaQuery, Metric, OAuthApp, PausedAd,
-    PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
+    AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest, AdReviewWait, AllowWhatsAppSendsPolicy,
+    AppConfig, AppStore, AttributionWindow, AuthReply, BidStrategy, Body, Breakdown,
+    CampaignObjective, Client, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
+    CreatedAdCreative, CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply,
+    DraftStep, Error, FileAppStore, FileDraftStore, FileVault, Image, InsightRow, InsightsLevel,
+    InsightsQuery, Intent, LinkAdCreative, LinkCallToAction, MediaQuery, Metric, OAuthApp,
+    PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
     PostRequest, PublishedMedia, Registry, RunPausedDraft, Site, UploadAdImageRequest,
-    UploadedAdImage, Vault, DEFAULT_MEDIA_LIMIT,
+    UploadedAdImage, Vault, WhatsAppMessage, WhatsAppSendRequest, DEFAULT_MEDIA_LIMIT,
 };
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
@@ -143,6 +143,9 @@ enum Commands {
     Accounts(AccountsCmd),
     #[command(subcommand)]
     Apps(AppsCmd),
+    /// WhatsApp Cloud replies, approved templates, and signed webhook parsing.
+    #[command(name = "whatsapp", subcommand)]
+    WhatsApp(WhatsAppCmd),
 }
 
 #[derive(Subcommand, Debug)]
@@ -361,6 +364,73 @@ enum AppsCmd {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum WhatsAppCmd {
+    /// Store the sender phone-number ID and optional webhook app secret.
+    /// The permanent System User token is added separately with
+    /// `auth whatsapp_cloud --token …` and never enters this config file.
+    Configure {
+        #[arg(long)]
+        phone_number_id: String,
+        /// Needed only by `whatsapp webhook parse`; it is never printed.
+        #[arg(long)]
+        app_secret: Option<String>,
+    },
+    /// Reply with text to an inbound message. Meta enforces its service
+    /// window; `--allow-send` acknowledges this is a real private message.
+    Reply {
+        /// WhatsApp ID, digits only with country code, no leading `+`.
+        #[arg(long)]
+        to: String,
+        /// The inbound `wamid` this reply is attached to.
+        #[arg(long = "reply-to")]
+        reply_to_message_id: String,
+        #[arg(long)]
+        text: String,
+        /// Required to prevent duplicate private sends on a confirmed retry.
+        #[arg(long)]
+        idempotency: String,
+        /// Explicitly authorize this one private, potentially chargeable send.
+        #[arg(long)]
+        allow_send: bool,
+    },
+    /// Send one existing Meta-approved template with ordered body variables.
+    /// It cannot create, edit, or submit a template for approval.
+    Template {
+        /// WhatsApp ID, digits only with country code, no leading `+`.
+        #[arg(long)]
+        to: String,
+        /// Existing approved template name, e.g. `order_update`.
+        #[arg(long)]
+        name: String,
+        /// Meta locale code, e.g. `en_US` or `ms`.
+        #[arg(long)]
+        language: String,
+        /// Ordered text substitution for the template body; repeat per value.
+        #[arg(long = "body-param", action = clap::ArgAction::Append)]
+        body_parameters: Vec<String>,
+        /// Required to prevent duplicate private sends on a confirmed retry.
+        #[arg(long)]
+        idempotency: String,
+        /// Explicitly authorize this one private, potentially chargeable send.
+        #[arg(long)]
+        allow_send: bool,
+    },
+    /// Parse one signed raw Cloud API webhook body from stdin. This does not
+    /// run an HTTP listener or acknowledge Meta's webhook delivery.
+    #[command(subcommand)]
+    Webhook(WhatsAppWebhookCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum WhatsAppWebhookCmd {
+    Parse {
+        /// The request's exact `X-Hub-Signature-256` value.
+        #[arg(long)]
+        signature: String,
+    },
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -417,6 +487,32 @@ async fn run(cli: Cli) -> Result<(), i32> {
             check_name(&site, json)?;
             let apps = FileAppStore::new(&home).map_err(|e| fail(&e, json))?;
             let cfg = apps.get(&Site::new(&site)).map_err(|e| fail(&e, json))?;
+            if site == "whatsapp_cloud" {
+                let phone_number_id = cfg
+                    .extra
+                    .get("phone_number_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let webhook_signing = cfg
+                    .extra
+                    .get("app_secret")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|secret| !secret.is_empty());
+                let source = app_source(&Site::new(&site));
+                if json {
+                    emit_raw(&serde_json::json!({
+                        "site": site,
+                        "source": source,
+                        "phone_number_id": phone_number_id,
+                        "webhook_signing": webhook_signing,
+                    }));
+                } else {
+                    human_line(format!(
+                        "site=whatsapp_cloud source={source} phone_number_id={phone_number_id} webhook_signing={webhook_signing} app_secret=[redacted]"
+                    ));
+                }
+                return Ok(());
+            }
             let id = cfg
                 .oauth
                 .as_ref()
@@ -476,8 +572,39 @@ async fn run(cli: Cli) -> Result<(), i32> {
             }
             Ok(())
         }
+        Commands::WhatsApp(WhatsAppCmd::Configure {
+            phone_number_id,
+            app_secret,
+        }) => {
+            let cfg =
+                whatsapp_app_config(phone_number_id, app_secret).map_err(|e| fail(&e, json))?;
+            let apps = FileAppStore::new(&home).map_err(|e| fail(&e, json))?;
+            apps.put(&cfg).map_err(|e| fail(&e, json))?;
+            if app_source(&Site::new("whatsapp_cloud")) == "env" {
+                eprintln!(
+                    "note: POSTKIT_WHATSAPP_PHONE_NUMBER_ID is set and takes precedence over apps/whatsapp_cloud.json"
+                );
+            }
+            let phone_number_id = cfg.extra["phone_number_id"]
+                .as_str()
+                .expect("validated phone id");
+            if json {
+                emit_raw(&serde_json::json!({
+                    "site": "whatsapp_cloud",
+                    "phone_number_id": phone_number_id,
+                    "webhook_signing": cfg.extra["app_secret"].is_string(),
+                }));
+            } else {
+                eprintln!(
+                    "configured whatsapp_cloud sender {phone_number_id}; webhook signing={}",
+                    cfg.extra["app_secret"].is_string()
+                );
+            }
+            Ok(())
+        }
         other => {
-            let client = make_client(&home).map_err(|e| fail(&e, json))?;
+            let allow_whatsapp_send = whatsapp_send_allowed(&other);
+            let client = make_client(&home, allow_whatsapp_send).map_err(|e| fail(&e, json))?;
             dispatch(client, &home, other, json, account, deadline).await
         }
     }
@@ -492,6 +619,81 @@ async fn dispatch(
     deadline: Deadline,
 ) -> Result<(), i32> {
     match cmd {
+        Commands::WhatsApp(WhatsAppCmd::Reply {
+            to,
+            reply_to_message_id,
+            text,
+            idempotency,
+            ..
+        }) => {
+            let request = WhatsAppSendRequest {
+                message: WhatsAppMessage::Reply {
+                    to,
+                    reply_to_message_id,
+                    text,
+                },
+                idempotency_key: idempotency,
+            };
+            one_whatsapp_send(
+                &client,
+                &AccountKey::new("whatsapp_cloud", &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::WhatsApp(WhatsAppCmd::Template {
+            to,
+            name,
+            language,
+            body_parameters,
+            idempotency,
+            ..
+        }) => {
+            let request = WhatsAppSendRequest {
+                message: WhatsAppMessage::Template {
+                    to,
+                    name,
+                    language,
+                    body_parameters,
+                },
+                idempotency_key: idempotency,
+            };
+            one_whatsapp_send(
+                &client,
+                &AccountKey::new("whatsapp_cloud", &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::WhatsApp(WhatsAppCmd::Webhook(WhatsAppWebhookCmd::Parse { signature })) => {
+            let raw = read_whatsapp_webhook_stdin(json)?;
+            let apps = FileAppStore::new(home).map_err(|error| fail(&error, json))?;
+            let app = apps
+                .get(&Site::new("whatsapp_cloud"))
+                .map_err(|error| fail(&error, json))?;
+            let reply = postkit::connectors::whatsapp_cloud::WhatsAppCloud::parse_signed_webhook(
+                &app, &signature, &raw,
+            )
+            .map_err(|error| fail(&error, json))?;
+            if json {
+                emit_raw(&serde_json::to_value(&reply).expect("webhook reply serializes"));
+            } else {
+                // Do not echo phone numbers or customer text to a terminal by
+                // default. Scripts that explicitly need the PII use --json.
+                human_line(format!(
+                    "whatsapp_cloud verified webhook: {} inbound message(s)",
+                    reply.messages.len()
+                ));
+            }
+            Ok(())
+        }
+        // `Configure` is handled before a Client is constructed because it
+        // changes the app configuration that `auth --token` must validate.
+        Commands::WhatsApp(WhatsAppCmd::Configure { .. }) => unreachable!("handled in run"),
         Commands::Media(MediaCmd::List { site, limit }) => {
             let key = AccountKey::new(&site, &account);
             match client.media(&key, MediaQuery { limit }, deadline).await {
@@ -1569,6 +1771,32 @@ async fn one_post(
     }
 }
 
+/// A successful Cloud API response is only acceptance: the customer may not
+/// receive or read it, and final status arrives on the signed webhook. Keep
+/// that distinction visible in terminal mode while preserving `Outcome` JSON
+/// for scripts that correlate the returned `wamid`.
+async fn one_whatsapp_send(
+    client: &Client,
+    key: &AccountKey,
+    request: WhatsAppSendRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.send_whatsapp(key, request, deadline).await {
+        Ok(outcome) => {
+            emit_ok(&outcome, json, || {
+                format!(
+                    "{} {} accepted by Meta; delivery status arrives via webhook",
+                    outcome.site,
+                    outcome.id.as_deref().unwrap_or("-")
+                )
+            });
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
 /// Paused ads have their own result type instead of being rendered as social
 /// posts. The status is shown prominently so an operator can verify the
 /// safety invariant in scripts and terminal output alike.
@@ -1784,7 +2012,7 @@ fn parse_params(param: &[String], json: bool) -> Result<serde_json::Value, i32> 
     Ok(serde_json::Value::Object(map))
 }
 
-fn make_client(home: &std::path::Path) -> Result<Client, Error> {
+fn make_client(home: &std::path::Path, allow_whatsapp_send: bool) -> Result<Client, Error> {
     let mut registry = Registry::new();
     registry.register(Arc::new(postkit::connectors::threads::Threads::new()?));
     registry.register(Arc::new(postkit::connectors::bluesky::Bluesky::new()?));
@@ -1793,9 +2021,103 @@ fn make_client(home: &std::path::Path) -> Result<Client, Error> {
         postkit::connectors::facebook_pages::FacebookPages::new()?,
     ));
     registry.register(Arc::new(postkit::connectors::instagram::Instagram::new()?));
+    registry.register(Arc::new(
+        postkit::connectors::whatsapp_cloud::WhatsAppCloud::new()?,
+    ));
     let vault = Arc::new(FileVault::new(home)?);
     let apps = Arc::new(FileAppStore::new(home)?);
-    Ok(Client::new(registry, vault, apps))
+    if allow_whatsapp_send {
+        // The flag is intentionally inspected before client construction:
+        // the default client has a deny-all WhatsApp policy, so a new command
+        // cannot accidentally become a real customer-message write.
+        Ok(Client::with_whatsapp_policy(
+            registry,
+            vault,
+            apps,
+            Arc::new(AllowWhatsAppSendsPolicy),
+        ))
+    } else {
+        Ok(Client::new(registry, vault, apps))
+    }
+}
+
+/// The only commands permitted to install the allowing policy are the two
+/// typed sends, and each still requires its own explicit `--allow-send`.
+/// Webhook parsing, configuration and every generic social post keep the
+/// deny-by-default policy.
+fn whatsapp_send_allowed(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::WhatsApp(WhatsAppCmd::Reply {
+            allow_send: true,
+            ..
+        }) | Commands::WhatsApp(WhatsAppCmd::Template {
+            allow_send: true,
+            ..
+        })
+    )
+}
+
+/// The parser receives exact raw request bytes, so cap stdin before HMAC or
+/// JSON work. This CLI is an adapter tool, not an unbounded webhook server.
+fn read_whatsapp_webhook_stdin(json: bool) -> Result<Vec<u8>, i32> {
+    const LIMIT: usize = postkit::connectors::whatsapp_cloud::MAX_WEBHOOK_BYTES;
+    let mut raw = Vec::new();
+    io::stdin()
+        .lock()
+        .take((LIMIT + 1) as u64)
+        .read_to_end(&mut raw)
+        .map_err(|_| {
+            fail(
+                &Error::InvalidQuery {
+                    site: Site::new("whatsapp_cloud"),
+                    reason: "webhook_body_unreadable".into(),
+                },
+                json,
+            )
+        })?;
+    if raw.len() > LIMIT {
+        return Err(fail(
+            &Error::InvalidQuery {
+                site: Site::new("whatsapp_cloud"),
+                reason: "webhook_body_too_large".into(),
+            },
+            json,
+        ));
+    }
+    Ok(raw)
+}
+
+fn whatsapp_app_config(
+    phone_number_id: String,
+    app_secret: Option<String>,
+) -> Result<AppConfig, Error> {
+    if phone_number_id.is_empty()
+        || phone_number_id.len() > 32
+        || !phone_number_id.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(Error::InvalidQuery {
+            site: Site::new("whatsapp_cloud"),
+            reason: "phone_number_id_invalid".into(),
+        });
+    }
+    if app_secret.as_deref().is_some_and(str::is_empty) {
+        return Err(Error::InvalidQuery {
+            site: Site::new("whatsapp_cloud"),
+            reason: "webhook_app_secret_empty".into(),
+        });
+    }
+    Ok(AppConfig {
+        site: Site::new("whatsapp_cloud"),
+        oauth: None,
+        // The app secret is required only to authenticate inbound event
+        // parsing. FileAppStore writes config owner-only, and Debug/apps show
+        // never render `extra`.
+        extra: serde_json::json!({
+            "phone_number_id": phone_number_id,
+            "app_secret": app_secret,
+        }),
+    })
 }
 
 /// The optional, additive parts of an insights query. Keeping them together
@@ -2442,6 +2764,69 @@ mod tests {
         assert!(
             matches!(cli.command, Commands::Pages(PagesCmd::Accounts { site }) if site == "facebook_pages")
         );
+    }
+
+    #[test]
+    fn whatsapp_commands_require_explicit_send_acknowledgement_and_idempotency() {
+        let allowed = Cli::try_parse_from([
+            "postkit",
+            "whatsapp",
+            "reply",
+            "--to",
+            "60123456789",
+            "--reply-to",
+            "wamid.inbound",
+            "--text",
+            "Terima kasih",
+            "--idempotency",
+            "reply-1",
+            "--allow-send",
+        ])
+        .unwrap();
+        assert!(whatsapp_send_allowed(&allowed.command));
+        assert!(matches!(
+            allowed.command,
+            Commands::WhatsApp(WhatsAppCmd::Reply { idempotency, .. }) if idempotency == "reply-1"
+        ));
+
+        let unacknowledged = Cli::try_parse_from([
+            "postkit",
+            "whatsapp",
+            "template",
+            "--to",
+            "60123456789",
+            "--name",
+            "order_update",
+            "--language",
+            "en_US",
+            "--idempotency",
+            "template-1",
+        ])
+        .unwrap();
+        assert!(!whatsapp_send_allowed(&unacknowledged.command));
+
+        // Clap makes idempotency non-optional: a private send cannot silently
+        // fall back to the less-safe no-ledger behavior of generic posts.
+        assert!(Cli::try_parse_from([
+            "postkit",
+            "whatsapp",
+            "reply",
+            "--to",
+            "60123456789",
+            "--reply-to",
+            "wamid.inbound",
+            "--text",
+            "hi",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn whatsapp_config_is_phone_only_and_never_needs_oauth_fields() {
+        let cfg = whatsapp_app_config("123456789".into(), Some("app-secret".into())).unwrap();
+        assert!(cfg.oauth.is_none());
+        assert_eq!(cfg.extra["phone_number_id"].as_str(), Some("123456789"));
+        assert!(whatsapp_app_config("+6012".into(), None).is_err());
     }
 
     #[test]

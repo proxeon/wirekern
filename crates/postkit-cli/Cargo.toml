@@ -16,7 +16,7 @@ name = "postkit"
 path = "src/main.rs"
 
 [dependencies]
-postkit = { version = "0.1.0", path = "../postkit", features = ["vault-file", "threads", "bluesky", "meta-ads", "facebook-pages", "instagram", "draft"] }
+postkit = { version = "0.1.0", path = "../postkit", features = ["vault-file", "threads", "bluesky", "meta-ads", "facebook-pages", "instagram", "whatsapp-cloud", "draft"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }

@@ -8,3 +8,5 @@ pub mod instagram;
 pub mod meta_ads;
 #[cfg(feature = "threads")]
 pub mod threads;
+#[cfg(feature = "whatsapp-cloud")]
+pub mod whatsapp_cloud;

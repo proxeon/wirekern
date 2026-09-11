@@ -155,9 +155,43 @@ call always remains bounded.
 
 Implemented: OAuth, long-lived token refresh, identity lookup, one
 public-image feed post, a 2–10-image carousel (both with optional caption),
-and a bounded first-page read of that account's published media. Not
-implemented: local image upload/hosting, video/Reels or mixed-media carousels,
-Stories, per-slide alt text, comments, insights, multi-account discovery, Page
-selection, editing/deletion, scheduling, or an honest `--dry-run`. Each has a
-different API shape and visible side effect, so it needs a separate reviewed
-contract before it is added.
+and a bounded first-page read of that account's published media.
+
+The following gaps are intentional. They are not implied by a generic
+`post` command: each needs its own input contract, safety review, and tests
+before Postkit can claim to support it.
+
+1. **Video and Reels.** There is no `--video` input, Reel/video container,
+   resumable-upload flow, cover selection, `share_to_feed` control, or
+   video-specific processing/retry contract.
+2. **Mixed-media carousels.** A carousel accepts only 2–10 public HTTPS images;
+   it cannot mix image and video slides.
+3. **Local media upload or hosting.** Images must already be on a public HTTPS
+   URL. Postkit does not upload local media to Meta or provide temporary
+   hosting.
+4. **Stories.** No image or video Story publishing is exposed.
+5. **Post management.** Existing posts cannot be edited, deleted, archived, or
+   have their comment settings changed.
+6. **Comments and moderation.** There is no comment listing, reply, hide,
+   delete, private-reply, or mention workflow.
+7. **Insights.** Account and per-media metrics such as reach, impressions,
+   engagement, saves, follower activity, and profile activity are absent.
+8. **Richer media reads and pagination.** `media list` reads only the first
+   page and a small metadata set; it does not expose cursors or retrieve media
+   children, metric fields, or other rich metadata.
+9. **Rich publishing metadata.** There are no location, people,
+   collaborator, product, branded-content, music/audio, or reviewed
+   accessibility/alt-text fields.
+10. **Scheduling, drafts, and approvals.** A supported post publishes now;
+    Postkit has no editable drafts, schedule, approval queue, or publish-job
+    history.
+11. **Operational controls.** There is no content-publishing-limit surface,
+    webhook receiver, durable resume of interrupted processing, or job
+    monitoring.
+12. **Broader account management.** The connector uses the stored authorized
+    Instagram account. It has no multi-account discovery, explicit account
+    selection, or Facebook Page-selection workflow.
+
+The highest-value next increment is **Reels/video publishing**. It can reuse
+the existing create-container → wait-for-processing → publish architecture,
+while adding a deliberately typed video source and validation contract.

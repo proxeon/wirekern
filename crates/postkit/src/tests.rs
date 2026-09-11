@@ -13,6 +13,8 @@ use crate::insights::{
 };
 use crate::media::{MediaQuery, MediaReply, PublishedMedia};
 use crate::pages::{PageAccount, PagesReply};
+#[cfg(feature = "whatsapp-cloud")]
+use crate::policy::AllowWhatsAppSendsPolicy;
 use crate::policy::{AdsAction, AdsPolicy};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
@@ -21,6 +23,8 @@ use crate::types::{
     WhoAmI,
 };
 use crate::vault::{MemoryVault, Vault};
+#[cfg(feature = "whatsapp-cloud")]
+use crate::whatsapp::{WhatsAppMessage, WhatsAppSendRequest};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -53,6 +57,8 @@ struct MockPub {
     review_status_reads: AtomicUsize,
     page_reads: AtomicUsize,
     media_reads: AtomicUsize,
+    #[cfg(feature = "whatsapp-cloud")]
+    whatsapp_sends: AtomicUsize,
     review_status_pending_reads: usize,
 }
 
@@ -79,6 +85,8 @@ impl MockPub {
             review_status_reads: AtomicUsize::new(0),
             page_reads: AtomicUsize::new(0),
             media_reads: AtomicUsize::new(0),
+            #[cfg(feature = "whatsapp-cloud")]
+            whatsapp_sends: AtomicUsize::new(0),
             review_status_pending_reads: 0,
         }
     }
@@ -139,6 +147,15 @@ impl MockPub {
             ..Self::text(site)
         }
     }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    fn whatsapp(site: &str) -> Self {
+        Self {
+            caps: vec![Capability::SendReply, Capability::SendTemplate],
+            auth_kind: AuthKind::StaticToken,
+            ..Self::text(site)
+        }
+    }
 }
 
 #[async_trait]
@@ -196,6 +213,23 @@ impl Publisher for MockPub {
             site: intent.site,
             id: Some(format!("id-{label}")),
             url: Some(format!("https://example.test/{label}")),
+            limits: None,
+        })
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    async fn send_whatsapp(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _request: &WhatsAppSendRequest,
+        _deadline: Deadline,
+    ) -> Result<Outcome, Error> {
+        let index = self.whatsapp_sends.fetch_add(1, Ordering::SeqCst);
+        Ok(Outcome {
+            site: self.site.clone(),
+            id: Some(format!("wamid-{index}")),
+            url: None,
             limits: None,
         })
     }
@@ -1062,6 +1096,133 @@ async fn put_token_refused_for_app_password_sites() {
     );
 }
 
+#[cfg(feature = "whatsapp-cloud")]
+fn whatsapp_request(key: &str) -> WhatsAppSendRequest {
+    WhatsAppSendRequest {
+        message: WhatsAppMessage::Reply {
+            to: "60123456789".into(),
+            reply_to_message_id: "wamid.inbound".into(),
+            text: "Terima kasih".into(),
+        },
+        idempotency_key: key.into(),
+    }
+}
+
+/// A static System User token must still be verified before it is saved, but
+/// unlike OAuth it has no refresh token or connector target hidden in `extra`.
+#[cfg(feature = "whatsapp-cloud")]
+#[tokio::test]
+async fn static_token_bootstrap_uses_redacted_bot_token_shape() {
+    let mut registry = Registry::new();
+    registry.register(Arc::new(MockPub::whatsapp("whatsapp_cloud")));
+    let vault = Arc::new(MemoryVault::new());
+    let client = Client::new(registry, vault.clone(), Arc::new(MemoryAppStore::new()));
+    let key = AccountKey::new("whatsapp_cloud", "default");
+    client.put_token(&key, "system-user-token").await.unwrap();
+    assert!(
+        matches!(vault.get(&key).unwrap(), AccountCreds::BotToken { token } if token == "system-user-token")
+    );
+}
+
+/// Policy is checked before the vault: a caller missing `--allow-send` learns
+/// the safe remediation without revealing whether an account exists.
+#[cfg(feature = "whatsapp-cloud")]
+#[tokio::test]
+async fn whatsapp_default_policy_denies_before_vault_or_connector() {
+    let publisher = Arc::new(MockPub::whatsapp("whatsapp_cloud"));
+    let mut registry = Registry::new();
+    registry.register(publisher.clone());
+    let client = Client::new(
+        registry,
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let error = client
+        .send_whatsapp(
+            &AccountKey::new("whatsapp_cloud", "default"),
+            whatsapp_request("reply-1"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::PolicyDenied { action, reason, .. }
+        if action == "send_whatsapp_reply" && reason == "explicit_whatsapp_send_required"));
+    assert_eq!(publisher.whatsapp_sends.load(Ordering::SeqCst), 0);
+}
+
+/// The explicit policy permits the typed send and shares Client's atomic
+/// outcome ledger: retrying a confirmed private message never calls Meta a
+/// second time with the same key.
+#[cfg(feature = "whatsapp-cloud")]
+#[tokio::test]
+async fn whatsapp_allowed_send_replays_confirmed_idempotency_outcome() {
+    let publisher = Arc::new(MockPub::whatsapp("whatsapp_cloud"));
+    let mut registry = Registry::new();
+    registry.register(publisher.clone());
+    let vault = Arc::new(MemoryVault::new());
+    let client = Client::with_whatsapp_policy(
+        registry,
+        vault.clone(),
+        Arc::new(MemoryAppStore::new()),
+        Arc::new(AllowWhatsAppSendsPolicy),
+    );
+    let key = AccountKey::new("whatsapp_cloud", "default");
+    vault
+        .put(
+            &key,
+            &AccountCreds::BotToken {
+                token: "system-user-token".into(),
+            },
+        )
+        .unwrap();
+    let first = client
+        .send_whatsapp(&key, whatsapp_request("reply-1"), Deadline::from_secs(30))
+        .await
+        .unwrap();
+    let replay = client
+        .send_whatsapp(&key, whatsapp_request("reply-1"), Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(first.id, replay.id);
+    assert_eq!(publisher.whatsapp_sends.load(Ordering::SeqCst), 1);
+}
+
+#[cfg(feature = "whatsapp-cloud")]
+#[tokio::test]
+async fn whatsapp_missing_vault_account_releases_its_idempotency_claim() {
+    let publisher = Arc::new(MockPub::whatsapp("whatsapp_cloud"));
+    let mut registry = Registry::new();
+    registry.register(publisher.clone());
+    let vault = Arc::new(MemoryVault::new());
+    let client = Client::with_whatsapp_policy(
+        registry,
+        vault.clone(),
+        Arc::new(MemoryAppStore::new()),
+        Arc::new(AllowWhatsAppSendsPolicy),
+    );
+    let key = AccountKey::new("whatsapp_cloud", "default");
+    let first = client
+        .send_whatsapp(&key, whatsapp_request("reply-1"), Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(matches!(first, Error::UnknownAccount(_)));
+    vault
+        .put(
+            &key,
+            &AccountCreds::BotToken {
+                token: "system-user-token".into(),
+            },
+        )
+        .unwrap();
+    // A leaked claim would return IdempotencyInFlight here instead of making
+    // the first valid send after the credential repair.
+    client
+        .send_whatsapp(&key, whatsapp_request("reply-1"), Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(publisher.whatsapp_sends.load(Ordering::SeqCst), 1);
+}
+
 /// 023: while one publish under a key is in flight, a second caller with
 /// the same key gets a distinct transient error and the connector is hit
 /// exactly once. The gate holds the first publish inside the claim window
@@ -1309,6 +1470,18 @@ async fn secrets_debug_redacted() {
     let d = format!("{creds:?}");
     assert!(!d.contains("secret-token"));
     assert!(d.contains("[redacted]"));
+}
+
+#[test]
+fn app_config_debug_keeps_connector_secret_extensions_opaque() {
+    let config = AppConfig {
+        site: Site::new("whatsapp_cloud"),
+        oauth: None,
+        extra: serde_json::json!({ "app_secret": "webhook-secret" }),
+    };
+    let rendered = format!("{config:?}");
+    assert!(!rendered.contains("webhook-secret"));
+    assert!(rendered.contains("[opaque]"));
 }
 
 fn insights_query(from: &str, to: &str) -> InsightsQuery {

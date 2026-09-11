@@ -76,6 +76,59 @@ impl AdsPolicy for PausedOnlyAdsPolicy {
     }
 }
 
+/// Every private WhatsApp send receives its own decision. A message is not a
+/// public post: templates can be billable and even replies must obey Meta's
+/// customer-service rules, so falling through to allow would be unsafe.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WhatsAppAction {
+    SendReply,
+    SendTemplate,
+}
+
+impl WhatsAppAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SendReply => "send_whatsapp_reply",
+            Self::SendTemplate => "send_whatsapp_template",
+        }
+    }
+}
+
+/// Policy for outbound WhatsApp Cloud messages. It is independent of
+/// `AdsPolicy`: Meta Ads spend and customer messaging have different risk and
+/// approval models, and an application should be able to choose each one.
+pub trait WhatsAppPolicy: Send + Sync {
+    fn authorize(&self, site: &Site, action: WhatsAppAction) -> Result<(), Error>;
+}
+
+/// Production default: no private message leaves the process merely because
+/// a caller registered a WhatsApp connector. The CLI replaces this only for a
+/// command carrying its explicit `--allow-send` acknowledgement.
+#[derive(Default)]
+pub struct NoWhatsAppSendsPolicy;
+
+impl WhatsAppPolicy for NoWhatsAppSendsPolicy {
+    fn authorize(&self, site: &Site, action: WhatsAppAction) -> Result<(), Error> {
+        Err(Error::PolicyDenied {
+            site: site.clone(),
+            action: action.as_str().into(),
+            reason: "explicit_whatsapp_send_required".into(),
+        })
+    }
+}
+
+/// Opt-in policy for callers that have made their own consent, template and
+/// billing decision. It does not claim Meta will deliver the message; the
+/// signed status webhook is still the source of the final delivery state.
+#[derive(Default)]
+pub struct AllowWhatsAppSendsPolicy;
+
+impl WhatsAppPolicy for AllowWhatsAppSendsPolicy {
+    fn authorize(&self, _site: &Site, _action: WhatsAppAction) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +148,18 @@ mod tests {
         assert!(
             matches!(err, Error::PolicyDenied { action, reason, .. } if action == "activate" && reason == "paused_only")
         );
+    }
+
+    #[test]
+    fn whatsapp_sends_are_deny_by_default_and_explicitly_opt_in() {
+        let site = Site::new("whatsapp_cloud");
+        let denied = NoWhatsAppSendsPolicy
+            .authorize(&site, WhatsAppAction::SendTemplate)
+            .unwrap_err();
+        assert!(matches!(denied, Error::PolicyDenied { action, reason, .. }
+            if action == "send_whatsapp_template" && reason == "explicit_whatsapp_send_required"));
+        assert!(AllowWhatsAppSendsPolicy
+            .authorize(&site, WhatsAppAction::SendReply)
+            .is_ok());
     }
 }

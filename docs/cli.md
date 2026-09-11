@@ -54,10 +54,14 @@ postkit auth bluesky --account you.bsky.social --password 'xxxx-xxxx-xxxx-xxxx'
 postkit auth meta_ads                        # same paste-code flow, ads_read + ads_management
 postkit auth facebook_pages                  # Page scopes; re-authorize after adding this connector
 postkit auth instagram                        # Instagram Login for one professional account
+postkit auth whatsapp_cloud --token 'system-user-token' # static System User token
 ```
 
 - `--token` and `--code` are exclusive. `--password` cannot mix with either. `--listen` is a stub (paste-code is the path).
-- `--token` is an OAuth-site bootstrap (Threads). App-password sites (Bluesky) refuse it with `token_bootstrap_unsupported`.
+- `--token` bootstraps a connector that explicitly declares a bearer-token
+  auth flow: OAuth sites such as Threads, or WhatsApp Cloud's static System
+  User token. App-password sites (Bluesky) refuse it with
+  `token_bootstrap_unsupported`.
 - Threads with no flags: `auth_start`, `open: …` on stderr, waits for paste. Non-TTY prints `then: postkit auth threads --code <code>` and exits. `--json` prints `WhoAmI` only (no token).
 - Threads paste-code needs `apps set` first (or `POSTKIT_THREADS_CLIENT_ID` / `_CLIENT_SECRET` / `_REDIRECT_URI` in the **process** env). Redirect URI must match the Meta dashboard chip **byte-for-byte**.
 - The pasted redirect URL must echo the `state` the CLI generated: mismatched or missing `state` is rejected (`state_mismatch` / `missing_state`). The two-invocation `--code` path cannot verify `state` — paste the redirected URL unedited.
@@ -78,6 +82,11 @@ postkit auth instagram                        # Instagram Login for one professi
   with an optional 2,200-character parent caption. There is no Page target
   parameter or text-only post. See the
   [Instagram runbook](./instagram/README.md).
+- `whatsapp_cloud` is not OAuth: configure the numeric sender with
+  `postkit whatsapp configure --phone-number-id … [--app-secret …]`, then use
+  `auth whatsapp_cloud --token …`. The one-time token bootstrap verifies
+  `whoami` before storing the static token. See the
+  [WhatsApp Cloud runbook](./whatsapp-cloud/README.md).
 
 ## Instagram image carousel
 
@@ -116,6 +125,44 @@ postkit whoami bluesky --account you.bsky.social --json
 postkit capabilities --json
 # {"bluesky":["publish.text"],"meta_ads":["read.metrics","read.ad_accounts","create.paused_ads","create.ad_creative"],"threads":["publish.text"]}
 ```
+
+## `whatsapp` (WhatsApp Cloud)
+
+```text
+postkit whatsapp configure --phone-number-id <numeric-id> [--app-secret <Meta-app-secret>]
+postkit auth whatsapp_cloud --token <System-User-token>
+postkit whoami whatsapp_cloud --json
+postkit whatsapp reply --to <digits> --reply-to <inbound-wamid> --text <text> --idempotency <key> --allow-send
+postkit whatsapp template --to <digits> --name <approved_name> --language <locale> [--body-param <value>]... --idempotency <key> --allow-send
+postkit whatsapp webhook parse --signature <X-Hub-Signature-256> < raw-webhook.json
+```
+
+`configure` stores the Phone number ID and optional webhook app secret in the
+owner-only app configuration; `auth` separately validates and stores the
+static System User token in the vault. The config secret is never displayed by
+`apps show`. Environment values `POSTKIT_WHATSAPP_PHONE_NUMBER_ID` and
+`POSTKIT_WHATSAPP_APP_SECRET` override the file.
+
+`reply` and `template` are intentionally not `post` subcommands. They are
+private, recipient-specific writes: both require an idempotency key and exact
+`--allow-send` acknowledgement. The default `WhatsAppPolicy` refuses before
+the vault/network path if that flag is absent. A success means Meta accepted
+the message and returned a `wamid`; it does **not** mean delivered or read.
+Use signed status webhooks for that state.
+
+`reply` only sends plain text and requires a WhatsApp ID (digits with country
+code, no `+`) and the `wamid` of a known inbound message. `template` sends an
+already approved lowercase template name with a language code and optional
+ordered text body substitutions; it cannot create templates, accept arbitrary
+JSON components, or bypass Meta's window/consent/pricing policy.
+
+`webhook parse` reads one bounded raw body from stdin and verifies the exact
+`sha256=` HMAC header before JSON parsing. It also refuses a callback whose
+Phone number ID differs from the configured sender. Human output reports only
+the message count; `--json` emits the explicit caller's inbound PII. This is
+an adapter for your HTTPS endpoint, **not** a listener, challenge responder,
+acknowledger, status store, or inbox. Full setup and limitations: [WhatsApp
+Cloud runbook](./whatsapp-cloud/README.md).
 
 ## `pages` (facebook_pages)
 

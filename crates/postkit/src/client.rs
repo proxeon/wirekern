@@ -11,12 +11,16 @@ use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
 use crate::media::{MediaQuery, MediaReply};
 use crate::pages::PagesReply;
 use crate::policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};
+#[cfg(feature = "whatsapp-cloud")]
+use crate::policy::{NoWhatsAppSendsPolicy, WhatsAppAction, WhatsAppPolicy};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::Registry;
 use crate::types::{
     AccountCreds, AccountKey, AppConfig, Capability, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
 };
 use crate::vault::{Claim, Vault};
+#[cfg(feature = "whatsapp-cloud")]
+use crate::whatsapp::{WhatsAppMessage, WhatsAppSendRequest};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,6 +35,8 @@ pub struct Client {
     vault: Arc<dyn Vault>,
     apps: Arc<dyn AppStore>,
     ads_policy: Arc<dyn AdsPolicy>,
+    #[cfg(feature = "whatsapp-cloud")]
+    whatsapp_policy: Arc<dyn WhatsAppPolicy>,
 }
 
 impl Client {
@@ -52,6 +58,28 @@ impl Client {
             vault,
             apps,
             ads_policy,
+            #[cfg(feature = "whatsapp-cloud")]
+            whatsapp_policy: Arc::new(NoWhatsAppSendsPolicy),
+        }
+    }
+
+    /// Build a client that may send a WhatsApp reply/template after the
+    /// caller explicitly selects a policy. Ads retain their normal
+    /// paused-only posture; the two policy domains are intentionally
+    /// independent.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn with_whatsapp_policy(
+        registry: Registry,
+        vault: Arc<dyn Vault>,
+        apps: Arc<dyn AppStore>,
+        whatsapp_policy: Arc<dyn WhatsAppPolicy>,
+    ) -> Self {
+        Self {
+            registry,
+            vault,
+            apps,
+            ads_policy: Arc::new(PausedOnlyAdsPolicy),
+            whatsapp_policy,
         }
     }
 
@@ -142,6 +170,97 @@ impl Client {
             self.release_claim(key, Some(idem));
             recorded?;
         }
+        Ok(out)
+    }
+
+    /// Send one private WhatsApp Cloud message through the separate messaging
+    /// contract. The normal policy denies it before vault access; callers
+    /// must explicitly install an allowing `WhatsAppPolicy`. A `wamid` means
+    /// Meta accepted the request, not that the recipient received it — status
+    /// webhooks provide the final delivery state.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn send_whatsapp(
+        &self,
+        key: &AccountKey,
+        request: WhatsAppSendRequest,
+        deadline: Deadline,
+    ) -> Result<Outcome, Error> {
+        request.validate().map_err(|reason| Error::InvalidPost {
+            site: key.site.clone(),
+            reason,
+            limit: None,
+        })?;
+        let action = match &request.message {
+            WhatsAppMessage::Reply { .. } => WhatsAppAction::SendReply,
+            WhatsAppMessage::Template { .. } => WhatsAppAction::SendTemplate,
+        };
+        // Do this before registry/vault lookup. A denied send must reveal
+        // neither whether an account is configured nor a bearer token to the
+        // connector's HTTP path.
+        self.whatsapp_policy.authorize(&key.site, action)?;
+        let publisher = self.publisher(&key.site)?;
+        let need = request.required_capability();
+        if !publisher.capabilities().contains(&need) {
+            return Err(Error::UnsupportedCapability {
+                site: key.site.clone(),
+                need,
+            });
+        }
+
+        // WhatsApp sends require a key, so this follows the same atomic
+        // claim/record discipline as public publishing. Only a confirmed
+        // response is remembered; an unknown post-send failure remains
+        // intentionally ambiguous and must be reconciled via webhook/status.
+        let idem = request.idempotency_key.as_str();
+        if let Some(out) = self.vault.get_outcome(key, idem)? {
+            return Ok(out);
+        }
+        match self.vault.claim_outcome(key, idem)? {
+            Claim::Free => {}
+            Claim::Taken => {
+                return Err(Error::IdempotencyInFlight {
+                    site: key.site.clone(),
+                    key: idem.to_string(),
+                })
+            }
+        }
+        let after_claim = match self.vault.get_outcome(key, idem) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.release_claim(key, Some(idem));
+                return Err(error);
+            }
+        };
+        if let Some(out) = after_claim {
+            self.release_claim(key, Some(idem));
+            return Ok(out);
+        }
+
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        // Keep credential lookup inside the same guarded attempt as the HTTP
+        // call. A missing/corrupt vault entry must release the claim just like
+        // a rejected platform request, otherwise a later corrected command
+        // would be blocked behind an abandoned idempotency key.
+        let attempt = async {
+            let creds = self.vault.get(key)?;
+            publisher
+                .send_whatsapp(&app, &creds, &request, deadline)
+                .await
+        }
+        .await;
+        let out = match attempt {
+            Ok(out) => out,
+            Err(error) => {
+                self.release_claim(key, Some(idem));
+                return Err(error);
+            }
+        };
+        let recorded = self.vault.put_outcome(key, idem, &out);
+        self.release_claim(key, Some(idem));
+        recorded?;
         Ok(out)
     }
 
@@ -744,12 +863,13 @@ impl Client {
     /// 009 bootstrap. Does not require an app file.
     pub async fn put_token(&self, key: &AccountKey, token: &str) -> Result<WhoAmI, Error> {
         let publisher = self.publisher(&key.site)?;
-        // A raw token is an OAuth2 bootstrap. On app-password sites (Bluesky)
-        // the write used to succeed and publish failed much later with a
-        // cred-kind error far from the actual mistake. The connector's
-        // declared auth kind is the contract; enforce it at the door so the
-        // refusal lands where the flag was typed.
-        if publisher.auth_kind() != AuthKind::OAuth2AuthCode {
+        // A raw token is valid only for an explicit bearer-token auth kind.
+        // App-password and no-auth sites must refuse it at the flag boundary
+        // rather than storing a credential their connector will never use.
+        if !matches!(
+            publisher.auth_kind(),
+            AuthKind::OAuth2AuthCode | AuthKind::StaticToken
+        ) {
             return Err(Error::Auth {
                 site: key.site.clone(),
                 reason: "token_bootstrap_unsupported".into(),
@@ -759,10 +879,16 @@ impl Client {
             .apps
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
-        let creds = AccountCreds::OAuth2 {
-            access_token: token.to_string(),
-            refresh_token: None,
-            extra: serde_json::json!({}),
+        let creds = match publisher.auth_kind() {
+            AuthKind::OAuth2AuthCode => AccountCreds::OAuth2 {
+                access_token: token.to_string(),
+                refresh_token: None,
+                extra: serde_json::json!({}),
+            },
+            AuthKind::StaticToken => AccountCreds::BotToken {
+                token: token.to_string(),
+            },
+            AuthKind::None | AuthKind::AppPassword => unreachable!("auth kind checked above"),
         };
         // Verify the token *before* anything lands in the vault: the old
         // store-then-whoami order persisted an invalid token and only then
@@ -771,10 +897,18 @@ impl Client {
         // publish against /{user_id}/threads instead of this path leaning
         // on the /me alias for its whole lifetime.
         let me = publisher.whoami(&app, &creds).await?;
-        let creds = AccountCreds::OAuth2 {
-            access_token: token.to_string(),
-            refresh_token: None,
-            extra: serde_json::json!({ "user_id": me.id }),
+        let creds = match publisher.auth_kind() {
+            AuthKind::OAuth2AuthCode => AccountCreds::OAuth2 {
+                access_token: token.to_string(),
+                refresh_token: None,
+                extra: serde_json::json!({ "user_id": me.id }),
+            },
+            // A static token's target belongs to application config (for
+            // WhatsApp, the selected phone-number ID), not the vault token.
+            AuthKind::StaticToken => AccountCreds::BotToken {
+                token: token.to_string(),
+            },
+            AuthKind::None | AuthKind::AppPassword => unreachable!("auth kind checked above"),
         };
         self.vault.put(key, &creds)?;
         Ok(me)

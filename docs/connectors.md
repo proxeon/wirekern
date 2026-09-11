@@ -116,7 +116,8 @@ httpmock 0.7 is a **dev-dependency**. Happy `publish` + one auth failure is enou
 |------|----------------|---------------------|
 | `OAuth2AuthCode` | `AuthStart::Browser { authorize_url, state }` | `--code` / paste URL; `extract_code` strips `#_` |
 | `AppPassword` | `PasteInstructions` | `--password` + `--account` handle |
-| `None` | `AuthStart::None` or instructions | bot token — **not** `Client::put_token` (that writes `OAuth2` for Threads bootstrap) |
+| `StaticToken` | `AuthStart::None` | `--token`; verify with `whoami` before saving a redacted `BotToken` |
+| `None` | `AuthStart::None` or instructions | no credential bootstrap; an unauthenticated connector owns any setup itself |
 
 `Client::auth_start` / `auth_finish` do **not** require `apps/<site>.json`. Threads still requires `app.oauth` **in the connector**.
 

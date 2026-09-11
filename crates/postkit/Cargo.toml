@@ -26,6 +26,9 @@ facebook-pages = ["client", "oauth"]
 # Container readiness is an asynchronous Meta-side fetch, so the connector
 # needs Tokio only to perform bounded status polling before its final write.
 instagram = ["client", "oauth", "dep:tokio"]
+# WhatsApp Cloud uses a static bearer token rather than an OAuth redirect.
+# HMAC-SHA256 verifies the raw inbound webhook body before it is parsed.
+whatsapp-cloud = ["client", "dep:hmac", "dep:sha2"]
 draft = ["client", "dep:tokio", "dep:sha2"]
 
 [dependencies]
@@ -39,6 +42,7 @@ emojis = { workspace = true, optional = true }
 unicode-segmentation = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+hmac = { version = "0.12", optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]

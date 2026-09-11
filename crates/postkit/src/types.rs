@@ -56,6 +56,12 @@ pub enum Capability {
     PublishCarousel,
     #[serde(rename = "publish.video")]
     PublishVideo,
+    #[serde(rename = "send.reply")]
+    SendReply,
+    #[serde(rename = "send.template")]
+    SendTemplate,
+    #[serde(rename = "read.webhook_messages")]
+    ReadWebhookMessages,
     #[serde(rename = "read.metrics")]
     ReadMetrics,
     #[serde(rename = "read.ad_accounts")]
@@ -81,6 +87,9 @@ impl Capability {
             Self::PublishImage => "publish.image",
             Self::PublishCarousel => "publish.carousel",
             Self::PublishVideo => "publish.video",
+            Self::SendReply => "send.reply",
+            Self::SendTemplate => "send.template",
+            Self::ReadWebhookMessages => "read.webhook_messages",
             Self::ReadMetrics => "read.metrics",
             Self::ReadAdAccounts => "read.ad_accounts",
             Self::ReadPages => "read.pages",
@@ -107,7 +116,10 @@ impl std::fmt::Debug for AppConfig {
         f.debug_struct("AppConfig")
             .field("site", &self.site)
             .field("oauth", &self.oauth)
-            .field("extra", &self.extra)
+            // Connector extras may carry non-OAuth secrets such as a
+            // WhatsApp webhook app secret. Treat the extension bag as opaque
+            // instead of trusting every future connector to redact fields.
+            .field("extra", &"[opaque]")
             .finish()
     }
 }

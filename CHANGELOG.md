@@ -14,6 +14,21 @@ same detail by subject.
 
 ### Added
 
+- WhatsApp Cloud business messaging: the new `whatsapp_cloud` connector uses
+  a configured Phone number ID and a verified static System User token, not a
+  fictional OAuth redirect. It sends only two typed, private shapes: a text
+  reply tied to an inbound `wamid`, or an existing Meta-approved template with
+  ordered text-body substitutions. Both require a mandatory idempotency key
+  and per-command `--allow-send`; the default client policy refuses every
+  WhatsApp write before vault or network access. A successful `Outcome.id` is
+  Meta's accepted outbound `wamid`, never a delivery/read claim. Inbound
+  support is a bounded raw webhook parser: it verifies Meta's
+  `X-Hub-Signature-256` HMAC in constant time, requires the configured Phone
+  number ID, and returns only inbound messages in provider order. There is no
+  listener, webhook acknowledgement, inbox persistence, status store,
+  template CRUD/review, billing surface, recipient discovery, bulk send,
+  media, interactive message, Flow, or retry-on-unknown-write behavior.
+
 - Instagram organic image publishing: the new `instagram` connector uses the
   direct Instagram Login authorization path, stores only its long-lived token
   and resolved professional-account ID, and publishes one public HTTPS image

@@ -10,6 +10,8 @@ use crate::pages::PagesReply;
 use crate::types::{
     AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
 };
+#[cfg(feature = "whatsapp-cloud")]
+use crate::whatsapp::WhatsAppSendRequest;
 use async_trait::async_trait;
 
 // 012 wants native async fn; `dyn Publisher` in Registry is not object-safe
@@ -20,6 +22,9 @@ pub enum AuthKind {
     None,
     AppPassword,
     OAuth2AuthCode,
+    /// A long-lived bearer token issued by a platform outside RFC 6749's
+    /// authorization-code flow (for example a Meta System User token).
+    StaticToken,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +67,23 @@ pub trait Publisher: Send + Sync {
         intent: Intent,
         deadline: Deadline,
     ) -> Result<Outcome, Error>;
+
+    /// Send a typed private business message. It is deliberately separate
+    /// from `publish`: recipient, reply context, template approval and
+    /// billing semantics cannot be represented safely by a social `Intent`.
+    #[cfg(feature = "whatsapp-cloud")]
+    async fn send_whatsapp(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &WhatsAppSendRequest,
+        _deadline: Deadline,
+    ) -> Result<Outcome, Error> {
+        Err(Error::UnsupportedCapability {
+            site: self.site().clone(),
+            need: request.required_capability(),
+        })
+    }
 
     /// Create-only publish probe (027): run every step of a publish except
     /// the one that makes it visible. The default refusal keeps connectors

@@ -25,6 +25,8 @@ In priority order:
 1. **Images** — shipped (2026-09-10): one image per post, optional caption; Bluesky uploads bytes (`--image file`), Threads takes a public https URL (`--image https://…`). Video remains roadmap.
 2. **HTTP `serve` mode with `pk_live_` keys.** A growing class of callers (serverless, sandboxed agents, n8n-style automators) cannot exec a binary and can only speak HTTP — today that lane belongs to hosted APIs like Outstand ("unified API for AI agents", ~$19/mo, keys in their cloud). A local `postkit serve` exposes the same JSON contract over localhost HTTP and contests that lane without giving up custody.
 
-Not on the roadmap, ever: calendar, inbox, drafts. Send **now** or nothing is the product.
+Not on the roadmap, ever: calendar, a hosted/persistent inbox, drafts. Send
+**now** or nothing is the product; a connector may still safely parse an
+operator's signed inbound webhook without becoming an inbox product.
 
 Full internal analysis lives in `design/016-rust-and-competitors.md` (untracked design notes).
