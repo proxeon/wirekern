@@ -81,6 +81,10 @@ pub enum Capability {
     SendCatalog,
     #[serde(rename = "send.flow")]
     SendFlow,
+    #[serde(rename = "read.flows")]
+    ReadFlows,
+    #[serde(rename = "manage.flows")]
+    ManageFlows,
     #[serde(rename = "manage.whatsapp_media")]
     ManageWhatsAppMedia,
     #[serde(rename = "read.whatsapp_media")]
@@ -130,6 +134,8 @@ impl Capability {
             Self::SendTyping => "send.typing",
             Self::SendCatalog => "send.catalog",
             Self::SendFlow => "send.flow",
+            Self::ReadFlows => "read.flows",
+            Self::ManageFlows => "manage.flows",
             Self::ManageWhatsAppMedia => "manage.whatsapp_media",
             Self::ReadWhatsAppMedia => "read.whatsapp_media",
             Self::ReadTemplates => "read.templates",

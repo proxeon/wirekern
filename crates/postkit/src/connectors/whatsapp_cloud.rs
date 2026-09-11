@@ -5,14 +5,15 @@
 //! number and the later webhook delivery state are all part of the contract.
 
 use crate::error::Error;
-use crate::facets::{WhatsAppAssets, WhatsAppSender, WhatsAppTemplates};
+use crate::facets::{WhatsAppAssets, WhatsAppFlows, WhatsAppSender, WhatsAppTemplates};
 use crate::http::Http;
 use crate::publisher::{AuthKind, Publisher};
 use crate::registry::Connector;
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::whatsapp::{
     validate_media_upload, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppTemplateDraft,
-    WhatsAppTemplateList, WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
+    WhatsAppFlowDraft, WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppTemplateList,
+    WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
     DeliveryConversation, DeliveryError, DeliveryPricing, DeliveryStatus, DeliveryStatusKind,
     InboundContact, InboundInteractive, InboundLocation, InboundMedia, InboundMessage,
     InboundMessages, InboundOrder, InboundReaction, InboundReferral, InboundUnsupported,
@@ -59,7 +60,8 @@ impl WhatsAppCloud {
         Connector::from_publisher(this.clone())
             .whatsapp(this.clone())
             .whatsapp_assets(this.clone())
-            .whatsapp_templates(this)
+            .whatsapp_templates(this.clone())
+            .whatsapp_flows(this)
     }
 
     /// Verify and parse raw `messages` webhook bytes. This is intentionally a
@@ -185,6 +187,10 @@ impl Publisher for WhatsAppCloud {
             Capability::ReadWhatsAppMedia,
             Capability::ReadTemplates,
             Capability::ManageTemplates,
+            Capability::SendCatalog,
+            Capability::SendFlow,
+            Capability::ReadFlows,
+            Capability::ManageFlows,
             Capability::ReadWebhookMessages,
             Capability::ReadWebhookStatuses,
         ]
@@ -684,6 +690,156 @@ impl WhatsAppTemplates for WhatsAppCloud {
     }
 }
 
+#[async_trait]
+impl WhatsAppFlows for WhatsAppCloud {
+    async fn list_flows(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<WhatsAppFlowList, Error> {
+        let waba = waba_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .get(&format!(
+                        "{}/{waba}/flows?fields=id,name,status,categories",
+                        self.base
+                    ))
+                    .bearer_auth(token),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        let flows = body
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::Platform {
+                site: self.site.clone(),
+                code: "flow_list_invalid".into(),
+                message: "WhatsApp flow list returned no data array".into(),
+            })?
+            .iter()
+            .map(parse_flow_record)
+            .collect();
+        Ok(WhatsAppFlowList { flows })
+    }
+
+    async fn get_flow(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        flow_id: &str,
+        deadline: Deadline,
+    ) -> Result<WhatsAppFlowRecord, Error> {
+        validate_graph_id(flow_id).map_err(|reason| Error::InvalidPost {
+            site: self.site.clone(),
+            reason,
+            limit: None,
+        })?;
+        let _waba = waba_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .get(&format!(
+                        "{}/{flow_id}?fields=id,name,status,categories",
+                        self.base
+                    ))
+                    .bearer_auth(token),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        Ok(parse_flow_record(&body))
+    }
+
+    async fn create_flow(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        draft: &WhatsAppFlowDraft,
+        deadline: Deadline,
+    ) -> Result<WhatsAppFlowRecord, Error> {
+        draft.validate().map_err(|reason| Error::InvalidPost {
+            site: self.site.clone(),
+            reason,
+            limit: None,
+        })?;
+        let waba = waba_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .post(&format!("{}/{waba}/flows", self.base))
+                    .bearer_auth(token)
+                    .json(&json!({
+                        "name": draft.name,
+                        "categories": draft.categories,
+                        "flow_json": draft.flow_json,
+                    })),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        Ok(parse_flow_record(&body))
+    }
+
+    async fn publish_flow(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        flow_id: &str,
+        deadline: Deadline,
+    ) -> Result<WhatsAppFlowRecord, Error> {
+        validate_graph_id(flow_id).map_err(|reason| Error::InvalidPost {
+            site: self.site.clone(),
+            reason,
+            limit: None,
+        })?;
+        let _waba = waba_id(app)?;
+        let token = access_token(creds)?;
+        let response = self
+            .http
+            .send(
+                self.http
+                    .post(&format!("{}/{flow_id}/publish", self.base))
+                    .bearer_auth(token)
+                    .json(&json!({})),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(response, &self.site).await?;
+        Ok(parse_flow_record(&body))
+    }
+}
+
+fn parse_flow_record(value: &Value) -> WhatsAppFlowRecord {
+    let categories = value
+        .get("categories")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(value_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    WhatsAppFlowRecord {
+        id: value.get("id").and_then(value_string).unwrap_or_default(),
+        name: value.get("name").and_then(value_string),
+        status: value.get("status").and_then(value_string),
+        categories,
+    }
+}
+
 /// The exact limited JSON grammar Postkit allows on the message endpoint.
 /// Keeping it public makes wire tests and embedding callers inspectable
 /// without permitting arbitrary unreviewed JSON components.
@@ -1005,6 +1161,134 @@ pub fn send_payload_for(message: &WhatsAppMessage, recipient_type: RecipientType
         }),
         // No `to` / `recipient_type`: these are inbound-wamid acks, not
         // customer-addressed messages.
+        WhatsAppMessage::Catalog {
+            to,
+            body,
+            thumbnail_product_retailer_id,
+            footer,
+            reply_to_message_id,
+        } => {
+            let mut action = json!({ "name": "catalog_message" });
+            if let Some(id) = thumbnail_product_retailer_id {
+                action["parameters"] = json!({ "thumbnail_product_retailer_id": id });
+            }
+            let interactive = json!({
+                "type": "catalog_message",
+                "body": { "text": body },
+                "action": action,
+            });
+            interactive_payload(to, interactive, None, footer.as_deref(), reply_to_message_id.as_deref())
+        }
+        WhatsAppMessage::Product {
+            to,
+            catalog_id,
+            product_retailer_id,
+            body,
+            footer,
+            reply_to_message_id,
+        } => {
+            let mut interactive = json!({
+                "type": "product",
+                "action": {
+                    "catalog_id": catalog_id,
+                    "product_retailer_id": product_retailer_id,
+                },
+            });
+            if let Some(body) = body {
+                interactive["body"] = json!({ "text": body });
+            }
+            interactive_payload(to, interactive, None, footer.as_deref(), reply_to_message_id.as_deref())
+        }
+        WhatsAppMessage::ProductList {
+            to,
+            catalog_id,
+            header,
+            body,
+            sections,
+            footer,
+            reply_to_message_id,
+        } => {
+            let interactive = json!({
+                "type": "product_list",
+                "body": { "text": body },
+                "action": {
+                    "catalog_id": catalog_id,
+                    "sections": sections.iter().map(|s| {
+                        let mut o = json!({
+                            "product_items": s.product_retailer_ids.iter().map(|id| json!({
+                                "product_retailer_id": id,
+                            })).collect::<Vec<_>>(),
+                        });
+                        if let Some(title) = &s.title {
+                            o["title"] = json!(title);
+                        }
+                        o
+                    }).collect::<Vec<_>>(),
+                },
+            });
+            interactive_payload(to, interactive, Some(header), footer.as_deref(), reply_to_message_id.as_deref())
+        }
+        WhatsAppMessage::OrderStatus {
+            to,
+            body,
+            reference_id,
+            status,
+            description,
+            reply_to_message_id,
+        } => {
+            let mut order = json!({ "status": status });
+            if let Some(description) = description {
+                order["description"] = json!(description);
+            }
+            let interactive = json!({
+                "type": "order_status",
+                "body": { "text": body },
+                "action": {
+                    "name": "review_order",
+                    "parameters": {
+                        "reference_id": reference_id,
+                        "order": order,
+                    },
+                },
+            });
+            interactive_payload(to, interactive, None, None, reply_to_message_id.as_deref())
+        }
+        WhatsAppMessage::Flow {
+            to,
+            body,
+            flow_cta,
+            flow_id,
+            flow_name,
+            header,
+            footer,
+            flow_token,
+            screen,
+            reply_to_message_id,
+        } => {
+            let mut parameters = json!({
+                "flow_message_version": "3",
+                "flow_cta": flow_cta,
+            });
+            if let Some(id) = flow_id {
+                parameters["flow_id"] = json!(id);
+            }
+            if let Some(name) = flow_name {
+                parameters["flow_name"] = json!(name);
+            }
+            if let Some(token) = flow_token {
+                parameters["flow_token"] = json!(token);
+            }
+            if let Some(screen) = screen {
+                parameters["flow_action"] = json!("navigate");
+                parameters["flow_action_payload"] = json!({ "screen": screen });
+            }
+            let interactive = json!({
+                "type": "flow",
+                "body": { "text": body },
+                "action": { "name": "flow", "parameters": parameters },
+            });
+            interactive_payload(to, interactive, header.as_deref(), footer.as_deref(), reply_to_message_id.as_deref())
+        }
         WhatsAppMessage::MarkRead { message_id } => json!({
             "messaging_product": "whatsapp",
             "status": "read",
@@ -2348,6 +2632,118 @@ mod tests {
         assert_eq!(create.hits(), 1);
         assert_eq!(edit.hits(), 1);
         assert_eq!(del.hits(), 1);
+    }
+
+    #[test]
+    fn catalog_product_order_and_flow_payloads_match_cloud_api() {
+        use crate::whatsapp::ProductSection;
+        let catalog = send_payload(&WhatsAppMessage::Catalog {
+            to: "60123456789".into(),
+            body: "See our catalog".into(),
+            thumbnail_product_retailer_id: Some("sku-1".into()),
+            footer: Some("Shop".into()),
+            reply_to_message_id: None,
+        });
+        assert_eq!(catalog["interactive"]["type"], "catalog_message");
+        assert_eq!(
+            catalog["interactive"]["action"]["parameters"]["thumbnail_product_retailer_id"],
+            "sku-1"
+        );
+        let product = send_payload(&WhatsAppMessage::Product {
+            to: "60123456789".into(),
+            catalog_id: "cat-1".into(),
+            product_retailer_id: "sku-1".into(),
+            body: Some("Nice".into()),
+            footer: None,
+            reply_to_message_id: None,
+        });
+        assert_eq!(product["interactive"]["type"], "product");
+        let list = send_payload(&WhatsAppMessage::ProductList {
+            to: "60123456789".into(),
+            catalog_id: "cat-1".into(),
+            header: "Items".into(),
+            body: "Pick".into(),
+            sections: vec![ProductSection {
+                title: Some("A".into()),
+                product_retailer_ids: vec!["sku-1".into()],
+            }],
+            footer: None,
+            reply_to_message_id: None,
+        });
+        assert_eq!(list["interactive"]["type"], "product_list");
+        let order = send_payload(&WhatsAppMessage::OrderStatus {
+            to: "60123456789".into(),
+            body: "Update".into(),
+            reference_id: "ord-1".into(),
+            status: "processing".into(),
+            description: None,
+            reply_to_message_id: None,
+        });
+        assert_eq!(order["interactive"]["type"], "order_status");
+        assert_eq!(
+            order["interactive"]["action"]["parameters"]["order"]["status"],
+            "processing"
+        );
+        let flow = send_payload(&WhatsAppMessage::Flow {
+            to: "60123456789".into(),
+            body: "Book".into(),
+            flow_cta: "Open".into(),
+            flow_id: Some("123".into()),
+            flow_name: None,
+            header: None,
+            footer: None,
+            flow_token: None,
+            screen: Some("WELCOME".into()),
+            reply_to_message_id: None,
+        });
+        assert_eq!(flow["interactive"]["type"], "flow");
+        assert_eq!(flow["interactive"]["action"]["parameters"]["flow_id"], "123");
+        assert_eq!(
+            flow["interactive"]["action"]["parameters"]["flow_message_version"],
+            "3"
+        );
+    }
+
+    #[tokio::test]
+    async fn flows_list_create_and_publish_use_waba_flow_paths() {
+        let server = MockServer::start();
+        let list = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/102290129340398/flows");
+            then.status(200).json_body(json!({
+                "data": [{ "id": "123", "name": "booking", "status": "DRAFT", "categories": ["OTHER"] }]
+            }));
+        });
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/102290129340398/flows");
+            then.status(200).json_body(json!({ "id": "123", "status": "DRAFT" }));
+        });
+        let publish = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/123/publish");
+            then.status(200).json_body(json!({ "id": "123", "status": "PUBLISHED" }));
+        });
+        let connector = WhatsAppCloud::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let listed = connector
+            .list_flows(&app(), &creds(), Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(listed.flows[0].status.as_deref(), Some("DRAFT"));
+        let draft = crate::whatsapp::WhatsAppFlowDraft {
+            name: "booking".into(),
+            categories: vec!["OTHER".into()],
+            flow_json: r#"{"version":"7.0","screens":[]}"#.into(),
+        };
+        connector
+            .create_flow(&app(), &creds(), &draft, Deadline::from_secs(30))
+            .await
+            .unwrap();
+        let published = connector
+            .publish_flow(&app(), &creds(), "123", Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(published.status.as_deref(), Some("PUBLISHED"));
+        assert_eq!(list.hits(), 1);
+        assert_eq!(create.hits(), 1);
+        assert_eq!(publish.hits(), 1);
     }
 
     #[tokio::test]

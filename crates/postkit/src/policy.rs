@@ -97,6 +97,8 @@ pub enum WhatsAppAction {
     SendTyping,
     SendCatalog,
     SendFlow,
+    ReadFlows,
+    ManageFlows,
     ReadTemplates,
     ManageTemplates,
 }
@@ -117,6 +119,8 @@ impl WhatsAppAction {
             Self::SendTyping => "send_whatsapp_typing",
             Self::SendCatalog => "send_whatsapp_catalog",
             Self::SendFlow => "send_whatsapp_flow",
+            Self::ReadFlows => "read_whatsapp_flows",
+            Self::ManageFlows => "manage_whatsapp_flows",
             Self::ReadTemplates => "read_whatsapp_templates",
             Self::ManageTemplates => "manage_whatsapp_templates",
         }

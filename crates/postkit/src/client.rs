@@ -204,6 +204,11 @@ impl Client {
             WhatsAppMessage::Reaction { .. } => WhatsAppAction::SendReaction,
             WhatsAppMessage::MarkRead { .. } => WhatsAppAction::MarkRead,
             WhatsAppMessage::Typing { .. } => WhatsAppAction::SendTyping,
+            WhatsAppMessage::Catalog { .. }
+            | WhatsAppMessage::Product { .. }
+            | WhatsAppMessage::ProductList { .. }
+            | WhatsAppMessage::OrderStatus { .. } => WhatsAppAction::SendCatalog,
+            WhatsAppMessage::Flow { .. } => WhatsAppAction::SendFlow,
         };
         // Do this before registry/vault lookup. A denied send must reveal
         // neither whether an account is configured nor a bearer token to the
@@ -461,6 +466,73 @@ impl Client {
         templates
             .delete_template(&app, &creds, name, deadline)
             .await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn list_whatsapp_flows(
+        &self,
+        key: &AccountKey,
+        deadline: Deadline,
+    ) -> Result<crate::whatsapp::WhatsAppFlowList, Error> {
+        self.require_capability(&key.site, Capability::ReadFlows)?;
+        let flows = self.whatsapp_flows(&key.site, Capability::ReadFlows)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        flows.list_flows(&app, &creds, deadline).await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn get_whatsapp_flow(
+        &self,
+        key: &AccountKey,
+        flow_id: &str,
+        deadline: Deadline,
+    ) -> Result<crate::whatsapp::WhatsAppFlowRecord, Error> {
+        self.require_capability(&key.site, Capability::ReadFlows)?;
+        let flows = self.whatsapp_flows(&key.site, Capability::ReadFlows)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        flows.get_flow(&app, &creds, flow_id, deadline).await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn create_whatsapp_flow(
+        &self,
+        key: &AccountKey,
+        draft: crate::whatsapp::WhatsAppFlowDraft,
+        deadline: Deadline,
+    ) -> Result<crate::whatsapp::WhatsAppFlowRecord, Error> {
+        self.require_capability(&key.site, Capability::ManageFlows)?;
+        let flows = self.whatsapp_flows(&key.site, Capability::ManageFlows)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        flows.create_flow(&app, &creds, &draft, deadline).await
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub async fn publish_whatsapp_flow(
+        &self,
+        key: &AccountKey,
+        flow_id: &str,
+        deadline: Deadline,
+    ) -> Result<crate::whatsapp::WhatsAppFlowRecord, Error> {
+        self.require_capability(&key.site, Capability::ManageFlows)?;
+        let flows = self.whatsapp_flows(&key.site, Capability::ManageFlows)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = self.vault.get(key)?;
+        flows.publish_flow(&app, &creds, flow_id, deadline).await
     }
 
     /// Shared load + optional proactive refresh. Every network verb that
@@ -1040,6 +1112,17 @@ impl Client {
     }
 
     #[cfg(feature = "whatsapp-cloud")]
+    fn whatsapp_flows(
+        &self,
+        site: &Site,
+        need: Capability,
+    ) -> Result<Arc<dyn crate::facets::WhatsAppFlows>, Error> {
+        self.registry
+            .connector(site)
+            .and_then(|c| c.whatsapp_flows_facet())
+            .ok_or_else(|| Self::missing_facet(site, need))
+    }
+
     fn whatsapp_templates(
         &self,
         site: &Site,

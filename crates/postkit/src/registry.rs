@@ -1,5 +1,5 @@
 #[cfg(feature = "whatsapp-cloud")]
-use crate::facets::{WhatsAppAssets, WhatsAppSender, WhatsAppTemplates};
+use crate::facets::{WhatsAppAssets, WhatsAppFlows, WhatsAppSender, WhatsAppTemplates};
 use crate::facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 use crate::publisher::Publisher;
 use crate::types::{Capability, Site};
@@ -23,6 +23,8 @@ pub struct Connector {
     whatsapp_assets: Option<Arc<dyn WhatsAppAssets>>,
     #[cfg(feature = "whatsapp-cloud")]
     whatsapp_templates: Option<Arc<dyn WhatsAppTemplates>>,
+    #[cfg(feature = "whatsapp-cloud")]
+    whatsapp_flows: Option<Arc<dyn WhatsAppFlows>>,
 }
 
 impl Connector {
@@ -39,6 +41,8 @@ impl Connector {
             whatsapp_assets: None,
             #[cfg(feature = "whatsapp-cloud")]
             whatsapp_templates: None,
+            #[cfg(feature = "whatsapp-cloud")]
+            whatsapp_flows: None,
         }
     }
 
@@ -80,6 +84,12 @@ impl Connector {
         self
     }
 
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn whatsapp_flows(mut self, facet: Arc<dyn WhatsAppFlows>) -> Self {
+        self.whatsapp_flows = Some(facet);
+        self
+    }
+
     pub fn publisher(&self) -> Arc<dyn Publisher> {
         self.publisher.clone()
     }
@@ -113,6 +123,11 @@ impl Connector {
     #[cfg(feature = "whatsapp-cloud")]
     pub fn whatsapp_templates_facet(&self) -> Option<Arc<dyn WhatsAppTemplates>> {
         self.whatsapp_templates.clone()
+    }
+
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn whatsapp_flows_facet(&self) -> Option<Arc<dyn WhatsAppFlows>> {
+        self.whatsapp_flows.clone()
     }
 }
 

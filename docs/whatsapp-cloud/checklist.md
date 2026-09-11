@@ -84,9 +84,9 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 
 ### Commerce / Flows
 
-- [ ] Catalog / product messages
-- [ ] Order messages
-- [ ] WhatsApp Flows (own endpoint, schema, publishing state)
+- [x] Catalog / product messages
+- [x] Order messages
+- [x] WhatsApp Flows (own endpoint, schema, publishing state)
 
 ## Receive / operate (not send verbs)
 

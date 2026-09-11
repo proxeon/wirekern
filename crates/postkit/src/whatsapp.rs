@@ -198,6 +198,75 @@ pub enum WhatsAppMessage {
         message_id: String,
         emoji: String,
     },
+    /// Interactive `catalog_message`. Requires a Meta catalog connected to
+    /// the WABA. Optional thumbnail is a catalog product retailer id.
+    Catalog {
+        to: String,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thumbnail_product_retailer_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        footer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    /// Single product from a connected catalog.
+    Product {
+        to: String,
+        catalog_id: String,
+        product_retailer_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        footer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    /// Multi-product list. Header is required by Cloud API.
+    ProductList {
+        to: String,
+        catalog_id: String,
+        header: String,
+        body: String,
+        sections: Vec<ProductSection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        footer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    /// Interactive `order_status`. Status values are Meta's order lifecycle
+    /// strings (pending/processing/shipped/completed/canceled/…).
+    OrderStatus {
+        to: String,
+        body: String,
+        reference_id: String,
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    /// Interactive Flow CTA. `flow_id` XOR `flow_name`. Flow JSON schema
+    /// publishing is a separate WABA endpoint, not this send.
+    Flow {
+        to: String,
+        body: String,
+        flow_cta: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flow_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flow_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        footer: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flow_token: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        screen: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
     /// Mark an inbound `wamid` as read. Cloud API returns `{success: true}`,
     /// not a new outbound wamid. `Outcome.id` is this inbound id so the local
     /// idempotency ledger still has a stable value.
@@ -241,6 +310,13 @@ impl std::str::FromStr for RecipientType {
             _ => Err("recipient_type_invalid".into()),
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProductSection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub product_retailer_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -337,6 +413,10 @@ impl WhatsAppMessage {
             Self::Reaction { .. } => Capability::SendReaction,
             Self::MarkRead { .. } => Capability::MarkRead,
             Self::Typing { .. } => Capability::SendTyping,
+            Self::Catalog { .. } | Self::Product { .. } | Self::ProductList { .. } | Self::OrderStatus { .. } => {
+                Capability::SendCatalog
+            }
+            Self::Flow { .. } => Capability::SendFlow,
         }
     }
 
@@ -653,6 +733,114 @@ impl WhatsAppMessage {
                 }
                 validate_context_id(message_id)?;
             }
+            Self::Catalog {
+                to,
+                body,
+                thumbnail_product_retailer_id,
+                footer,
+                reply_to_message_id,
+            } => {
+                validate_destination(to, recipient_type)?;
+                validate_body(body)?;
+                validate_optional_footer(footer)?;
+                validate_optional_context(reply_to_message_id)?;
+                if let Some(id) = thumbnail_product_retailer_id {
+                    validate_catalog_id(id, "catalog_product_id_invalid")?;
+                }
+            }
+            Self::Product {
+                to,
+                catalog_id,
+                product_retailer_id,
+                body,
+                footer,
+                reply_to_message_id,
+            } => {
+                validate_destination(to, recipient_type)?;
+                validate_catalog_id(catalog_id, "catalog_id_invalid")?;
+                validate_catalog_id(product_retailer_id, "catalog_product_id_invalid")?;
+                if let Some(body) = body {
+                    validate_body(body)?;
+                }
+                validate_optional_footer(footer)?;
+                validate_optional_context(reply_to_message_id)?;
+            }
+            Self::ProductList {
+                to,
+                catalog_id,
+                header,
+                body,
+                sections,
+                footer,
+                reply_to_message_id,
+            } => {
+                validate_destination(to, recipient_type)?;
+                validate_catalog_id(catalog_id, "catalog_id_invalid")?;
+                validate_optional_header(&Some(header.clone()))?;
+                if header.trim().is_empty() {
+                    return Err("interactive_header_invalid".into());
+                }
+                validate_body(body)?;
+                validate_optional_footer(footer)?;
+                validate_optional_context(reply_to_message_id)?;
+                validate_product_sections(sections)?;
+            }
+            Self::OrderStatus {
+                to,
+                body,
+                reference_id,
+                status,
+                description,
+                reply_to_message_id,
+            } => {
+                validate_destination(to, recipient_type)?;
+                validate_body(body)?;
+                validate_optional_context(reply_to_message_id)?;
+                if reference_id.trim().is_empty() || reference_id.len() > 256 {
+                    return Err("order_reference_invalid".into());
+                }
+                match status.as_str() {
+                    "pending" | "processing" | "partially_shipped" | "shipped"
+                    | "completed" | "canceled" => {}
+                    _ => return Err("order_status_invalid".into()),
+                }
+                if description
+                    .as_ref()
+                    .is_some_and(|d| d.is_empty() || d.chars().count() > 120)
+                {
+                    return Err("order_description_invalid".into());
+                }
+            }
+            Self::Flow {
+                to,
+                body,
+                flow_cta,
+                flow_id,
+                flow_name,
+                header,
+                footer,
+                flow_token: _,
+                screen: _,
+                reply_to_message_id,
+            } => {
+                validate_destination(to, recipient_type)?;
+                validate_body(body)?;
+                validate_optional_header(header)?;
+                validate_optional_footer(footer)?;
+                validate_optional_context(reply_to_message_id)?;
+                if flow_cta.is_empty() || flow_cta.chars().count() > 20 {
+                    return Err("flow_cta_invalid".into());
+                }
+                match (flow_id.as_deref(), flow_name.as_deref()) {
+                    (Some(id), None) => validate_catalog_id(id, "flow_id_invalid")?,
+                    (None, Some(name)) => {
+                        if name.is_empty() || name.len() > 256 {
+                            return Err("flow_name_invalid".into());
+                        }
+                    }
+                    _ => return Err("flow_id_or_name_required".into()),
+                }
+            }
         }
         Ok(())
     }
@@ -849,6 +1037,50 @@ impl WhatsAppTemplateDraft {
         }
         if !saw_body {
             return Err("template_body_required".into());
+        }
+        Ok(())
+    }
+}
+
+/// WABA Flow publishing-state row. The Flow JSON schema is not echoed back
+/// so a get cannot become an untyped dump.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppFlowRecord {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppFlowList {
+    pub flows: Vec<WhatsAppFlowRecord>,
+}
+
+/// Create a Flow. `flow_json` must be a JSON object with a `version` field —
+/// Meta's Flow schema, not an arbitrary Graph payload.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppFlowDraft {
+    pub name: String,
+    pub categories: Vec<String>,
+    pub flow_json: String,
+}
+
+impl WhatsAppFlowDraft {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.is_empty() || self.name.len() > 256 {
+            return Err("flow_name_invalid".into());
+        }
+        if self.categories.is_empty() {
+            return Err("flow_categories_empty".into());
+        }
+        let parsed: serde_json::Value = serde_json::from_str(&self.flow_json)
+            .map_err(|_| "flow_json_invalid".to_string())?;
+        if !parsed.is_object() || parsed.get("version").is_none() {
+            return Err("flow_json_missing_version".into());
         }
         Ok(())
     }
@@ -1188,6 +1420,43 @@ fn validate_destination(value: &str, recipient_type: RecipientType) -> Result<()
 
 /// Groups API ids are opaque (often base64). Refuse empty, whitespace, and
 /// path separators so a group `to` cannot be a URL or filename.
+fn validate_catalog_id(value: &str, err: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 256
+        || value.chars().any(|c| c.is_whitespace() || c == '/' || c == '\\')
+    {
+        return Err(err.into());
+    }
+    Ok(())
+}
+
+fn validate_product_sections(sections: &[ProductSection]) -> Result<(), String> {
+    if sections.is_empty() || sections.len() > 10 {
+        return Err("product_sections_count".into());
+    }
+    let mut total = 0usize;
+    for section in sections {
+        if section
+            .title
+            .as_ref()
+            .is_some_and(|t| t.chars().count() > 24)
+        {
+            return Err("product_section_title_invalid".into());
+        }
+        if section.product_retailer_ids.is_empty() {
+            return Err("product_section_empty".into());
+        }
+        total += section.product_retailer_ids.len();
+        if total > 30 {
+            return Err("product_items_too_many".into());
+        }
+        for id in &section.product_retailer_ids {
+            validate_catalog_id(id, "catalog_product_id_invalid")?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_group_id(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 256
@@ -1731,5 +2000,51 @@ mod tests {
             .unwrap_err(),
             "template_body_required"
         );
+        assert!(WhatsAppMessage::Catalog {
+            to: "60123456789".into(),
+            body: "See catalog".into(),
+            thumbnail_product_retailer_id: None,
+            footer: None,
+            reply_to_message_id: None,
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            WhatsAppMessage::OrderStatus {
+                to: "60123456789".into(),
+                body: "Update".into(),
+                reference_id: "ord-1".into(),
+                status: "unknown".into(),
+                description: None,
+                reply_to_message_id: None,
+            }
+            .validate()
+            .unwrap_err(),
+            "order_status_invalid"
+        );
+        assert_eq!(
+            WhatsAppMessage::Flow {
+                to: "60123456789".into(),
+                body: "Book".into(),
+                flow_cta: "Open".into(),
+                flow_id: None,
+                flow_name: None,
+                header: None,
+                footer: None,
+                flow_token: None,
+                screen: None,
+                reply_to_message_id: None,
+            }
+            .validate()
+            .unwrap_err(),
+            "flow_id_or_name_required"
+        );
+        assert!(WhatsAppFlowDraft {
+            name: "booking".into(),
+            categories: vec!["OTHER".into()],
+            flow_json: r#"{"version":"7.0"}"#.into(),
+        }
+        .validate()
+        .is_ok());
     }
 }

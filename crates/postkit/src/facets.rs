@@ -20,8 +20,9 @@ use crate::types::Outcome;
 use crate::types::{AccountCreds, AppConfig, Deadline};
 #[cfg(feature = "whatsapp-cloud")]
 use crate::whatsapp::{
-    WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppSendRequest, WhatsAppTemplateDraft,
-    WhatsAppTemplateList, WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
+    WhatsAppFlowDraft, WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppMediaMeta,
+    WhatsAppMediaUpload, WhatsAppSendRequest, WhatsAppTemplateDraft, WhatsAppTemplateList,
+    WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
 };
 use async_trait::async_trait;
 
@@ -214,4 +215,41 @@ pub trait WhatsAppTemplates: Send + Sync {
         name: &str,
         deadline: Deadline,
     ) -> Result<(), Error>;
+}
+
+/// WhatsApp Flows endpoint (not `/messages`). List/get expose publishing
+/// state; create/publish write the schema. Distinct from sending a Flow CTA.
+#[cfg(feature = "whatsapp-cloud")]
+#[async_trait]
+pub trait WhatsAppFlows: Send + Sync {
+    async fn list_flows(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<WhatsAppFlowList, Error>;
+
+    async fn get_flow(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        flow_id: &str,
+        deadline: Deadline,
+    ) -> Result<WhatsAppFlowRecord, Error>;
+
+    async fn create_flow(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        draft: &WhatsAppFlowDraft,
+        deadline: Deadline,
+    ) -> Result<WhatsAppFlowRecord, Error>;
+
+    async fn publish_flow(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        flow_id: &str,
+        deadline: Deadline,
+    ) -> Result<WhatsAppFlowRecord, Error>;
 }
