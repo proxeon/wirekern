@@ -327,6 +327,15 @@ impl InsightsSource for MockPub {
         query: &InsightsQuery,
         _deadline: Deadline,
     ) -> Result<InsightsReply, Error> {
+        let n = self.publishes.fetch_add(1, Ordering::SeqCst);
+        // Reuse fail_auth_once so Client::with_creds is proven on a
+        // non-publish verb — a missed retry would only show up here.
+        if self.fail_auth_once && n == 0 {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "token_expired".into(),
+            });
+        }
         let mut metrics = serde_json::Map::new();
         metrics.insert("spend".into(), serde_json::json!(10.0));
         Ok(InsightsReply {
@@ -1567,6 +1576,24 @@ async fn client_insights_routes_and_checks_capability() {
     assert!(
         matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadMetrics)
     );
+}
+
+/// `with_creds` is the only token-expiry retry. Insights must not grow a
+/// private copy that retries twice or skips the vault put.
+#[tokio::test]
+async fn insights_retries_once_on_shared_token_expired_helper() {
+    let mut mock = MockPub::metrics("meta_ads");
+    mock.fail_auth_once = true;
+    let (c, key) = setup(mock);
+    let reply = c
+        .insights(
+            &key,
+            insights_query("2026-06-01", "2026-06-02"),
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.account_id, "act_1");
 }
 
 /// Advertising `read.metrics` on Publisher is not an implementation. A

@@ -24,8 +24,15 @@ use crate::types::{
 use crate::vault::{Claim, Vault};
 #[cfg(feature = "whatsapp-cloud")]
 use crate::whatsapp::{WhatsAppMessage, WhatsAppSendRequest};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// One credentialed attempt. Boxed so `with_creds` can call the same
+/// operation twice (first try, then once after a `token_expired` refresh)
+/// on MSRV 1.80 without async closures.
+type CredOp<T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send>>;
 
 /// Meta review normally takes longer than a single HTTP response but should
 /// never turn a CLI call into an unbounded background worker. The public wait
@@ -157,7 +164,7 @@ impl Client {
         }
         // One confined attempt so the claim has exactly one release point:
         // every early `?` inside publish_once lands here, not in the caller.
-        let attempt = self.publish_once(&*publisher, key, intent, deadline).await;
+        let attempt = self.publish_once(publisher, key, intent, deadline).await;
         let out = match attempt {
             Ok(out) => out,
             Err(e) => {
@@ -266,38 +273,91 @@ impl Client {
         Ok(out)
     }
 
-    /// The claim-guarded publish: app lookup, credential fetch, proactive
-    /// refresh, publish, and the one reactive token-expiry retry. Extracted
-    /// from `publish` so the idempotency claim can bracket it with a single
-    /// release point — an early `?` here releases the claim on return,
-    /// never leaks the key until the TTL steals it.
-    async fn publish_once(
+    /// Shared load + optional proactive refresh. Every network verb that
+    /// talks with stored OAuth creds goes through here so a missed retry
+    /// cannot land on only one of insights/pages/ads.
+    async fn prepare_creds(
         &self,
-        publisher: &dyn Publisher,
         key: &AccountKey,
-        intent: Intent,
         deadline: Deadline,
-    ) -> Result<Outcome, Error> {
+        proactive: bool,
+    ) -> Result<(Arc<dyn Publisher>, AppConfig, AccountCreds), Error> {
+        let publisher = self.publisher(&key.site)?;
         let app = self
             .apps
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let mut creds = self.vault.get(key)?;
-        creds = self
-            .maybe_refresh(publisher, &app, key, creds, deadline)
-            .await?;
-        let out = match publisher
-            .publish(&app, &creds, intent.clone(), deadline)
-            .await
-        {
-            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds, deadline).await?;
+        if proactive {
+            creds = self
+                .maybe_refresh(&*publisher, &app, key, creds, deadline)
+                .await?;
+        }
+        Ok((publisher, app, creds))
+    }
+
+    /// One reactive refresh. `token_expired` is the only error that retries;
+    /// every other error is returned as-is so callers cannot accidentally
+    /// retry a visible write.
+    async fn recover_expired(
+        &self,
+        publisher: &dyn Publisher,
+        app: &AppConfig,
+        key: &AccountKey,
+        creds: AccountCreds,
+        deadline: Deadline,
+        err: Error,
+    ) -> Result<AccountCreds, Error> {
+        match err {
+            Error::Auth { reason, .. } if reason == "token_expired" => {
+                let new = publisher.refresh(app, &creds, deadline).await?;
                 self.vault.put(key, &new)?;
-                publisher.publish(&app, &new, intent, deadline).await
+                Ok(new)
+            }
+            other => Err(other),
+        }
+    }
+
+    /// Proactive refresh, then the operation, then at most one
+    /// `token_expired` → refresh → retry. The next read/write verb must
+    /// call this instead of copying the match.
+    async fn with_creds<T, F>(
+        &self,
+        key: &AccountKey,
+        deadline: Deadline,
+        op: F,
+    ) -> Result<T, Error>
+    where
+        F: Fn(AppConfig, AccountCreds) -> CredOp<T>,
+    {
+        let (publisher, app, creds) = self.prepare_creds(key, deadline, true).await?;
+        match op(app.clone(), creds.clone()).await {
+            Err(e) => {
+                let creds = self
+                    .recover_expired(&*publisher, &app, key, creds, deadline, e)
+                    .await?;
+                op(app, creds).await
             }
             other => other,
-        }?;
-        Ok(out)
+        }
+    }
+
+    /// The claim-guarded publish: credential session plus the one reactive
+    /// token-expiry retry. Extracted from `publish` so the idempotency claim
+    /// can bracket it with a single release point.
+    async fn publish_once(
+        &self,
+        publisher: Arc<dyn Publisher>,
+        key: &AccountKey,
+        intent: Intent,
+        deadline: Deadline,
+    ) -> Result<Outcome, Error> {
+        self.with_creds(key, deadline, move |app, creds| {
+            let publisher = publisher.clone();
+            let intent = intent.clone();
+            Box::pin(async move { publisher.publish(&app, &creds, intent, deadline).await })
+        })
+        .await
     }
 
     /// Release an idempotency claim on every exit path. Failures are
@@ -337,30 +397,14 @@ impl Client {
                 site: key.site.clone(),
                 reason,
             })?;
-        let publisher = self.publisher(&key.site)?;
-        if !publisher.capabilities().contains(&Capability::ReadMetrics) {
-            return Err(Error::UnsupportedCapability {
-                site: key.site.clone(),
-                need: Capability::ReadMetrics,
-            });
-        }
-        let app = self
-            .apps
-            .get(&key.site)
-            .unwrap_or_else(|_| empty_app(&key.site));
-        let mut creds = self.vault.get(key)?;
-        creds = self
-            .maybe_refresh(&*publisher, &app, key, creds, deadline)
-            .await?;
+        self.require_capability(&key.site, Capability::ReadMetrics)?;
         let source = self.insights_source(&key.site, Capability::ReadMetrics)?;
-        match source.insights(&app, &creds, &query, deadline).await {
-            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds, deadline).await?;
-                self.vault.put(key, &new)?;
-                source.insights(&app, &new, &query, deadline).await
-            }
-            other => other,
-        }
+        self.with_creds(key, deadline, move |app, creds| {
+            let source = source.clone();
+            let query = query.clone();
+            Box::pin(async move { source.insights(&app, &creds, &query, deadline).await })
+        })
+        .await
     }
 
     /// Discover remote advertising accounts for the credential. This is a
@@ -371,63 +415,26 @@ impl Client {
         key: &AccountKey,
         deadline: Deadline,
     ) -> Result<AdAccountsReply, Error> {
-        let publisher = self.publisher(&key.site)?;
-        if !publisher
-            .capabilities()
-            .contains(&Capability::ReadAdAccounts)
-        {
-            return Err(Error::UnsupportedCapability {
-                site: key.site.clone(),
-                need: Capability::ReadAdAccounts,
-            });
-        }
-        let app = self
-            .apps
-            .get(&key.site)
-            .unwrap_or_else(|_| empty_app(&key.site));
-        let mut creds = self.vault.get(key)?;
-        creds = self
-            .maybe_refresh(&*publisher, &app, key, creds, deadline)
-            .await?;
+        self.require_capability(&key.site, Capability::ReadAdAccounts)?;
         let source = self.insights_source(&key.site, Capability::ReadAdAccounts)?;
-        match source.ad_accounts(&app, &creds, deadline).await {
-            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds, deadline).await?;
-                self.vault.put(key, &new)?;
-                source.ad_accounts(&app, &new, deadline).await
-            }
-            other => other,
-        }
+        self.with_creds(key, deadline, move |app, creds| {
+            let source = source.clone();
+            Box::pin(async move { source.ad_accounts(&app, &creds, deadline).await })
+        })
+        .await
     }
 
     /// Discover remote Pages visible to this credential. This follows the
     /// read-only account-discovery shape: capability before vault access,
     /// bounded refresh, then one retry only for a confirmed expired token.
     pub async fn pages(&self, key: &AccountKey, deadline: Deadline) -> Result<PagesReply, Error> {
-        let publisher = self.publisher(&key.site)?;
-        if !publisher.capabilities().contains(&Capability::ReadPages) {
-            return Err(Error::UnsupportedCapability {
-                site: key.site.clone(),
-                need: Capability::ReadPages,
-            });
-        }
-        let app = self
-            .apps
-            .get(&key.site)
-            .unwrap_or_else(|_| empty_app(&key.site));
-        let mut creds = self.vault.get(key)?;
-        creds = self
-            .maybe_refresh(&*publisher, &app, key, creds, deadline)
-            .await?;
+        self.require_capability(&key.site, Capability::ReadPages)?;
         let directory = self.page_directory(&key.site)?;
-        match directory.pages(&app, &creds, deadline).await {
-            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds, deadline).await?;
-                self.vault.put(key, &new)?;
-                directory.pages(&app, &new, deadline).await
-            }
-            other => other,
-        }
+        self.with_creds(key, deadline, move |app, creds| {
+            let directory = directory.clone();
+            Box::pin(async move { directory.pages(&app, &creds, deadline).await })
+        })
+        .await
     }
 
     /// Read one intentionally bounded page of published media. Like every
@@ -443,30 +450,13 @@ impl Client {
             site: key.site.clone(),
             reason,
         })?;
-        let publisher = self.publisher(&key.site)?;
-        if !publisher.capabilities().contains(&Capability::ReadMedia) {
-            return Err(Error::UnsupportedCapability {
-                site: key.site.clone(),
-                need: Capability::ReadMedia,
-            });
-        }
-        let app = self
-            .apps
-            .get(&key.site)
-            .unwrap_or_else(|_| empty_app(&key.site));
-        let mut creds = self.vault.get(key)?;
-        creds = self
-            .maybe_refresh(&*publisher, &app, key, creds, deadline)
-            .await?;
+        self.require_capability(&key.site, Capability::ReadMedia)?;
         let reader = self.media_reader(&key.site)?;
-        match reader.media(&app, &creds, &query, deadline).await {
-            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds, deadline).await?;
-                self.vault.put(key, &new)?;
-                reader.media(&app, &new, &query, deadline).await
-            }
-            other => other,
-        }
+        self.with_creds(key, deadline, move |app, creds| {
+            let reader = reader.clone();
+            Box::pin(async move { reader.media(&app, &creds, &query, deadline).await })
+        })
+        .await
     }
 
     /// Create a Meta advertising draft under the policy boundary. Approval
@@ -484,33 +474,14 @@ impl Client {
         })?;
         self.ads_policy
             .authorize(&key.site, AdsAction::for_paused_create(&request.create))?;
-        let publisher = self.publisher(&key.site)?;
-        if !publisher
-            .capabilities()
-            .contains(&Capability::CreatePausedAds)
-        {
-            return Err(Error::UnsupportedCapability {
-                site: key.site.clone(),
-                need: Capability::CreatePausedAds,
-            });
-        }
-        let app = self
-            .apps
-            .get(&key.site)
-            .unwrap_or_else(|_| empty_app(&key.site));
-        let mut creds = self.vault.get(key)?;
-        creds = self
-            .maybe_refresh(&*publisher, &app, key, creds, deadline)
-            .await?;
+        self.require_capability(&key.site, Capability::CreatePausedAds)?;
         let ads = self.ads_manager(&key.site, Capability::CreatePausedAds)?;
-        match ads.create_paused_ad(&app, &creds, &request, deadline).await {
-            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds, deadline).await?;
-                self.vault.put(key, &new)?;
-                ads.create_paused_ad(&app, &new, &request, deadline).await
-            }
-            other => other,
-        }
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move { ads.create_paused_ad(&app, &creds, &request, deadline).await })
+        })
+        .await
     }
 
     /// Upload an image only after local validation and policy approval. An
@@ -528,33 +499,14 @@ impl Client {
         })?;
         self.ads_policy
             .authorize(&key.site, AdsAction::UploadAdImage)?;
-        let publisher = self.publisher(&key.site)?;
-        if !publisher
-            .capabilities()
-            .contains(&Capability::CreateAdCreative)
-        {
-            return Err(Error::UnsupportedCapability {
-                site: key.site.clone(),
-                need: Capability::CreateAdCreative,
-            });
-        }
-        let app = self
-            .apps
-            .get(&key.site)
-            .unwrap_or_else(|_| empty_app(&key.site));
-        let mut creds = self.vault.get(key)?;
-        creds = self
-            .maybe_refresh(&*publisher, &app, key, creds, deadline)
-            .await?;
+        self.require_capability(&key.site, Capability::CreateAdCreative)?;
         let ads = self.ads_manager(&key.site, Capability::CreateAdCreative)?;
-        match ads.upload_ad_image(&app, &creds, &request, deadline).await {
-            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds, deadline).await?;
-                self.vault.put(key, &new)?;
-                ads.upload_ad_image(&app, &new, &request, deadline).await
-            }
-            other => other,
-        }
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move { ads.upload_ad_image(&app, &creds, &request, deadline).await })
+        })
+        .await
     }
 
     /// Create a Page-backed image-link creative behind the same validation,
@@ -572,37 +524,17 @@ impl Client {
         })?;
         self.ads_policy
             .authorize(&key.site, AdsAction::CreateLinkAdCreative)?;
-        let publisher = self.publisher(&key.site)?;
-        if !publisher
-            .capabilities()
-            .contains(&Capability::CreateAdCreative)
-        {
-            return Err(Error::UnsupportedCapability {
-                site: key.site.clone(),
-                need: Capability::CreateAdCreative,
-            });
-        }
-        let app = self
-            .apps
-            .get(&key.site)
-            .unwrap_or_else(|_| empty_app(&key.site));
-        let mut creds = self.vault.get(key)?;
-        creds = self
-            .maybe_refresh(&*publisher, &app, key, creds, deadline)
-            .await?;
+        self.require_capability(&key.site, Capability::CreateAdCreative)?;
         let ads = self.ads_manager(&key.site, Capability::CreateAdCreative)?;
-        match ads
-            .create_link_ad_creative(&app, &creds, &request, deadline)
-            .await
-        {
-            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds, deadline).await?;
-                self.vault.put(key, &new)?;
-                ads.create_link_ad_creative(&app, &new, &request, deadline)
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                ads.create_link_ad_creative(&app, &creds, &request, deadline)
                     .await
-            }
-            other => other,
-        }
+            })
+        })
+        .await
     }
 
     /// Read the platform's rendering of an existing creative. Unlike the
@@ -619,37 +551,17 @@ impl Client {
             site: key.site.clone(),
             reason,
         })?;
-        let publisher = self.publisher(&key.site)?;
-        if !publisher
-            .capabilities()
-            .contains(&Capability::ReadAdPreviews)
-        {
-            return Err(Error::UnsupportedCapability {
-                site: key.site.clone(),
-                need: Capability::ReadAdPreviews,
-            });
-        }
-        let app = self
-            .apps
-            .get(&key.site)
-            .unwrap_or_else(|_| empty_app(&key.site));
-        let mut creds = self.vault.get(key)?;
-        creds = self
-            .maybe_refresh(&*publisher, &app, key, creds, deadline)
-            .await?;
+        self.require_capability(&key.site, Capability::ReadAdPreviews)?;
         let ads = self.ads_manager(&key.site, Capability::ReadAdPreviews)?;
-        match ads
-            .preview_ad_creative(&app, &creds, &request, deadline)
-            .await
-        {
-            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds, deadline).await?;
-                self.vault.put(key, &new)?;
-                ads.preview_ad_creative(&app, &new, &request, deadline)
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                ads.preview_ad_creative(&app, &creds, &request, deadline)
                     .await
-            }
-            other => other,
-        }
+            })
+        })
+        .await
     }
 
     /// Read one ad object's configured and effective state once. This is a
@@ -665,33 +577,14 @@ impl Client {
             site: key.site.clone(),
             reason,
         })?;
-        let publisher = self.publisher(&key.site)?;
-        if !publisher
-            .capabilities()
-            .contains(&Capability::ReadAdReviewStatus)
-        {
-            return Err(Error::UnsupportedCapability {
-                site: key.site.clone(),
-                need: Capability::ReadAdReviewStatus,
-            });
-        }
-        let app = self
-            .apps
-            .get(&key.site)
-            .unwrap_or_else(|_| empty_app(&key.site));
-        let mut creds = self.vault.get(key)?;
-        creds = self
-            .maybe_refresh(&*publisher, &app, key, creds, deadline)
-            .await?;
+        self.require_capability(&key.site, Capability::ReadAdReviewStatus)?;
         let ads = self.ads_manager(&key.site, Capability::ReadAdReviewStatus)?;
-        match ads.ad_review_status(&app, &creds, &request, deadline).await {
-            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds, deadline).await?;
-                self.vault.put(key, &new)?;
-                ads.ad_review_status(&app, &new, &request, deadline).await
-            }
-            other => other,
-        }
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move { ads.ad_review_status(&app, &creds, &request, deadline).await })
+        })
+        .await
     }
 
     /// Poll review state only until `deadline`. The `PendingReview` reply is
@@ -725,37 +618,20 @@ impl Client {
             site: key.site.clone(),
             reason,
         })?;
-        let publisher = self.publisher(&key.site)?;
-        if !publisher
-            .capabilities()
-            .contains(&Capability::ReadAdReviewStatus)
-        {
-            return Err(Error::UnsupportedCapability {
-                site: key.site.clone(),
-                need: Capability::ReadAdReviewStatus,
-            });
-        }
-        let app = self
-            .apps
-            .get(&key.site)
-            .unwrap_or_else(|_| empty_app(&key.site));
-        let mut creds = self.vault.get(key)?;
-        creds = self
-            .maybe_refresh(&*publisher, &app, key, creds, deadline)
-            .await?;
+        self.require_capability(&key.site, Capability::ReadAdReviewStatus)?;
         let ads = self.ads_manager(&key.site, Capability::ReadAdReviewStatus)?;
+        let (publisher, app, mut creds) = self.prepare_creds(key, deadline, true).await?;
         let mut retried_expired_token = false;
 
         loop {
             let status = match ads.ad_review_status(&app, &creds, &request, deadline).await {
-                Err(Error::Auth { ref reason, .. })
-                    if reason == "token_expired" && !retried_expired_token =>
-                {
+                Err(e) if !retried_expired_token => {
                     // Match every other Client read: an expired token gets
                     // one refresh and one retry, never an unbounded refresh
                     // loop hidden inside a status poller.
-                    creds = publisher.refresh(&app, &creds, deadline).await?;
-                    self.vault.put(key, &creds)?;
+                    creds = self
+                        .recover_expired(&*publisher, &app, key, creds, deadline, e)
+                        .await?;
                     retried_expired_token = true;
                     continue;
                 }
@@ -809,27 +685,21 @@ impl Client {
                 limit: None,
             });
         }
-        let publisher = self.publisher(&intent.site)?;
         let need = intent.body.required_capability();
-        if !publisher.capabilities().contains(&need) {
-            return Err(Error::UnsupportedCapability {
-                site: intent.site.clone(),
-                need,
-            });
-        }
-        let app = self
-            .apps
-            .get(&key.site)
-            .unwrap_or_else(|_| empty_app(&key.site));
-        let creds = self.vault.get(key)?;
+        self.require_capability(&intent.site, need)?;
+        // Probe skips proactive refresh: the probe's own response is the
+        // instrument. Reactive token_expired still retries once so a
+        // refreshable token is not reported as broken.
+        let (publisher, app, creds) = self.prepare_creds(key, deadline, false).await?;
         match publisher
             .probe(&app, &creds, intent.clone(), deadline)
             .await
         {
-            Err(Error::Auth { ref reason, .. }) if reason == "token_expired" => {
-                let new = publisher.refresh(&app, &creds, deadline).await?;
-                self.vault.put(key, &new)?;
-                publisher.probe(&app, &new, intent, deadline).await
+            Err(e) => {
+                let creds = self
+                    .recover_expired(&*publisher, &app, key, creds, deadline, e)
+                    .await?;
+                publisher.probe(&app, &creds, intent, deadline).await
             }
             other => other,
         }
@@ -910,6 +780,18 @@ impl Client {
         self.registry
             .get(site)
             .ok_or_else(|| Error::UnknownSite(site.clone()))
+    }
+
+    fn require_capability(&self, site: &Site, need: Capability) -> Result<(), Error> {
+        let publisher = self.publisher(site)?;
+        if publisher.capabilities().contains(&need) {
+            Ok(())
+        } else {
+            Err(Error::UnsupportedCapability {
+                site: site.clone(),
+                need,
+            })
+        }
     }
 
     /// Facet lookup is fail-closed: advertising a capability without attaching
