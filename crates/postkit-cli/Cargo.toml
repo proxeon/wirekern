@@ -20,8 +20,10 @@ postkit = { version = "0.1.0", path = "../postkit", features = ["vault-file", "t
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-std", "net", "signal"] }
 rpassword = { workspace = true }
+axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1", "query"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
 
 [dev-dependencies]
 tempfile = "3"

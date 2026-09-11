@@ -243,6 +243,26 @@ postkit accounts delete <site> --yes
 
 `apps set` → `~/.postkit/apps/<site>.json`; warns on stderr when `POSTKIT_<SITE>_*` env vars will shadow the file. `apps show` reports `"source": "env" | "file"` — env credentials outrank the file whenever both exist. Accounts → `~/.postkit/accounts/<site>/<name>.json`. List prints names, not tokens.
 
+## `keys` / `serve`
+
+```text
+postkit keys create --name n8n
+postkit keys list
+postkit keys revoke --name n8n --yes
+postkit serve [--bind 127.0.0.1:8788]
+```
+
+For callers that cannot exec the binary. `keys create` prints `pk_live_` + 32 random bytes (unpadded base64url) **once** and stores SHA-256 of the full string in `~/.postkit/keys/<name>.json` (0600). `serve` binds loopback by default, requires at least one key, and speaks the same JSON as `--json`.
+
+| HTTP | CLI |
+|------|-----|
+| `POST /v1/posts` | `postkit post --stdin --json` |
+| `GET /v1/capabilities` | `postkit capabilities --json` |
+| `GET /v1/accounts?site=` | `postkit accounts list --json` |
+| `GET /v1/whoami?site=&account=` | `postkit whoami --json` |
+
+`Authorization: Bearer pk_live_…`. Optional `Idempotency-Key` and `X-Postkit-Deadline` (seconds, default 30). Auth dances and `--token` stay on the CLI. HTTP status tracks `WireError`: 404 unknown site/account, 401 auth, 422 usage, 429 rate/idempotency, 502 platform, 503 network/timeout. No `"ok": true`.
+
 ## Output document and exit codes
 
 Success is `Outcome`: `{ "site", "id", "url" }`. Fan-out is `{ "results": [ Outcome | WireError, … ] }`. Errors:

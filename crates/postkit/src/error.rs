@@ -195,6 +195,24 @@ impl WireError {
             Self::Platform { .. } | Self::Network { .. } | Self::Timeout { .. } => 5,
         }
     }
+
+    /// HTTP status for `postkit serve`. Agents that cannot exec still branch
+    /// on the JSON `error` tag; status is the coarse n8n/HTTP switch.
+    /// Unknown site/account are 404 (no such resource). Auth is 401. Usage
+    /// is 422. Transient is 429. Platform is 502. Our process/network is 503.
+    pub fn http_status(&self) -> u16 {
+        match self {
+            Self::UnknownSite { .. } | Self::UnknownAccount { .. } => 404,
+            Self::Auth { .. } => 401,
+            Self::RateLimited { .. } | Self::Idempotency { .. } => 429,
+            Self::InvalidPost { .. }
+            | Self::Unsupported { .. }
+            | Self::InvalidQuery { .. }
+            | Self::PolicyDenied { .. } => 422,
+            Self::Platform { .. } => 502,
+            Self::Network { .. } | Self::Timeout { .. } => 503,
+        }
+    }
 }
 
 impl Error {

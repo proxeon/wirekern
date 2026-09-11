@@ -294,7 +294,7 @@ fn read_dir_names(dir: &Path) -> Result<Vec<String>, Error> {
     Ok(names)
 }
 
-fn ensure_dir(path: &Path) -> Result<(), Error> {
+pub(crate) fn ensure_dir(path: &Path) -> Result<(), Error> {
     fs::create_dir_all(path)?;
     set_mode(path, 0o700)?;
     Ok(())
@@ -302,7 +302,7 @@ fn ensure_dir(path: &Path) -> Result<(), Error> {
 
 /// Write `bytes` to `path` via a same-dir tmp file + rename, so readers
 /// never see a half-written document.
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     use std::io::Write;
     // Unique per process: two postkit runs writing the same account get
     // distinct tmp files instead of interleaving writes into one shared

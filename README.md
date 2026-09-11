@@ -35,7 +35,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | | |
 |--|--|
 | **Job** | Official-API execution kernel. Send **now**. `Outcome.id` + `url`, or `WireError`. |
-| **Not** | Scheduler, persistent inbox, drafts, `--at`, media download/hosting, `serve` |
+| **Not** | Scheduler, persistent inbox, social drafts, `--at`, media download/hosting |
 | **You hold** | Tokens on disk. BYO Meta app / Bluesky app password. |
 | **Surfaces** | `cargo add postkit` (`Client`) and the `postkit` CLI. HTTP (`pk_live_`) only when a caller cannot exec. |
 
@@ -135,7 +135,7 @@ Roadmap, in order: images/video, then HTTP `serve` mode with `pk_live_` keys.
 
 ## Not in this version
 
-`serve` / `pk_live_`, `--listen`, video, schedule, persistent inbox, LinkedIn, Telegram, Mastodon. Add a site: [docs/connectors.md](./docs/connectors.md).
+`--listen`, video, schedule, persistent inbox, LinkedIn, Telegram, Mastodon. HTTP for callers that cannot exec: `postkit keys create --name n8n` then `postkit serve` (`127.0.0.1:8788`, `Authorization: Bearer pk_live_…`). Add a site: [docs/connectors.md](./docs/connectors.md).
 
 Notable changes, release by release: [CHANGELOG.md](./CHANGELOG.md).
 

@@ -1536,6 +1536,59 @@ async fn wire_error_no_ok_field() {
     assert!(v.get("ok").is_none());
 }
 
+#[test]
+fn wire_error_http_status_matches_the_serve_table() {
+    use crate::WireError;
+    assert_eq!(
+        WireError::UnknownSite {
+            site: Site::new("x")
+        }
+        .http_status(),
+        404
+    );
+    assert_eq!(
+        WireError::Auth {
+            site: Site::new("x"),
+            reason: "invalid_key".into()
+        }
+        .http_status(),
+        401
+    );
+    assert_eq!(
+        WireError::InvalidPost {
+            site: Site::new("x"),
+            reason: "text_too_long".into(),
+            limit: Some(500)
+        }
+        .http_status(),
+        422
+    );
+    assert_eq!(
+        WireError::RateLimited {
+            site: Site::new("x"),
+            retry_after: None
+        }
+        .http_status(),
+        429
+    );
+    assert_eq!(
+        WireError::Platform {
+            site: Site::new("x"),
+            code: "100".into(),
+            message: "no".into()
+        }
+        .http_status(),
+        502
+    );
+    assert_eq!(
+        WireError::Timeout {
+            site: Site::new("x")
+        }
+        .http_status(),
+        503
+    );
+}
+
 #[tokio::test]
 async fn secrets_debug_redacted() {
     let creds = AccountCreds::OAuth2 {

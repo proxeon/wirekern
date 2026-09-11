@@ -13,7 +13,7 @@ categories = ["api-bindings", "command-line-utilities"]
 
 [features]
 default = []
-vault-file = []
+vault-file = ["dep:getrandom", "dep:sha2", "dep:base64", "dep:time"]
 client = ["dep:reqwest"]
 oauth = ["client", "dep:getrandom"]
 threads = ["client", "oauth", "dep:tokio", "dep:emojis"]
@@ -44,6 +44,7 @@ time = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 hmac = { version = "0.12", optional = true }
 tokio = { workspace = true, optional = true }
+base64 = { version = "0.22", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

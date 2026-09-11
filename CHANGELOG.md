@@ -21,6 +21,10 @@ same detail by subject.
 
 ### Added
 
+- `postkit serve` and `postkit keys`: localhost HTTP for callers that cannot
+  exec, authenticated with `pk_live_` keys hashed in `~/.postkit/keys/`. Same
+  JSON as `--json`. Default bind `127.0.0.1:8788`.
+
 - WhatsApp Cloud business messaging: the new `whatsapp_cloud` connector uses
   a configured Phone number ID and a verified static System User token, not a
   fictional OAuth redirect. It sends only two typed, private shapes: a text

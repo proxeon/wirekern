@@ -2,6 +2,7 @@ mod ads;
 mod app;
 mod output;
 mod post;
+mod serve;
 mod whatsapp;
 
 use crate::ads::*;
@@ -146,6 +147,30 @@ enum Commands {
     /// WhatsApp Cloud replies, approved templates, and signed webhook parsing.
     #[command(name = "whatsapp", subcommand)]
     WhatsApp(WhatsAppCmd),
+    /// Local HTTP for callers that cannot exec the binary. Same JSON as `--json`.
+    Serve {
+        /// Default 127.0.0.1:8788. Passing 0.0.0.0 is an explicit LAN bind.
+        #[arg(long)]
+        bind: Option<String>,
+    },
+    #[command(subcommand)]
+    Keys(KeysCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum KeysCmd {
+    /// Print a `pk_live_` key once; store only its SHA-256.
+    Create {
+        #[arg(long)]
+        name: String,
+    },
+    List,
+    Revoke {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -571,6 +596,12 @@ async fn run(cli: Cli) -> Result<(), i32> {
                 eprintln!("deleted {site}/{account}");
             }
             Ok(())
+        }
+        Commands::Serve { bind } => crate::serve::run(&home, bind.as_deref(), json).await,
+        Commands::Keys(KeysCmd::Create { name }) => crate::serve::keys_create(&home, &name, json),
+        Commands::Keys(KeysCmd::List) => crate::serve::keys_list(&home, json),
+        Commands::Keys(KeysCmd::Revoke { name, yes }) => {
+            crate::serve::keys_revoke(&home, &name, yes, json)
         }
         Commands::WhatsApp(WhatsAppCmd::Configure {
             phone_number_id,
@@ -2147,6 +2178,20 @@ mod tests {
         let probe =
             serde_json::json!({ "site": "threads", "container_id": "C", "expires_in_hours": 24 });
         assert_eq!(result_line(&probe), "threads C dry-run");
+    }
+
+    #[test]
+    fn serve_and_keys_commands_parse() {
+        let cli = Cli::try_parse_from(["postkit", "serve", "--bind", "127.0.0.1:9000"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Serve { bind: Some(ref b) } if b == "127.0.0.1:9000"
+        ));
+        let cli = Cli::try_parse_from(["postkit", "keys", "create", "--name", "n8n"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Keys(KeysCmd::Create { ref name }) if name == "n8n"
+        ));
     }
 
     #[test]

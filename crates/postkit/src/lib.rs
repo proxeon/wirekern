@@ -19,6 +19,8 @@ mod vault;
 mod whatsapp;
 
 #[cfg(feature = "vault-file")]
+mod keys;
+#[cfg(feature = "vault-file")]
 mod vault_file;
 
 // Draft orchestration is an optional composition layer over the Tier B
@@ -96,6 +98,8 @@ pub use whatsapp::{
     WhatsAppSendRequest, MAX_REPLY_TEXT,
 };
 
+#[cfg(feature = "vault-file")]
+pub use keys::{CreatedKey, FileKeyStore, KeyMeta, KEY_PREFIX};
 #[cfg(feature = "vault-file")]
 pub use vault_file::{FileAppStore, FileVault};
 
