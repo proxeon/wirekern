@@ -433,7 +433,9 @@ enum WhatsAppCmd {
         /// Ask Meta to unfurl URLs in the body (extra remote fetch).
         #[arg(long)]
         preview_url: bool,
-        /// Required to prevent duplicate private sends on a confirmed retry.
+        /// Required. Confirmed successes are not resent. If the HTTP call
+        /// left the machine and the response was lost, Postkit does not
+        /// retry — check the delivery webhook first.
         #[arg(long)]
         idempotency: String,
         /// Explicitly authorize this one private, potentially chargeable send.

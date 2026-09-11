@@ -73,8 +73,9 @@ signing is configured.
 ## 3. Send a reply
 
 Replies are tied to a known inbound `wamid`; use the `from` and `id` from a
-verified parsed webhook. Enter the recipient as its WhatsApp ID: country code
-plus digits, with no `+`, spaces, or normalisation by Postkit.
+verified parsed webhook. Recipients may include a leading `+` and
+spaces/hyphens/parentheses; Postkit normalizes to digits (keeping `+` if you
+typed it) and does not invent a country code.
 
 ```bash
 postkit --json whatsapp reply \
@@ -93,6 +94,32 @@ a reply context.
 
 The returned `id` is Meta's accepted outbound `wamid`, **not** proof of
 delivery or read. Keep it to correlate the later status webhook.
+
+`--idempotency` records only a **confirmed** success. If the request left
+this machine and the response was lost, Postkit does **not** retry. Check
+the delivery webhook (or WhatsApp Manager) before sending again — a second
+send can be a second private message.
+
+In-window follow-ups that are not quoting a specific inbound `wamid` use
+`whatsapp text` (Meta `type=text` with no `context`). Meta still requires an
+open customer-service window; Postkit does not track that clock.
+
+```bash
+postkit --json whatsapp text \
+  --to '+60 12-345 6789' \
+  --text 'Kami masih semak.' \
+  --idempotency follow-up-order-42-v1 \
+  --allow-send
+```
+
+Parse a forwarded webhook over HTTP (not a listener):
+
+```bash
+curl -sS -X POST http://127.0.0.1:8788/v1/whatsapp/webhook \
+  -H "Authorization: Bearer pk_live_…" \
+  -H "X-Hub-Signature-256: sha256=…" \
+  --data-binary @webhook.json
+```
 
 ## 4. Send an approved template
 

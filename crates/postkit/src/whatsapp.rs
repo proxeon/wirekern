@@ -112,6 +112,11 @@ impl WhatsAppMessage {
 /// One send plus the caller-supplied idempotency key. Unlike a social post,
 /// every WhatsApp send requires a key because an uncertain retry could create
 /// a duplicate private message and potentially a second billable event.
+///
+/// The ledger only records a confirmed `Outcome`. If the request left the
+/// machine and the response was lost, the claim is released and a retry is
+/// **not** automatic — the operator must reconcile via the delivery webhook
+/// before sending again.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WhatsAppSendRequest {
     pub message: WhatsAppMessage,
@@ -337,11 +342,7 @@ pub fn normalize_recipient(value: &str) -> Result<String, String> {
     if !(MIN_RECIPIENT_DIGITS..=MAX_RECIPIENT_DIGITS).contains(&digits.len()) {
         return Err("recipient_must_be_whatsapp_id".into());
     }
-    Ok(if plus {
-        format!("+{digits}")
-    } else {
-        digits
-    })
+    Ok(if plus { format!("+{digits}") } else { digits })
 }
 
 fn validate_context_id(value: &str) -> Result<(), String> {
@@ -468,5 +469,21 @@ mod tests {
             idempotency_key: "not/a-filename".into(),
         };
         assert_eq!(request.validate().unwrap_err(), "idempotency_key_invalid");
+    }
+
+    #[test]
+    fn idempotency_docs_require_a_filename_safe_key() {
+        // The key is a vault filename. Spaces/slashes would be a path
+        // injection, not a retry token.
+        assert!(validate_recipient("60123456789").is_ok());
+        let ok = WhatsAppSendRequest {
+            message: WhatsAppMessage::Text {
+                to: "60123456789".into(),
+                text: "hi".into(),
+                preview_url: false,
+            },
+            idempotency_key: "order-42-v1".into(),
+        };
+        assert!(ok.validate().is_ok());
     }
 }
