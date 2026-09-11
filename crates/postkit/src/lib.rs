@@ -97,8 +97,9 @@ pub use types::{
 pub use vault::{MemoryVault, Vault};
 #[cfg(feature = "whatsapp-cloud")]
 pub use whatsapp::{
-    DeliveryStatus, DeliveryStatusKind, InboundMedia, InboundMessage, InboundMessages,
-    WhatsAppMessage,
+    DeliveryStatus, DeliveryStatusKind, InboundContact, InboundInteractive, InboundLocation,
+    InboundMedia, InboundMessage, InboundMessages, InboundOrder, InboundReaction, InboundReferral,
+    InboundUnsupported, WhatsAppMessage,
     WhatsAppSendRequest, MAX_REPLY_TEXT,
 };
 

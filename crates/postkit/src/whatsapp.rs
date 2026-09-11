@@ -141,6 +141,20 @@ pub struct InboundMessage {
     /// fetch `id` with the System User token if needed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media: Option<InboundMedia>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<InboundLocation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contacts: Option<Vec<InboundContact>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interactive: Option<InboundInteractive>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reaction: Option<InboundReaction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub referral: Option<InboundReferral>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<InboundOrder>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsupported: Option<InboundUnsupported>,
 }
 
 /// Identifiers Meta returns for inbound media. Caption/filename are
@@ -154,6 +168,64 @@ pub struct InboundMedia {
     pub caption: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InboundLocation {
+    pub latitude: String,
+    pub longitude: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InboundContact {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formatted_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InboundInteractive {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InboundReaction {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InboundReferral {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InboundOrder {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog_id: Option<String>,
+}
+
+/// Meta `type=unsupported` plus the first error code/title. No raw dump.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InboundUnsupported {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// The small, closed set of outbound delivery states Postkit can interpret.

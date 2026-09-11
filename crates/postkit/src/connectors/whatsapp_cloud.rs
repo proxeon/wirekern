@@ -11,8 +11,9 @@ use crate::publisher::{AuthKind, Publisher};
 use crate::registry::Connector;
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Site, WhoAmI};
 use crate::whatsapp::{
-    DeliveryStatus, DeliveryStatusKind, InboundMedia, InboundMessage, InboundMessages,
-    WhatsAppMessage, WhatsAppSendRequest,
+    DeliveryStatus, DeliveryStatusKind, InboundContact, InboundInteractive, InboundLocation,
+    InboundMedia, InboundMessage, InboundMessages, InboundOrder, InboundReaction, InboundReferral,
+    InboundUnsupported, WhatsAppMessage, WhatsAppSendRequest,
 };
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
@@ -381,6 +382,7 @@ fn inbound_message(value: &Value) -> Result<InboundMessage, Error> {
         .map(str::to_owned)
         .ok_or_else(|| webhook_error("webhook_message_type_missing"))?;
     let media = inbound_media(&kind, value);
+    let unsupported = inbound_unsupported(&kind, value);
     Ok(InboundMessage {
         id,
         from,
@@ -396,6 +398,13 @@ fn inbound_message(value: &Value) -> Result<InboundMessage, Error> {
             .and_then(|context| context.get("id"))
             .and_then(value_string),
         media,
+        location: inbound_location(value),
+        contacts: inbound_contacts(value),
+        interactive: inbound_interactive(value),
+        reaction: inbound_reaction(value),
+        referral: inbound_referral(value),
+        order: inbound_order(value),
+        unsupported,
     })
 }
 
@@ -411,6 +420,99 @@ fn inbound_media(kind: &str, value: &Value) -> Option<InboundMedia> {
         mime_type: object.get("mime_type").and_then(value_string),
         caption: object.get("caption").and_then(value_string),
         filename: object.get("filename").and_then(value_string),
+    })
+}
+
+fn json_coord(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .or_else(|| value.as_f64().map(|n| n.to_string()))
+        .or_else(|| value.as_i64().map(|n| n.to_string()))
+}
+
+fn inbound_location(value: &Value) -> Option<InboundLocation> {
+    let object = value.get("location")?;
+    Some(InboundLocation {
+        latitude: json_coord(object.get("latitude")?)?,
+        longitude: json_coord(object.get("longitude")?)?,
+        name: object.get("name").and_then(value_string),
+        address: object.get("address").and_then(value_string),
+    })
+}
+
+fn inbound_contacts(value: &Value) -> Option<Vec<InboundContact>> {
+    let list = value.get("contacts")?.as_array()?;
+    let contacts: Vec<_> = list
+        .iter()
+        .map(|c| InboundContact {
+            formatted_name: c
+                .get("name")
+                .and_then(|n| n.get("formatted_name"))
+                .and_then(value_string),
+        })
+        .collect();
+    if contacts.is_empty() {
+        None
+    } else {
+        Some(contacts)
+    }
+}
+
+fn inbound_interactive(value: &Value) -> Option<InboundInteractive> {
+    let object = value.get("interactive")?;
+    let kind = object
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?
+        .to_owned();
+    let reply = object
+        .get(kind.as_str())
+        .or_else(|| object.get("button_reply"))
+        .or_else(|| object.get("list_reply"));
+    Some(InboundInteractive {
+        kind,
+        id: reply.and_then(|r| r.get("id")).and_then(value_string),
+        title: reply.and_then(|r| r.get("title")).and_then(value_string),
+    })
+}
+
+fn inbound_reaction(value: &Value) -> Option<InboundReaction> {
+    let object = value.get("reaction")?;
+    Some(InboundReaction {
+        emoji: object.get("emoji").and_then(value_string),
+        message_id: object.get("message_id").and_then(value_string),
+    })
+}
+
+fn inbound_referral(value: &Value) -> Option<InboundReferral> {
+    let object = value.get("referral")?;
+    Some(InboundReferral {
+        source_type: object.get("source_type").and_then(value_string),
+        source_id: object.get("source_id").and_then(value_string),
+        source_url: object.get("source_url").and_then(value_string),
+    })
+}
+
+fn inbound_order(value: &Value) -> Option<InboundOrder> {
+    let object = value.get("order")?;
+    Some(InboundOrder {
+        catalog_id: object.get("catalog_id").and_then(value_string),
+    })
+}
+
+fn inbound_unsupported(kind: &str, value: &Value) -> Option<InboundUnsupported> {
+    if kind != "unsupported" {
+        return None;
+    }
+    let first = value
+        .get("errors")
+        .and_then(Value::as_array)
+        .and_then(|e| e.first());
+    Some(InboundUnsupported {
+        code: first.and_then(|e| e.get("code")).and_then(value_string),
+        title: first.and_then(|e| e.get("title")).and_then(value_string),
     })
 }
 
@@ -806,6 +908,40 @@ mod tests {
         assert_eq!(media.mime_type.as_deref(), Some("image/jpeg"));
         assert_eq!(media.caption.as_deref(), Some("photo"));
         assert!(media.filename.is_none());
+    }
+
+    #[test]
+    fn signed_webhook_extracts_structured_inbound_fields() {
+        let raw = br#"{
+          "object":"whatsapp_business_account",
+          "entry":[{"changes":[{
+            "field":"messages",
+            "value":{
+              "metadata":{"phone_number_id":"123456789"},
+              "messages":[
+                {"from":"1","id":"wamid.loc","type":"location",
+                 "location":{"latitude":3.14,"longitude":101.6,"name":"KL"}},
+                {"from":"1","id":"wamid.btn","type":"interactive",
+                 "interactive":{"type":"button_reply","button_reply":{"id":"yes","title":"Yes"}}},
+                {"from":"1","id":"wamid.rx","type":"reaction",
+                 "reaction":{"emoji":"thumbs","message_id":"wamid.parent"}},
+                {"from":"1","id":"wamid.un","type":"unsupported",
+                 "errors":[{"code":131051,"title":"unsupported"}]}
+              ]
+            }
+          }]}]
+        }"#;
+        let reply = WhatsAppCloud::parse_signed_webhook(&app(), &signed(raw), raw).unwrap();
+        assert_eq!(reply.messages[0].location.as_ref().unwrap().name.as_deref(), Some("KL"));
+        assert_eq!(reply.messages[1].interactive.as_ref().unwrap().id.as_deref(), Some("yes"));
+        assert_eq!(
+            reply.messages[2].reaction.as_ref().unwrap().emoji.as_deref(),
+            Some("thumbs")
+        );
+        assert_eq!(
+            reply.messages[3].unsupported.as_ref().unwrap().code.as_deref(),
+            Some("131051")
+        );
     }
 
     #[test]
