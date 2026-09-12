@@ -7,9 +7,11 @@
 //! `fb_exchange_token` grant (~60 days).
 
 use crate::ads::{
-    AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, CreateLinkAdCreativeRequest,
-    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
-    PausedAdCreate, UploadAdImageRequest, UploadedAdImage,
+    AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdsTokenInspection, AdsTokenKind,
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, MarketingApiAccessTierKind,
+    PausedAdCreate, UploadAdImageRequest, UploadedAdImage, MARKETING_API_ACCESS_TIER_DASHBOARD,
+    SYSTEM_USER_TOKEN_KIND,
 };
 use crate::error::Error;
 use crate::facets::{AdsManager, InsightsSource};
@@ -216,6 +218,15 @@ impl Publisher for MetaAds {
         let token = access_token(creds)?;
         let user_id = extra_string(creds, "user_id");
         let account = extra_string(creds, "ad_account_id");
+        // System User tokens are not user OAuth credentials. Meta's
+        // fb_exchange_token grant is the ~60-day user path; calling it here
+        // would treat an unattended secret as a person token.
+        if extra_string(creds, "token_kind").as_deref() == Some(SYSTEM_USER_TOKEN_KIND) {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "system_user_no_refresh".into(),
+            });
+        }
         // The caller's budget, not a private 30s (issue 024).
         let long = long_lived(
             &self.http,
@@ -432,6 +443,70 @@ impl AdsManager for MetaAds {
     ) -> Result<CreativePreview, Error> {
         let token = access_token(creds)?;
         preview_ad_creative(&self.http, &self.base, &self.site, token, request, deadline).await
+    }
+
+    async fn bootstrap_system_user_token(
+        &self,
+        app: &AppConfig,
+        token: &str,
+        deadline: Deadline,
+    ) -> Result<AccountCreds, Error> {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "missing_token".into(),
+            });
+        }
+        let oauth = require_oauth(app)?;
+        // Classify before vault write so a user token cannot be stored as
+        // an unattended secret (references item 3).
+        let debug = debug_token(
+            &self.http,
+            &self.base,
+            oauth,
+            token,
+            deadline,
+            AdsTokenKind::SystemUser,
+        )
+        .await?;
+        if !debug.is_valid {
+            return Err(Error::Auth {
+                site: self.site.clone(),
+                reason: "invalid_token".into(),
+            });
+        }
+        refuse_non_system_user_debug(&self.site, debug.debug_type.as_deref())?;
+        let me = whoami(&self.http, &self.base, token, deadline).await?;
+        let account = first_ad_account(&self.http, &self.base, token, deadline)
+            .await?
+            .ok_or_else(|| Error::Auth {
+                site: self.site.clone(),
+                reason: "no_ad_account".into(),
+            })?;
+        Ok(system_user_creds(token, &me.id, &account, debug.expires_at))
+    }
+
+    async fn inspect_access_token(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<AdsTokenInspection, Error> {
+        let oauth = require_oauth(app)?;
+        let token = access_token(creds)?;
+        let kind = AdsTokenKind::from_vault_extra(extra_string(creds, "token_kind").as_deref());
+        debug_token(&self.http, &self.base, oauth, token, deadline, kind).await
+    }
+
+    async fn marketing_api_access_tier(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        deadline: Deadline,
+    ) -> Result<MarketingApiAccessTier, Error> {
+        let token = access_token(creds)?;
+        marketing_api_access_tier(&self.http, &self.base, token, deadline).await
     }
 
     async fn ad_review_status(
@@ -1166,6 +1241,189 @@ fn extra_string(creds: &AccountCreds, key: &str) -> Option<String> {
     extra.get(key).and_then(|v| v.as_str()).map(String::from)
 }
 
+fn app_access_token(oauth: &OAuthApp) -> String {
+    format!("{}|{}", oauth.client_id, oauth.client_secret)
+}
+
+fn refuse_non_system_user_debug(site: &Site, debug_type: Option<&str>) -> Result<(), Error> {
+    match debug_type
+        .map(|value| value.to_ascii_uppercase())
+        .as_deref()
+    {
+        None | Some("SYSTEM_USER") => Ok(()),
+        Some("USER") => Err(Error::Auth {
+            site: site.clone(),
+            reason: "user_token_not_system_user".into(),
+        }),
+        Some(other) => Err(Error::Auth {
+            site: site.clone(),
+            reason: format!("wrong_token_type:{other}"),
+        }),
+    }
+}
+
+fn system_user_creds(
+    token: &str,
+    user_id: &str,
+    ad_account_id: &str,
+    expires_at: Option<u64>,
+) -> AccountCreds {
+    let mut extra = serde_json::Map::new();
+    extra.insert("user_id".into(), Value::String(user_id.into()));
+    extra.insert("ad_account_id".into(), Value::String(ad_account_id.into()));
+    extra.insert(
+        "token_kind".into(),
+        Value::String(SYSTEM_USER_TOKEN_KIND.into()),
+    );
+    if let Some(expires_at) = expires_at {
+        extra.insert("expires_at".into(), Value::from(expires_at));
+    }
+    AccountCreds::OAuth2 {
+        access_token: token.into(),
+        refresh_token: None,
+        extra: Value::Object(extra),
+    }
+}
+
+/// `GET /debug_token`. The app access token authenticates the inspect call;
+/// `input_token` is the vault credential. Neither value is copied into errors.
+async fn debug_token(
+    http: &Http,
+    base: &str,
+    oauth: &OAuthApp,
+    input_token: &str,
+    deadline: Deadline,
+    vault_kind: AdsTokenKind,
+) -> Result<AdsTokenInspection, Error> {
+    let site = Site::new(SITE);
+    let app_token = app_access_token(oauth);
+    let q = form(&[("input_token", input_token), ("access_token", &app_token)]);
+    let url = format!("{base}/debug_token?{q}");
+    let resp = http.send(http.get(&url), deadline, &site).await?;
+    let body = read_json(resp, &site).await?;
+    let data = body.get("data").cloned().unwrap_or(Value::Null);
+    let expires_at = data.get("expires_at").and_then(|v| v.as_u64());
+    Ok(AdsTokenInspection {
+        site,
+        token_kind: vault_kind,
+        debug_type: data
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        is_valid: data
+            .get("is_valid")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        expires_at: expires_at.filter(|value| *value != 0),
+        data_access_expires_at: data
+            .get("data_access_expires_at")
+            .and_then(|v| v.as_u64())
+            .filter(|value| *value != 0),
+        scopes: data
+            .get("scopes")
+            .and_then(|v| v.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        user_id: data
+            .get("user_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        app_id: data
+            .get("app_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        application: data
+            .get("application")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    })
+}
+
+fn access_tier_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    const NAMES: &[&str] = &[
+        "x-fb-ads-insights-throttle",
+        "x-ad-account-usage",
+        "x-business-use-case-usage",
+    ];
+    for name in NAMES {
+        let Some(value) = headers.get(*name).and_then(|value| value.to_str().ok()) else {
+            continue;
+        };
+        if let Ok(json) = serde_json::from_str::<Value>(value) {
+            if let Some(tier) = json_ads_api_access_tier(&json) {
+                return Some(tier);
+            }
+        }
+        if let Some(tier) = value
+            .split("ads_api_access_tier")
+            .nth(1)
+            .and_then(|rest| rest.split(['"', ',', '}']).nth(1))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(tier.to_string());
+        }
+    }
+    None
+}
+
+fn json_ads_api_access_tier(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            if let Some(tier) = map.get("ads_api_access_tier").and_then(|v| v.as_str()) {
+                return Some(tier.to_string());
+            }
+            for nested in map.values() {
+                if let Some(tier) = json_ads_api_access_tier(nested) {
+                    return Some(tier);
+                }
+            }
+            None
+        }
+        Value::Array(items) => items.iter().find_map(json_ads_api_access_tier),
+        _ => None,
+    }
+}
+
+async fn marketing_api_access_tier(
+    http: &Http,
+    base: &str,
+    token: &str,
+    deadline: Deadline,
+) -> Result<MarketingApiAccessTier, Error> {
+    let site = Site::new(SITE);
+    let q = form(&[
+        ("fields", "account_id"),
+        ("limit", "1"),
+        ("access_token", token),
+    ]);
+    let url = format!("{base}/me/adaccounts?{q}");
+    let resp = http.send(http.get(&url), deadline, &site).await?;
+    let raw = access_tier_from_headers(resp.headers());
+    // Consume the body so a 4xx still maps through the usual Graph errors.
+    let _ = read_json(resp, &site).await?;
+    let tier = raw
+        .as_deref()
+        .map(MarketingApiAccessTierKind::from_header)
+        .unwrap_or(MarketingApiAccessTierKind::Unknown);
+    Ok(MarketingApiAccessTier {
+        site,
+        tier,
+        raw,
+        source: if tier == MarketingApiAccessTierKind::Unknown {
+            "dashboard".into()
+        } else {
+            "response_header".into()
+        },
+        dashboard: MARKETING_API_ACCESS_TIER_DASHBOARD.into(),
+    })
+}
+
 /// Resolve the ad account digits: query override (accepts `123` or
 /// `act_123`) outranks the one stored at auth time.
 fn account_id(creds: &AccountCreds, override_: Option<&str>) -> Result<String, Error> {
@@ -1284,6 +1542,7 @@ mod tests {
         CreateLinkAdCreativeRequest, CreativePreviewRequest, LinkAdCreative, LinkCallToAction,
         PausedAd, PausedAdset, PausedCampaign, UploadAdImageRequest,
     };
+    use crate::facets::AdsManager;
     use crate::insights::{AttributionWindow, InsightsLevel};
     use httpmock::prelude::*;
     use serde_json::json;
@@ -2374,5 +2633,175 @@ mod tests {
         assert_eq!(InsightsLevel::Campaign.id_field(), "campaign_id");
         assert_eq!(InsightsLevel::Adset.id_field(), "adset_id");
         assert_eq!(InsightsLevel::Ad.id_field(), "ad_id");
+    }
+
+    #[test]
+    fn access_tier_header_maps_limited_and_full() {
+        assert_eq!(
+            MarketingApiAccessTierKind::from_header("standard_access"),
+            MarketingApiAccessTierKind::Full
+        );
+        assert_eq!(
+            MarketingApiAccessTierKind::from_header("development_access"),
+            MarketingApiAccessTierKind::Limited
+        );
+        assert_eq!(
+            MarketingApiAccessTierKind::from_header("limited_access"),
+            MarketingApiAccessTierKind::Limited
+        );
+        assert_eq!(
+            MarketingApiAccessTierKind::from_header("nope"),
+            MarketingApiAccessTierKind::Unknown
+        );
+    }
+
+    #[test]
+    fn system_user_debug_refuses_a_user_token() {
+        let site = Site::new(SITE);
+        let err = refuse_non_system_user_debug(&site, Some("USER")).unwrap_err();
+        assert!(
+            matches!(err, Error::Auth { reason, .. } if reason == "user_token_not_system_user")
+        );
+        assert!(refuse_non_system_user_debug(&site, Some("SYSTEM_USER")).is_ok());
+        assert!(refuse_non_system_user_debug(&site, None).is_ok());
+    }
+
+    #[tokio::test]
+    async fn system_user_bootstrap_stores_kind_and_ad_account() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v26.0/debug_token");
+            then.status(200).json_body(json!({
+                "data": {
+                    "app_id": "id",
+                    "type": "SYSTEM_USER",
+                    "is_valid": true,
+                    "expires_at": 0,
+                    "scopes": ["ads_management", "ads_read"],
+                    "user_id": "55"
+                }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v26.0/me");
+            then.status(200)
+                .json_body(json!({ "id": "55", "name": "Postkit Bot" }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v26.0/me/adaccounts");
+            then.status(200).json_body(json!({
+                "data": [{ "account_id": "123", "name": "Test", "currency": "MYR" }]
+            }));
+        });
+        let t = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let creds = t
+            .bootstrap_system_user_token(&oauth_app(), "SYS", Deadline::from_secs(30))
+            .await
+            .unwrap();
+        match &creds {
+            AccountCreds::OAuth2 {
+                access_token,
+                extra,
+                ..
+            } => {
+                assert_eq!(access_token, "SYS");
+                assert_eq!(
+                    extra.get("token_kind").and_then(|v| v.as_str()),
+                    Some(SYSTEM_USER_TOKEN_KIND)
+                );
+                assert_eq!(extra.get("user_id").and_then(|v| v.as_str()), Some("55"));
+                assert_eq!(
+                    extra.get("ad_account_id").and_then(|v| v.as_str()),
+                    Some("act_123")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let err = t
+            .refresh(&oauth_app(), &creds, Deadline::from_secs(30))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Auth { reason, .. } if reason == "system_user_no_refresh"));
+        assert!(!crate::refresh_is_due(&creds));
+    }
+
+    #[tokio::test]
+    async fn system_user_bootstrap_rejects_a_user_oauth_token() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v26.0/debug_token");
+            then.status(200).json_body(json!({
+                "data": { "type": "USER", "is_valid": true, "user_id": "1" }
+            }));
+        });
+        let t = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let err = t
+            .bootstrap_system_user_token(&oauth_app(), "EAA", Deadline::from_secs(30))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Auth { reason, .. } if reason == "user_token_not_system_user")
+        );
+    }
+
+    #[tokio::test]
+    async fn inspect_token_omits_the_secret_and_maps_debug_fields() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v26.0/debug_token");
+            then.status(200).json_body(json!({
+                "data": {
+                    "app_id": "id",
+                    "application": "Postkit",
+                    "type": "SYSTEM_USER",
+                    "is_valid": true,
+                    "expires_at": 0,
+                    "data_access_expires_at": 1_800_000_000,
+                    "scopes": ["ads_read"],
+                    "user_id": "55"
+                }
+            }));
+        });
+        let t = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let creds = AccountCreds::OAuth2 {
+            access_token: "secret-token-value".into(),
+            refresh_token: None,
+            extra: json!({ "token_kind": SYSTEM_USER_TOKEN_KIND, "ad_account_id": "act_123" }),
+        };
+        let inspection = t
+            .inspect_access_token(&oauth_app(), &creds, Deadline::from_secs(30))
+            .await
+            .unwrap();
+        let encoded = serde_json::to_string(&inspection).unwrap();
+        assert!(!encoded.contains("secret-token-value"));
+        assert!(!encoded.contains("sec"));
+        assert_eq!(inspection.token_kind, AdsTokenKind::SystemUser);
+        assert_eq!(inspection.debug_type.as_deref(), Some("SYSTEM_USER"));
+        assert!(inspection.is_valid);
+        assert_eq!(inspection.expires_at, None);
+        assert_eq!(inspection.scopes, vec!["ads_read"]);
+    }
+
+    #[tokio::test]
+    async fn access_tier_reads_ads_api_access_tier_header() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v26.0/me/adaccounts");
+            then.status(200)
+                .header(
+                    "X-FB-Ads-Insights-Throttle",
+                    r#"{"app_id_util_pct":1,"ads_api_access_tier":"standard_access"}"#,
+                )
+                .json_body(json!({ "data": [{ "account_id": "123" }] }));
+        });
+        let t = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let reply = t
+            .marketing_api_access_tier(&oauth_app(), &token_creds("123"), Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(reply.tier, MarketingApiAccessTierKind::Full);
+        assert_eq!(reply.raw.as_deref(), Some("standard_access"));
+        assert_eq!(reply.source, "response_header");
+        assert!(reply.dashboard.contains("Marketing API Access Tier"));
     }
 }

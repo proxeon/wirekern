@@ -22,9 +22,9 @@ Last aligned with Meta Marketing API / Graph docs and
 - [x] `ads accounts` lists remote `act_<id>` + name, currency, timezone, status
 - [x] `--ad-account` override (`123` or `act_123`); never silently pick among many on a write
 - [x] `no_ad_account` at the door when the token sees zero accounts
-- [ ] System User token path (unattended; not a user token reused as a secret)
-- [ ] Token debug / inspect as a first-class verb
-- [ ] Marketing API Access Tier (Limited vs Full) as operator-facing status (docs/ops, not a bypass)
+- [x] System User token path (unattended; not a user token reused as a secret)
+- [x] Token debug / inspect as a first-class verb
+- [x] Marketing API Access Tier (Limited vs Full) as operator-facing status (docs/ops, not a bypass)
 
 ## Insights (sync, bounded)
 

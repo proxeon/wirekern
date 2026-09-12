@@ -7,9 +7,9 @@
 //! trait by accident.
 
 use crate::ads::{
-    AdReviewStatus, AdReviewStatusRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
-    CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest, UploadAdImageRequest,
-    UploadedAdImage,
+    AdReviewStatus, AdReviewStatusRequest, AdsTokenInspection, CreateLinkAdCreativeRequest,
+    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
+    MarketingApiAccessTier, UploadAdImageRequest, UploadedAdImage,
 };
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
@@ -17,7 +17,7 @@ use crate::media::{MediaQuery, MediaReply};
 use crate::pages::PagesReply;
 #[cfg(feature = "whatsapp-cloud")]
 use crate::types::Outcome;
-use crate::types::{AccountCreds, AppConfig, Deadline};
+use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Site};
 #[cfg(feature = "whatsapp-cloud")]
 use crate::whatsapp::{
     WhatsAppFlowDraft, WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppMediaMeta,
@@ -91,6 +91,44 @@ pub trait AdsManager: Send + Sync {
         request: &AdReviewStatusRequest,
         deadline: Deadline,
     ) -> Result<AdReviewStatus, Error>;
+
+    /// Store a Business Manager System User token. Default refuses so a
+    /// paused-create mock cannot accidentally grow an auth path.
+    async fn bootstrap_system_user_token(
+        &self,
+        _app: &AppConfig,
+        _token: &str,
+        _deadline: Deadline,
+    ) -> Result<AccountCreds, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ReadAdAccounts,
+        })
+    }
+
+    async fn inspect_access_token(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _deadline: Deadline,
+    ) -> Result<AdsTokenInspection, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ReadAdAccounts,
+        })
+    }
+
+    async fn marketing_api_access_tier(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _deadline: Deadline,
+    ) -> Result<MarketingApiAccessTier, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ReadAdAccounts,
+        })
+    }
 }
 
 /// Page identity discovery. Separate from ad-account listing: a Page is an

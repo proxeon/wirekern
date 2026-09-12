@@ -496,6 +496,107 @@ pub enum AdReviewWait {
     PendingReview(AdReviewStatus),
 }
 
+/// Vault `extra.token_kind` for an unattended Business Manager credential.
+/// Distinct from a user OAuth token so refresh never calls `fb_exchange_token`.
+pub const SYSTEM_USER_TOKEN_KIND: &str = "system_user";
+
+/// How the stored Meta Ads token was obtained. Inspect surfaces this so an
+/// operator can tell a System User credential from a paste-code user token
+/// without printing the secret.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdsTokenKind {
+    UserOauth,
+    SystemUser,
+    Unknown,
+}
+
+impl AdsTokenKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UserOauth => "user_oauth",
+            Self::SystemUser => "system_user",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_vault_extra(kind: Option<&str>) -> Self {
+        match kind {
+            Some(SYSTEM_USER_TOKEN_KIND) => Self::SystemUser,
+            Some("user_oauth") => Self::UserOauth,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// `GET /debug_token` metadata. The access token itself is never stored here.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsTokenInspection {
+    pub site: Site,
+    pub token_kind: AdsTokenKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_type: Option<String>,
+    pub is_valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_access_expires_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application: Option<String>,
+}
+
+/// Marketing API Access Tier as Meta renamed it in 2026 (formerly AMSA).
+/// Header values stay in `raw`; `tier` is the operator-facing Limited/Full map.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketingApiAccessTierKind {
+    Limited,
+    Full,
+    Unknown,
+}
+
+impl MarketingApiAccessTierKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Limited => "limited",
+            Self::Full => "full",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Map Meta's `ads_api_access_tier` header onto Limited/Full.
+    /// `standard_access` is the historical Full-tier label; `development_access`
+    /// / `limited_access` are Limited.
+    pub fn from_header(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "standard_access" | "full" | "full_access" => Self::Full,
+            "development_access" | "limited_access" | "limited" | "development" => Self::Limited,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MarketingApiAccessTier {
+    pub site: Site,
+    pub tier: MarketingApiAccessTierKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
+    /// Where the tier value came from (`response_header` or `dashboard`).
+    pub source: String,
+    /// App Dashboard path. The connector cannot change the tier.
+    pub dashboard: String,
+}
+
+pub const MARKETING_API_ACCESS_TIER_DASHBOARD: &str =
+    "App Dashboard → App Review → Permissions and features → Marketing API Access Tier";
+
 impl std::fmt::Debug for CreativePreview {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // An iframe's source can be short-lived and account-scoped. Match the

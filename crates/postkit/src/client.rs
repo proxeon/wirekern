@@ -1,9 +1,9 @@
 #[cfg(feature = "meta-ads")]
 use crate::ads::AdReviewWait;
 use crate::ads::{
-    AdReviewStatus, AdReviewStatusRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
-    CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest, UploadAdImageRequest,
-    UploadedAdImage,
+    AdReviewStatus, AdReviewStatusRequest, AdsTokenInspection, CreateLinkAdCreativeRequest,
+    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
+    MarketingApiAccessTier, UploadAdImageRequest, UploadedAdImage, SYSTEM_USER_TOKEN_KIND,
 };
 use crate::apps::AppStore;
 use crate::error::Error;
@@ -518,9 +518,7 @@ impl Client {
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
         let creds = self.vault.get(key)?;
-        assets
-            .upload_media(&app, &creds, &upload, deadline)
-            .await
+        assets.upload_media(&app, &creds, &upload, deadline).await
     }
 
     #[cfg(feature = "whatsapp-cloud")]
@@ -1278,6 +1276,60 @@ impl Client {
         .await
     }
 
+    /// Explicit System User bootstrap. Verifies the token and refuses a
+    /// user OAuth token stored as an unattended secret.
+    pub async fn put_ads_system_user_token(
+        &self,
+        key: &AccountKey,
+        token: &str,
+        deadline: Deadline,
+    ) -> Result<WhoAmI, Error> {
+        self.require_capability(&key.site, Capability::ReadAdAccounts)?;
+        let ads = self.ads_manager(&key.site, Capability::ReadAdAccounts)?;
+        let publisher = self.publisher(&key.site)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let creds = ads
+            .bootstrap_system_user_token(&app, token, deadline)
+            .await?;
+        self.vault.put(key, &creds)?;
+        publisher.whoami(&app, &creds).await
+    }
+
+    /// `GET /debug_token` metadata for the stored credential. Never returns
+    /// the token or app secret.
+    pub async fn inspect_ads_token(
+        &self,
+        key: &AccountKey,
+        deadline: Deadline,
+    ) -> Result<AdsTokenInspection, Error> {
+        self.require_capability(&key.site, Capability::ReadAdAccounts)?;
+        let ads = self.ads_manager(&key.site, Capability::ReadAdAccounts)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            Box::pin(async move { ads.inspect_access_token(&app, &creds, deadline).await })
+        })
+        .await
+    }
+
+    /// Operator-facing Marketing API Access Tier. Header mapping is a hint;
+    /// Meta's App Dashboard remains authoritative.
+    pub async fn ads_access_tier(
+        &self,
+        key: &AccountKey,
+        deadline: Deadline,
+    ) -> Result<MarketingApiAccessTier, Error> {
+        self.require_capability(&key.site, Capability::ReadAdAccounts)?;
+        let ads = self.ads_manager(&key.site, Capability::ReadAdAccounts)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            Box::pin(async move { ads.marketing_api_access_tier(&app, &creds, deadline).await })
+        })
+        .await
+    }
+
     /// Poll review state only until `deadline`. The `PendingReview` reply is
     /// successful but explicit: it preserves the final known state and tells
     /// a script to retry later without recasting normal Meta review latency as
@@ -1552,6 +1604,7 @@ impl Client {
             .ok_or_else(|| Self::missing_facet(site, need))
     }
 
+    #[cfg(feature = "whatsapp-cloud")]
     fn whatsapp_flows(
         &self,
         site: &Site,
@@ -1563,6 +1616,7 @@ impl Client {
             .ok_or_else(|| Self::missing_facet(site, need))
     }
 
+    #[cfg(feature = "whatsapp-cloud")]
     fn whatsapp_templates(
         &self,
         site: &Site,
@@ -1574,6 +1628,7 @@ impl Client {
             .ok_or_else(|| Self::missing_facet(site, need))
     }
 
+    #[cfg(feature = "whatsapp-cloud")]
     fn whatsapp_sender(
         &self,
         site: &Site,
@@ -2240,6 +2295,9 @@ pub fn refresh_is_due(creds: &AccountCreds) -> bool {
     let AccountCreds::OAuth2 { extra, .. } = creds else {
         return false;
     };
+    if extra.get("token_kind").and_then(|v| v.as_str()) == Some(SYSTEM_USER_TOKEN_KIND) {
+        return false;
+    }
     let expires_at = extra.get("expires_at").and_then(|v| v.as_u64());
     let Some(expires_at) = expires_at else {
         return false;

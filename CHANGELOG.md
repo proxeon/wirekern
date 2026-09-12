@@ -39,6 +39,14 @@ same detail by subject.
 
 ### Added
 
+- Meta Ads unattended auth ops: `auth meta_ads --token … --system-user`
+  stores a Business Manager System User token after `GET /debug_token`
+  (refuses a user OAuth token reused as a secret) and skips
+  `fb_exchange_token`. `ads inspect-token` returns `/debug_token` metadata
+  without printing the secret. `ads access-tier` maps
+  `ads_api_access_tier` headers to Limited/Full and always points at the
+  App Dashboard — Postkit cannot grant or bypass Marketing API Access Tier.
+
 - Local MCP stdio crate (`postkit-mcp` / `postkit mcp`): newline-delimited
   JSON-RPC over stdin/stdout using the same `Client::from_home` as the CLI
   and HTTP serve. Tools cover capabilities, vault account names, whoami,

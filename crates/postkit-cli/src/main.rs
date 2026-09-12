@@ -93,6 +93,10 @@ enum Commands {
         /// Bluesky app password. Omit the value to prompt on a TTY.
         #[arg(long, num_args = 0..=1, default_missing_value = "")]
         password: Option<String>,
+        /// Meta Ads: store a Business Manager System User token. Requires
+        /// `--token`. Refuses a user OAuth token reused as a service secret.
+        #[arg(long)]
+        system_user: bool,
     },
     Whoami {
         site: String,
@@ -198,6 +202,12 @@ enum AccountsCmd {
 enum AdsCmd {
     /// List Meta ad accounts visible to the selected credential.
     Accounts { site: String },
+    /// Inspect the stored access token via Graph `/debug_token`. Never prints
+    /// the token. Requires app config (app access token).
+    InspectToken { site: String },
+    /// Report Marketing API Access Tier (Limited vs Full). Dashboard is
+    /// authoritative; a response header is only a hint.
+    AccessTier { site: String },
     /// Read a campaign, ad set, or ad's configured and effective review
     /// states. `--wait` polls only until the global --deadline and never
     /// changes a draft, activation, budget, or payment setting.
@@ -1552,6 +1562,46 @@ async fn dispatch(
                 Err(error) => Err(fail(&error, json)),
             }
         }
+        Commands::Ads(AdsCmd::InspectToken { site }) => {
+            let key = AccountKey::new(&site, &account);
+            match client.inspect_ads_token(&key, deadline).await {
+                Ok(inspection) => {
+                    if json {
+                        emit_raw(&serde_json::to_value(&inspection).expect("json"));
+                    } else {
+                        human_line(format!(
+                            "{} {} valid={} type={}",
+                            inspection.site,
+                            inspection.token_kind.as_str(),
+                            inspection.is_valid,
+                            inspection.debug_type.as_deref().unwrap_or("-")
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(fail(&e, json)),
+            }
+        }
+        Commands::Ads(AdsCmd::AccessTier { site }) => {
+            let key = AccountKey::new(&site, &account);
+            match client.ads_access_tier(&key, deadline).await {
+                Ok(tier) => {
+                    if json {
+                        emit_raw(&serde_json::to_value(&tier).expect("json"));
+                    } else {
+                        human_line(format!(
+                            "{} {} {} ({})",
+                            tier.site,
+                            tier.tier.as_str(),
+                            tier.raw.as_deref().unwrap_or("-"),
+                            tier.dashboard
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(fail(&e, json)),
+            }
+        }
         Commands::Ads(AdsCmd::Accounts { site }) => {
             let key = AccountKey::new(&site, &account);
             match client.ad_accounts(&key, deadline).await {
@@ -1965,6 +2015,7 @@ async fn dispatch(
             code,
             listen,
             password,
+            system_user,
         } => {
             if listen {
                 eprintln!("--listen is not implemented in this scaffold; paste the code instead");
@@ -1997,6 +2048,18 @@ async fn dispatch(
                             pds: None,
                         },
                     )
+                    .await
+            } else if system_user {
+                let Some(token) = token else {
+                    eprintln!("--system-user requires --token");
+                    return Err(2);
+                };
+                if code.is_some() || password.is_some() {
+                    eprintln!("--system-user cannot be combined with --code or --password");
+                    return Err(2);
+                }
+                client
+                    .put_ads_system_user_token(&key, &token, deadline)
                     .await
             } else if let Some(token) = token {
                 if code.is_some() {
@@ -2381,6 +2444,33 @@ mod tests {
 
     #[test]
     fn ads_accounts_command_parses() {
+        let cli = Cli::try_parse_from([
+            "postkit",
+            "auth",
+            "meta_ads",
+            "--token",
+            "SYS",
+            "--system-user",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Auth {
+                system_user: true,
+                token: Some(ref token),
+                ..
+            } if token == "SYS"
+        ));
+        let cli = Cli::try_parse_from(["postkit", "ads", "inspect-token", "meta_ads"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ads(AdsCmd::InspectToken { site }) if site == "meta_ads"
+        ));
+        let cli = Cli::try_parse_from(["postkit", "ads", "access-tier", "meta_ads"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ads(AdsCmd::AccessTier { site }) if site == "meta_ads"
+        ));
         let cli = Cli::try_parse_from(["postkit", "ads", "accounts", "meta_ads"]).unwrap();
         assert!(
             matches!(cli.command, Commands::Ads(AdsCmd::Accounts { site }) if site == "meta_ads")

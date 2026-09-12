@@ -30,6 +30,33 @@ Deferred lifecycle, editing, creative, and reporting work is tracked in the
 
    The code is exchanged for a short token, extended via `fb_exchange_token` (~60 days), and the token's **first ad account** is resolved and stored for backwards-compatible defaults. A token with no ad account fails immediately (`no_ad_account`). When more than one account is visible, discover the IDs first and pass the desired account explicitly on each insights or paused-create call. Existing `ads_read` tokens can keep reading, but must be re-authorized to gain `ads_management` before a create succeeds.
 
+### Unattended System User token
+
+Do **not** paste a user OAuth token into a cron job. Create a System User in
+Business Manager, assign the ad account, generate a token for this app, then:
+
+```bash
+postkit auth meta_ads --token '<SYSTEM_USER_TOKEN>' --system-user --json
+```
+
+Postkit calls `GET /debug_token` with the app access token and refuses
+`type=USER` (a person token reused as a secret). It then verifies `/me` and
+stores `token_kind=system_user` plus the first ad account. System User tokens
+are **not** refreshed via `fb_exchange_token`; generate a new token in
+Business Manager when Meta invalidates one.
+
+```bash
+postkit ads inspect-token meta_ads --json
+# type, is_valid, expires_at, scopes, user_id — never the token
+postkit ads access-tier meta_ads --json
+# limited | full | unknown. App Dashboard is authoritative.
+```
+
+Marketing API Access Tier (Limited vs Full) is an **app** setting, not a
+Postkit flag. Check **App Dashboard → App Review → Permissions and features →
+Marketing API Access Tier**. Full access needs 500 Marketing API calls in 15
+days with <15% errors. Postkit cannot grant or bypass the tier.
+
 ## Dev mode is enough to start
 
 A development-mode app can call the Marketing API for **accounts owned by the app's admins/developers/testers** — reading and paused-draft creation on your own ad account need no app review. `ads_read` / `ads_management` Advanced Access + business verification are only required when serving *other people's* accounts (i.e., when serving customers); file that review when that day comes, not before.
