@@ -71,6 +71,39 @@ pub(crate) fn site_or_to(site: &Option<String>, to: &Option<String>) -> String {
         .unwrap_or_default()
 }
 
+/// `--reply-to` is sugar for `--param reply_to_id=…`. Pure validation so
+/// tests prove refusals occur before any parsing, local read, or publish.
+pub(crate) fn reply_to_conflict(reply_to: Option<&str>, param: &[String]) -> Option<&'static str> {
+    let id = reply_to?;
+    // Threads degrades an empty reply_to_id to a root post; the operator
+    // asked for a reply, so the flag must actually carry one.
+    if id.is_empty() {
+        return Some("reply_to_empty");
+    }
+    // Both spellings set one wire field; picking a winner would let a
+    // command line publish a different reply than it describes.
+    if param
+        .iter()
+        .any(|p| p.split('=').next().unwrap_or("") == "reply_to_id")
+    {
+        return Some("reply_to_conflict");
+    }
+    None
+}
+
+/// One id cannot be honest across a fan-out: threads media ids and bluesky
+/// at:// URIs are different namespaces, so the same value cloned to every
+/// --to target would publish on one site and fail on the rest.
+pub(crate) fn reply_to_fanout_conflict(
+    reply_to: Option<&str>,
+    sites: &[String],
+) -> Option<&'static str> {
+    if reply_to.is_none() || sites.len() <= 1 {
+        return None;
+    }
+    Some("reply_to_fanout_unsupported")
+}
+
 /// Reject a multi-image command shape that Postkit cannot map to one honest
 /// carousel. Kept pure so CLI tests prove every refusal occurs before a local
 /// image read, credential lookup, or remote container create.

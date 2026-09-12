@@ -39,6 +39,16 @@ same detail by subject.
 
 ### Added
 
+- CLI `post --reply-to <ID>`: first-class sugar for replying to an
+  existing post (`--param reply_to_id=…` remains the generic spelling).
+  Threads takes a media id, bluesky an `at://` URI; with a `--text`
+  chain the flag anchors the first post and the rest chain off each
+  other. Refused shapes, before any parse or publish: an empty id
+  (threads would degrade it to a root post), `--reply-to` alongside
+  `--param reply_to_id=…` (two spellings of one wire field), and
+  multi-site `--to` fan-out (one id cannot be honest across two sites'
+  id namespaces). `--stdin` keeps refusing every content flag.
+
 - Meta Ads Insights reporting: extra typed metrics (`frequency`,
   `unique_clicks`, `inline_link_clicks`, `inline_link_click_ctr`,
   `quality_ranking`, `video_thruplay`) each with a definition that is not

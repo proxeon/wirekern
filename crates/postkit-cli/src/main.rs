@@ -100,6 +100,12 @@ enum Commands {
         /// target extras, e.g. chat_id=-100
         #[arg(long = "param", value_name = "k=v")]
         param: Vec<String>,
+        /// Reply to an existing post: a threads media id or a bluesky
+        /// at:// URI. Anchors the first post of a --text chain. Single
+        /// target only — ids are site-specific, so a fan-out cannot
+        /// carry one honest value.
+        #[arg(long = "reply-to", value_name = "ID")]
+        reply_to: Option<String>,
         #[arg(long)]
         idempotency: Option<String>,
         /// Raw request JSON on stdin.
@@ -3419,6 +3425,7 @@ async fn dispatch(
             text,
             to,
             param,
+            reply_to,
             idempotency,
             stdin,
             dry_run,
@@ -3427,6 +3434,17 @@ async fn dispatch(
         } => {
             if let Some(e) = dry_run_conflict(dry_run, idempotency.as_deref(), text.len()) {
                 return Err(fail(&e, json));
+            }
+            // --reply-to is sugar for --param reply_to_id=…: refuse the
+            // empty and dual-source shapes, then fold it in so every later
+            // check — image guard, stdin exclusivity, fan-out, chain
+            // anchor — sees exactly one spelling of the intent.
+            if let Some(reason) = reply_to_conflict(reply_to.as_deref(), &param) {
+                return Err(fail(&invalid_post(&site_or_to(&site, &to), reason), json));
+            }
+            let mut param = param;
+            if let Some(id) = reply_to.as_deref() {
+                param.push(format!("reply_to_id={id}"));
             }
             // Image exclusions fire before any parsing or I/O: each
             // combination names a wire contract postkit has not verified
@@ -3492,6 +3510,9 @@ async fn dispatch(
             };
             let params = parse_params(&param, json)?;
             let sites = collect_post_sites(site.as_deref(), to.as_deref())?;
+            if let Some(reason) = reply_to_fanout_conflict(reply_to.as_deref(), &sites) {
+                return Err(fail(&invalid_post(&site_or_to(&site, &to), reason), json));
+            }
             if texts.len() > 1 {
                 if let Some(bad) = chain_blocked_site(&sites) {
                     return Err(fail(
@@ -4823,6 +4844,77 @@ mod tests {
         assert_eq!(p["reply_to_id"], "A");
         let p = with_reply_to(&serde_json::json!({}), "B");
         assert_eq!(p["reply_to_id"], "B");
+    }
+
+    #[test]
+    fn reply_to_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "postkit",
+            "post",
+            "threads",
+            "--text",
+            "hi",
+            "--reply-to",
+            "18367439386214650",
+        ])
+        .unwrap();
+        match *cli.command {
+            Commands::Post { ref reply_to, .. } => {
+                assert_eq!(reply_to.as_deref(), Some("18367439386214650"))
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn reply_to_refuses_empty_dual_source_and_fanout() {
+        // No flag: no opinion — --param stays a valid spelling.
+        assert_eq!(reply_to_conflict(None, &[]), None);
+        assert_eq!(reply_to_conflict(None, &["reply_to_id=1".into()]), None);
+        // Empty flag: threads would degrade it to a root post, so the
+        // requested reply must be refused before anything is published.
+        assert_eq!(reply_to_conflict(Some(""), &[]), Some("reply_to_empty"));
+        // Both spellings of one wire field: refuse rather than pick a winner.
+        assert_eq!(
+            reply_to_conflict(Some("1"), &["reply_to_id=2".into()]),
+            Some("reply_to_conflict")
+        );
+        // Unrelated --param keys coexist with the flag.
+        assert_eq!(reply_to_conflict(Some("1"), &["chat_id=5".into()]), None);
+        // Fan-out: one id cannot be honest in two sites' namespaces.
+        assert_eq!(
+            reply_to_fanout_conflict(Some("1"), &["threads".into()]),
+            None
+        );
+        assert_eq!(
+            reply_to_fanout_conflict(Some("1"), &["threads".into(), "bluesky".into()]),
+            Some("reply_to_fanout_unsupported")
+        );
+        assert_eq!(
+            reply_to_fanout_conflict(None, &["threads".into(), "bluesky".into()]),
+            None
+        );
+    }
+
+    #[test]
+    fn reply_to_flag_folds_into_the_param_spelling() {
+        // The fold is what makes one flag feed every later check: the image
+        // guard sees it, parse_params carries it, and the chain anchor
+        // (params.clone() on post 0, with_reply_to on the rest) inherits it.
+        fn reply_to_flag() -> Option<&'static str> {
+            Some("1836")
+        }
+        let mut param = vec!["chat_id=5".to_string()];
+        if let Some(id) = reply_to_flag() {
+            param.push(format!("reply_to_id={id}"));
+        }
+        let parsed = parse_params(&param, true).unwrap();
+        assert_eq!(parsed["reply_to_id"], "1836");
+        assert_eq!(parsed["chat_id"], "5");
+        assert_eq!(
+            image_input_conflict(1, 1, false, "", &param),
+            Some("image_reply_unsupported")
+        );
     }
 
     #[test]

@@ -93,6 +93,7 @@ Kernel-level, all sites: 0600 vault with atomic writes, CSPRNG OAuth `state`, re
 ```text
 postkit post <site> --text "…"              # publish now; --to threads,bluesky fans out
 postkit post threads --text 'root' --text 'reply'   # reply chain on Threads
+postkit post threads --text 'reply' --reply-to 18367439386214650  # reply to an existing post (threads media id; bluesky takes an at:// URI)
 postkit post threads --text '…' --dry-run   # probe: publish nothing (threads)
 postkit post bluesky --image hero.png --text 'caption' --alt 'description' # image post
 postkit post instagram --image https://cdn.example.com/hero.jpg --text 'caption'
