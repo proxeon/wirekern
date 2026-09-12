@@ -12,13 +12,16 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use postkit::{
-    AccountKey, Client, Deadline, Error, FileKeyStore, PostRequest, Site, Vault, WhatsAppMessage,
+    AccountKey, AdEntity, AdReviewStatusRequest, AdsInspectRequest, AdsInventoryKind,
+    AdsInventoryRequest, AttributionWindow, Breakdown, Client, DateRange, Deadline, Error,
+    FileKeyStore, InsightsLevel, InsightsQuery, Metric, PostRequest, Site, Vault, WhatsAppMessage,
     WhatsAppSendRequest, WireError, KEY_PREFIX,
 };
 use serde::Deserialize;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8788";
@@ -115,6 +118,13 @@ pub fn router(client: Arc<Client>, whatsapp: Arc<Client>, keys: Arc<FileKeyStore
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/accounts", get(accounts))
         .route("/v1/whoami", get(whoami))
+        // Ads reads only. pk_live_ is not a spend key: there is no HTTP
+        // activate, budget edit, or paused-create route.
+        .route("/v1/insights", get(insights))
+        .route("/v1/ads/accounts", get(ads_accounts))
+        .route("/v1/ads/list", get(ads_list))
+        .route("/v1/ads/inspect", get(ads_inspect))
+        .route("/v1/ads/status", get(ads_status))
         .with_state(AppState {
             client,
             whatsapp,
@@ -472,6 +482,280 @@ async fn whoami(
         Ok(w) => (StatusCode::OK, Json(w)).into_response(),
         Err(e) => wire_response(e),
     }
+}
+
+#[derive(Deserialize, Default)]
+struct AdsReadQuery {
+    site: Option<String>,
+    account: Option<String>,
+    entity: Option<String>,
+    id: Option<String>,
+    ad_account: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    attribution: Option<String>,
+    level: Option<String>,
+    metrics: Option<String>,
+    #[serde(default)]
+    entity_id: Vec<String>,
+    breakdowns: Option<String>,
+    report: Option<String>,
+}
+
+fn ads_key(q: &AdsReadQuery) -> Result<AccountKey, Error> {
+    let site = q.site.as_deref().unwrap_or("meta_ads");
+    if site.is_empty() {
+        return Err(Error::InvalidQuery {
+            site: Site::new(""),
+            reason: "missing_site".into(),
+        });
+    }
+    Ok(AccountKey::new(site, q.account.as_deref().unwrap_or("default")))
+}
+
+async fn ads_accounts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<AdsReadQuery>,
+) -> Response {
+    if let Err(e) = authorize(&state, &headers).await {
+        return wire_response(e);
+    }
+    let key = match ads_key(&q) {
+        Ok(key) => key,
+        Err(e) => return wire_response(e),
+    };
+    match state.client.ad_accounts(&key, deadline_from(&headers)).await {
+        Ok(reply) => (StatusCode::OK, Json(reply)).into_response(),
+        Err(e) => wire_response(e),
+    }
+}
+
+async fn ads_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<AdsReadQuery>,
+) -> Response {
+    if let Err(e) = authorize(&state, &headers).await {
+        return wire_response(e);
+    }
+    let key = match ads_key(&q) {
+        Ok(key) => key,
+        Err(e) => return wire_response(e),
+    };
+    let Some(entity) = q.entity.as_deref() else {
+        return wire_response(Error::InvalidQuery {
+            site: key.site.clone(),
+            reason: "missing_entity".into(),
+        });
+    };
+    let kind = match AdsInventoryKind::from_str(entity) {
+        Ok(kind) => kind,
+        Err(reason) => {
+            return wire_response(Error::InvalidQuery {
+                site: key.site.clone(),
+                reason,
+            })
+        }
+    };
+    let request = AdsInventoryRequest {
+        account: q.ad_account.clone(),
+        kind,
+    };
+    match state
+        .client
+        .list_ads_inventory(&key, request, deadline_from(&headers))
+        .await
+    {
+        Ok(reply) => (StatusCode::OK, Json(reply)).into_response(),
+        Err(e) => wire_response(e),
+    }
+}
+
+async fn ads_inspect(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<AdsReadQuery>,
+) -> Response {
+    if let Err(e) = authorize(&state, &headers).await {
+        return wire_response(e);
+    }
+    let key = match ads_key(&q) {
+        Ok(key) => key,
+        Err(e) => return wire_response(e),
+    };
+    let (entity, id) = match (q.entity.as_deref(), q.id.as_deref()) {
+        (Some(entity), Some(id)) => (entity, id),
+        _ => {
+            return wire_response(Error::InvalidQuery {
+                site: key.site.clone(),
+                reason: "missing_entity_or_id".into(),
+            })
+        }
+    };
+    let kind = match AdsInventoryKind::from_str(entity) {
+        Ok(kind) => kind,
+        Err(reason) => {
+            return wire_response(Error::InvalidQuery {
+                site: key.site.clone(),
+                reason,
+            })
+        }
+    };
+    let request = AdsInspectRequest {
+        kind,
+        id: id.into(),
+    };
+    match state
+        .client
+        .inspect_ads_object(&key, request, deadline_from(&headers))
+        .await
+    {
+        Ok(reply) => (StatusCode::OK, Json(reply)).into_response(),
+        Err(e) => wire_response(e),
+    }
+}
+
+async fn ads_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<AdsReadQuery>,
+) -> Response {
+    if let Err(e) = authorize(&state, &headers).await {
+        return wire_response(e);
+    }
+    let key = match ads_key(&q) {
+        Ok(key) => key,
+        Err(e) => return wire_response(e),
+    };
+    let (entity, id) = match (q.entity.as_deref(), q.id.as_deref()) {
+        (Some(entity), Some(id)) => (entity, id),
+        _ => {
+            return wire_response(Error::InvalidQuery {
+                site: key.site.clone(),
+                reason: "missing_entity_or_id".into(),
+            })
+        }
+    };
+    let entity = match AdEntity::from_str(entity) {
+        Ok(entity) => entity,
+        Err(reason) => {
+            return wire_response(Error::InvalidQuery {
+                site: key.site.clone(),
+                reason,
+            })
+        }
+    };
+    let request = AdReviewStatusRequest {
+        entity,
+        id: id.into(),
+    };
+    match state
+        .client
+        .ad_review_status(&key, request, deadline_from(&headers))
+        .await
+    {
+        Ok(reply) => (StatusCode::OK, Json(reply)).into_response(),
+        Err(e) => wire_response(e),
+    }
+}
+
+async fn insights(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<AdsReadQuery>,
+) -> Response {
+    if let Err(e) = authorize(&state, &headers).await {
+        return wire_response(e);
+    }
+    let key = match ads_key(&q) {
+        Ok(key) => key,
+        Err(e) => return wire_response(e),
+    };
+    let query = match insights_from_query(&q) {
+        Ok(query) => query,
+        Err(e) => return wire_response(e),
+    };
+    match state
+        .client
+        .insights(&key, query, deadline_from(&headers))
+        .await
+    {
+        Ok(reply) => (StatusCode::OK, Json(reply)).into_response(),
+        Err(e) => wire_response(e),
+    }
+}
+
+fn insights_from_query(q: &AdsReadQuery) -> Result<InsightsQuery, Error> {
+    let site = q.site.as_deref().unwrap_or("meta_ads");
+    let from = q.from.as_deref().ok_or_else(|| Error::InvalidQuery {
+        site: Site::new(site),
+        reason: "missing_from".into(),
+    })?;
+    let to = q.to.as_deref().ok_or_else(|| Error::InvalidQuery {
+        site: Site::new(site),
+        reason: "missing_to".into(),
+    })?;
+    let attribution = q.attribution.as_deref().ok_or_else(|| Error::InvalidQuery {
+        site: Site::new(site),
+        reason: "missing_attribution".into(),
+    })?;
+    let invalid = |reason: String| Error::InvalidQuery {
+        site: Site::new(site),
+        reason,
+    };
+    let level: InsightsLevel = q
+        .level
+        .as_deref()
+        .unwrap_or("account")
+        .parse()
+        .map_err(invalid)?;
+    let attribution: AttributionWindow = attribution.parse().map_err(invalid)?;
+    let metrics = match q.metrics.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| item.parse())
+            .collect::<Result<Vec<Metric>, String>>()
+            .map_err(invalid)?,
+        _ => vec![
+            Metric::Spend,
+            Metric::Impressions,
+            Metric::Clicks,
+            Metric::Purchases,
+        ],
+    };
+    let mut entity_ids = q.entity_id.clone();
+    entity_ids.retain(|id| !id.is_empty());
+    let breakdowns = match q.breakdowns.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| item.parse())
+            .collect::<Result<Vec<Breakdown>, String>>()
+            .map_err(invalid)?,
+        _ => vec![],
+    };
+    Ok(InsightsQuery {
+        level,
+        metrics,
+        range: DateRange {
+            from: from.into(),
+            to: to.into(),
+        },
+        attribution,
+        account: q.ad_account.clone(),
+        entity_ids,
+        breakdowns,
+        report: q
+            .report
+            .as_deref()
+            .unwrap_or("performance")
+            .parse()
+            .map_err(invalid)?,
+    })
 }
 
 #[cfg(test)]
@@ -965,6 +1249,63 @@ mod tests {
             .registry()
             .get(&Site::new("whatsapp_cloud"))
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn ads_read_routes_require_a_key_and_typed_query() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (app, token, _) = test_router(tmp.path());
+        let unauth = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/ads/accounts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+        let missing_entity = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/ads/list?site=meta_ads")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_entity.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let missing_from = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/insights?to=2026-06-30&attribution=1d_click")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_from.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // pk_live_ is not a spend key: ads routes are GET-only.
+        let post_list = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/ads/list?site=meta_ads&entity=campaign")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(post_list.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[test]

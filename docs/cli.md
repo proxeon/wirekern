@@ -308,6 +308,11 @@ For callers that cannot exec the binary. `keys create` prints `pk_live_` + 32 ra
 | `GET /v1/capabilities` | `postkit capabilities --json` |
 | `GET /v1/accounts?site=` | `postkit accounts list --json` |
 | `GET /v1/whoami?site=&account=` | `postkit whoami --json` |
+| `GET /v1/insights` | `postkit insights --json` |
+| `GET /v1/ads/accounts` | `postkit ads accounts --json` |
+| `GET /v1/ads/list` | `postkit ads list --json` |
+| `GET /v1/ads/inspect` | `postkit ads inspect --json` |
+| `GET /v1/ads/status` | `postkit ads status --json` |
 
 `Authorization: Bearer pk_live_…`. Optional `Idempotency-Key` and `X-Postkit-Deadline` (seconds, default 30). Auth dances and `--token` stay on the CLI.
 
