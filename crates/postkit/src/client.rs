@@ -2095,8 +2095,8 @@ mod draft_run {
                                     .expect("lattice guarantees the campaign"),
                                 daily_budget: manifest.adset.daily_budget,
                                 bid_strategy: manifest.adset.bid_strategy,
-                                billing_event: manifest.adset.billing_event.clone(),
-                                optimization_goal: manifest.adset.optimization_goal.clone(),
+                                billing_event: manifest.adset.billing_event,
+                                optimization_goal: manifest.adset.optimization_goal,
                                 targeting: manifest.adset.targeting.clone(),
                             }),
                         };

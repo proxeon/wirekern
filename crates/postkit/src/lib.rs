@@ -64,9 +64,11 @@ pub mod connectors;
 
 pub use ads::{
     AdEntity, AdPreviewFormat, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdReviewWait,
-    AdsTokenInspection, AdsTokenKind, BidStrategy, CampaignObjective, CreateLinkAdCreativeRequest,
+    AdsTokenInspection, AdsTokenKind, BidStrategy, BillingEvent, CampaignObjective,
+    CreateLinkAdCreativeRequest,
     CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
-    LinkAdCreative, LinkCallToAction, MarketingApiAccessTier, MarketingApiAccessTierKind, PausedAd,
+    LinkAdCreative, LinkCallToAction, MarketingApiAccessTier, MarketingApiAccessTierKind,
+    OptimizationGoal, billing_event_allowed, supported_adset_pairing, PausedAd,
     PausedAdCreate, PausedAdset, PausedCampaign, UploadAdImageRequest, UploadedAdImage,
     MARKETING_API_ACCESS_TIER_DASHBOARD, SYSTEM_USER_TOKEN_KIND,
 };

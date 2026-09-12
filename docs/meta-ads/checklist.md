@@ -55,7 +55,7 @@ no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
 - [x] Ad: name + `adset_id` + `creative_id` (no creative/Page/tracking defaults)
 - [x] Policy gate `CreatePausedCampaign` / `CreatePausedAdset` / `CreatePausedAd` before credentials
 - [x] Unknown post-send results are not retried (draft protocol records `reconciliation_required`)
-- [ ] Closed enums for `billing_event` / `optimization_goal` on the primitive CLI (manifest already pairs awareness-family)
+- [x] Closed enums for `billing_event` / `optimization_goal` on the primitive CLI (manifest already pairs awareness-family)
 - [ ] Typed targeting (geo, age, placements) instead of a pass-through JSON object
 - [ ] Lifetime budget, campaign-level budget, ad-set budget sharing
 - [ ] Other bid strategies (`COST_CAP`, bid cap, min ROAS) — each needs its constraint fields first

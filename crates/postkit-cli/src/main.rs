@@ -364,8 +364,10 @@ enum AdsCmd {
         /// bid-cap or ROAS strategy whose constraint is absent.
         #[arg(long)]
         bid_strategy: String,
+        /// impressions | link_clicks
         #[arg(long)]
         billing_event: String,
+        /// reach | brand_awareness | link_clicks | landing_page_views | …
         #[arg(long)]
         optimization_goal: String,
         /// JSON object with the Meta targeting specification.

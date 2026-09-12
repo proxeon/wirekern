@@ -45,22 +45,6 @@ pub const MIN_DAILY_BUDGET: u64 = 100;
 /// be confused in operator tooling.
 pub const CONFIGURED_PAUSED: &str = "PAUSED";
 
-/// The objective → (optimization_goal, billing_event) pairs postkit will
-/// orchestrate. Meta's full matrix is larger, but shipping a pairing here
-/// means postkit has verified its wire form; an unlisted pairing fails
-/// *locally* (before any remote object exists) with a
-/// `unsupported_adset_pairing:` reason instead of remotely after the
-/// campaign was already created. Extend this table only with a live-tested
-/// combination — the same rule `BidStrategy` follows.
-const SUPPORTED_ADSET_PAIRINGS: &[(CampaignObjective, &str, &str)] = &[
-    (CampaignObjective::Awareness, "REACH", "IMPRESSIONS"),
-    (
-        CampaignObjective::Awareness,
-        "BRAND_AWARENESS",
-        "IMPRESSIONS",
-    ),
-];
-
 // ---------------------------------------------------------------------------
 // Manifest
 // ---------------------------------------------------------------------------
@@ -107,12 +91,8 @@ pub struct DraftAdset {
     pub name: String,
     pub daily_budget: u64,
     pub bid_strategy: crate::ads::BidStrategy,
-    /// Meta uppercase token, e.g. `IMPRESSIONS`. Kept as a string because
-    /// the closed pairing table below — not a closed enum — is the checked
-    /// contract (see [`SUPPORTED_ADSET_PAIRINGS`]).
-    pub billing_event: String,
-    /// Meta uppercase token, e.g. `REACH`; validated the same way.
-    pub optimization_goal: String,
+    pub billing_event: crate::ads::BillingEvent,
+    pub optimization_goal: crate::ads::OptimizationGoal,
     /// Raw Meta targeting spec. Only its object-ness is checked locally;
     /// platform-specific rules belong to the connector's remote validation.
     pub targeting: serde_json::Value,
@@ -165,12 +145,16 @@ impl PausedDraftManifest {
         if self.adset.daily_budget < MIN_DAILY_BUDGET {
             return Err(format!("daily_budget_below_minimum:{MIN_DAILY_BUDGET}"));
         }
-        if !self.has_supported_pairing() {
+        if !crate::ads::supported_adset_pairing(
+            self.campaign.objective,
+            self.adset.optimization_goal,
+            self.adset.billing_event,
+        ) {
             return Err(format!(
                 "unsupported_adset_pairing:{}:{}:{}",
                 self.campaign.objective.as_str(),
-                self.adset.optimization_goal,
-                self.adset.billing_event
+                self.adset.optimization_goal.as_str(),
+                self.adset.billing_event.as_str()
             ));
         }
         if !self.adset.targeting.is_object() {
@@ -217,13 +201,6 @@ impl PausedDraftManifest {
         Ok(name.to_string())
     }
 
-    fn has_supported_pairing(&self) -> bool {
-        let goal = self.adset.optimization_goal.trim().to_ascii_uppercase();
-        let billing = self.adset.billing_event.trim().to_ascii_uppercase();
-        SUPPORTED_ADSET_PAIRINGS.iter().any(|(objective, g, b)| {
-            *objective == self.campaign.objective && *g == goal && *b == billing
-        })
-    }
 }
 
 /// One draft run handed to [`Client::run_paused_draft`](crate::Client::run_paused_draft):
@@ -846,26 +823,22 @@ mod tests {
 
         // A goal the objective does not support must fail locally, before
         // any remote object exists.
-        manifest.adset.optimization_goal = "LINK_CLICKS".into();
+        manifest.adset.optimization_goal = crate::ads::OptimizationGoal::LinkClicks;
         assert_eq!(
             manifest.validate().unwrap_err(),
-            "unsupported_adset_pairing:awareness:LINK_CLICKS:IMPRESSIONS"
+            "unsupported_adset_pairing:awareness:link_clicks:impressions"
         );
 
-        // Unverified objective families are refused the same way even when
-        // the pairing itself would be legal on Meta's side.
         manifest.campaign.objective = CampaignObjective::Traffic;
-        manifest.adset.optimization_goal = "REACH".into();
+        manifest.adset.optimization_goal = crate::ads::OptimizationGoal::Reach;
         assert!(manifest
             .validate()
             .unwrap_err()
             .starts_with("unsupported_adset_pairing:traffic:"));
 
-        // Case and surrounding whitespace on the Meta tokens are tolerated;
-        // the reviewed meaning is unchanged.
         manifest.campaign.objective = CampaignObjective::Awareness;
-        manifest.adset.optimization_goal = " reach ".into();
-        manifest.adset.billing_event = "impressions".into();
+        manifest.adset.optimization_goal = crate::ads::OptimizationGoal::Reach;
+        manifest.adset.billing_event = crate::ads::BillingEvent::Impressions;
         manifest.validate().unwrap();
     }
 

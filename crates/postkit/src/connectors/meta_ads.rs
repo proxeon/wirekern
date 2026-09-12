@@ -589,8 +589,8 @@ async fn create_paused_ad(
                 // constraint. The closed model only permits the strategy
                 // whose sole spend limit remains `daily_budget`.
                 ("bid_strategy", adset.bid_strategy.meta_value().into()),
-                ("billing_event", adset.billing_event.clone()),
-                ("optimization_goal", adset.optimization_goal.clone()),
+                ("billing_event", adset.billing_event.meta_value().into()),
+                ("optimization_goal", adset.optimization_goal.meta_value().into()),
                 (
                     "targeting",
                     serde_json::to_string(&adset.targeting).expect("Value serializes"),
@@ -2011,8 +2011,8 @@ mod tests {
                         campaign_id: "100".into(),
                         daily_budget: 2500,
                         bid_strategy: crate::ads::BidStrategy::LowestCostWithoutCap,
-                        billing_event: "IMPRESSIONS".into(),
-                        optimization_goal: "REACH".into(),
+                        billing_event: crate::ads::BillingEvent::Impressions,
+                        optimization_goal: crate::ads::OptimizationGoal::Reach,
                         targeting: json!({ "geo_locations": { "countries": ["MY"] } }),
                     }),
                 },

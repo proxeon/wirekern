@@ -477,6 +477,10 @@ pub(crate) fn build_paused_adset_request(
 ) -> Result<CreatePausedAdRequest, Error> {
     let bid_strategy = BidStrategy::from_str(&options.bid_strategy)
         .map_err(|reason| ads_input_error(site, reason))?;
+    let billing_event = postkit::BillingEvent::from_str(&options.billing_event)
+        .map_err(|reason| ads_input_error(site, reason))?;
+    let optimization_goal = postkit::OptimizationGoal::from_str(&options.optimization_goal)
+        .map_err(|reason| ads_input_error(site, reason))?;
     let targeting = serde_json::from_str(&options.targeting)
         .map_err(|_| ads_input_error(site, "bad_targeting_json"))?;
     let request = CreatePausedAdRequest {
@@ -486,8 +490,8 @@ pub(crate) fn build_paused_adset_request(
             campaign_id: options.campaign_id,
             daily_budget: options.daily_budget,
             bid_strategy,
-            billing_event: options.billing_event,
-            optimization_goal: options.optimization_goal,
+            billing_event,
+            optimization_goal,
             targeting,
         }),
     };

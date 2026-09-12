@@ -126,6 +126,156 @@ impl FromStr for BidStrategy {
     }
 }
 
+/// Auction billing events Postkit will send. Meta's historical CPA-only
+/// values are omitted: they need extra constraints this kernel does not model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BillingEvent {
+    Impressions,
+    LinkClicks,
+}
+
+impl BillingEvent {
+    pub fn meta_value(self) -> &'static str {
+        match self {
+            Self::Impressions => "IMPRESSIONS",
+            Self::LinkClicks => "LINK_CLICKS",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Impressions => "impressions",
+            Self::LinkClicks => "link_clicks",
+        }
+    }
+}
+
+impl FromStr for BillingEvent {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "impressions" | "IMPRESSIONS" => Ok(Self::Impressions),
+            "link_clicks" | "LINK_CLICKS" => Ok(Self::LinkClicks),
+            other => Err(format!("unknown_billing_event:{other}")),
+        }
+    }
+}
+
+/// Auction optimization goals we have a local billing pairing for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OptimizationGoal {
+    Reach,
+    BrandAwareness,
+    LinkClicks,
+    LandingPageViews,
+    Impressions,
+    OffsiteConversions,
+    LeadGeneration,
+    AppInstalls,
+    PostEngagement,
+    PageLikes,
+    Value,
+    Thruplay,
+}
+
+impl OptimizationGoal {
+    pub fn meta_value(self) -> &'static str {
+        match self {
+            Self::Reach => "REACH",
+            Self::BrandAwareness => "BRAND_AWARENESS",
+            Self::LinkClicks => "LINK_CLICKS",
+            Self::LandingPageViews => "LANDING_PAGE_VIEWS",
+            Self::Impressions => "IMPRESSIONS",
+            Self::OffsiteConversions => "OFFSITE_CONVERSIONS",
+            Self::LeadGeneration => "LEAD_GENERATION",
+            Self::AppInstalls => "APP_INSTALLS",
+            Self::PostEngagement => "POST_ENGAGEMENT",
+            Self::PageLikes => "PAGE_LIKES",
+            Self::Value => "VALUE",
+            Self::Thruplay => "THRUPLAY",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reach => "reach",
+            Self::BrandAwareness => "brand_awareness",
+            Self::LinkClicks => "link_clicks",
+            Self::LandingPageViews => "landing_page_views",
+            Self::Impressions => "impressions",
+            Self::OffsiteConversions => "offsite_conversions",
+            Self::LeadGeneration => "lead_generation",
+            Self::AppInstalls => "app_installs",
+            Self::PostEngagement => "post_engagement",
+            Self::PageLikes => "page_likes",
+            Self::Value => "value",
+            Self::Thruplay => "thruplay",
+        }
+    }
+}
+
+impl FromStr for OptimizationGoal {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "reach" | "REACH" => Ok(Self::Reach),
+            "brand_awareness" | "BRAND_AWARENESS" => Ok(Self::BrandAwareness),
+            "link_clicks" | "LINK_CLICKS" => Ok(Self::LinkClicks),
+            "landing_page_views" | "LANDING_PAGE_VIEWS" => Ok(Self::LandingPageViews),
+            "impressions" | "IMPRESSIONS" => Ok(Self::Impressions),
+            "offsite_conversions" | "OFFSITE_CONVERSIONS" => Ok(Self::OffsiteConversions),
+            "lead_generation" | "LEAD_GENERATION" => Ok(Self::LeadGeneration),
+            "app_installs" | "APP_INSTALLS" => Ok(Self::AppInstalls),
+            "post_engagement" | "POST_ENGAGEMENT" => Ok(Self::PostEngagement),
+            "page_likes" | "PAGE_LIKES" => Ok(Self::PageLikes),
+            "value" | "VALUE" => Ok(Self::Value),
+            "thruplay" | "THRUPLAY" => Ok(Self::Thruplay),
+            other => Err(format!("unknown_optimization_goal:{other}")),
+        }
+    }
+}
+
+/// Auction billing events Meta allows for each optimization goal (v26.0).
+/// LINK_CLICKS billing is only valid with the LINK_CLICKS goal.
+pub fn billing_event_allowed(goal: OptimizationGoal, billing: BillingEvent) -> bool {
+    match goal {
+        OptimizationGoal::LinkClicks => {
+            matches!(billing, BillingEvent::Impressions | BillingEvent::LinkClicks)
+        }
+        _ => matches!(billing, BillingEvent::Impressions),
+    }
+}
+
+/// Objective → (goal, billing) pairs the draft orchestrator will send.
+/// Unlisted combinations fail locally so a campaign is never created first.
+pub fn supported_adset_pairing(
+    objective: CampaignObjective,
+    goal: OptimizationGoal,
+    billing: BillingEvent,
+) -> bool {
+    if !billing_event_allowed(goal, billing) {
+        return false;
+    }
+    matches!(
+        (objective, goal),
+        (CampaignObjective::Awareness, OptimizationGoal::Reach)
+            | (CampaignObjective::Awareness, OptimizationGoal::BrandAwareness)
+            | (CampaignObjective::Traffic, OptimizationGoal::LinkClicks)
+            | (CampaignObjective::Traffic, OptimizationGoal::LandingPageViews)
+            | (CampaignObjective::Engagement, OptimizationGoal::PostEngagement)
+            | (CampaignObjective::Engagement, OptimizationGoal::PageLikes)
+            | (CampaignObjective::Leads, OptimizationGoal::LeadGeneration)
+            | (CampaignObjective::Leads, OptimizationGoal::OffsiteConversions)
+            | (CampaignObjective::AppPromotion, OptimizationGoal::AppInstalls)
+            | (CampaignObjective::Sales, OptimizationGoal::OffsiteConversions)
+            | (CampaignObjective::Sales, OptimizationGoal::Value)
+    )
+}
+
 /// The CTA supported by the first image-link creative format. More CTA kinds
 /// are not aliases: Meta gives some of them additional value requirements, so
 /// each must be modelled deliberately rather than accepted as a raw string.
@@ -211,8 +361,8 @@ pub struct PausedAdset {
     pub campaign_id: String,
     pub daily_budget: u64,
     pub bid_strategy: BidStrategy,
-    pub billing_event: String,
-    pub optimization_goal: String,
+    pub billing_event: BillingEvent,
+    pub optimization_goal: OptimizationGoal,
     pub targeting: Value,
 }
 
@@ -361,11 +511,12 @@ impl PausedAdCreate {
                 if adset.daily_budget == 0 {
                     return Err("daily_budget_must_be_positive".into());
                 }
-                if adset.billing_event.trim().is_empty() {
-                    return Err("missing_billing_event".into());
-                }
-                if adset.optimization_goal.trim().is_empty() {
-                    return Err("missing_optimization_goal".into());
+                if !billing_event_allowed(adset.optimization_goal, adset.billing_event) {
+                    return Err(format!(
+                        "unsupported_billing_event:{}:{}",
+                        adset.optimization_goal.as_str(),
+                        adset.billing_event.as_str()
+                    ));
                 }
                 if !adset.targeting.is_object() {
                     return Err("targeting_must_be_object".into());
@@ -671,6 +822,34 @@ mod tests {
     #[test]
     fn objective_is_closed_and_maps_to_meta_outcomes() {
         assert_eq!(
+            BillingEvent::from_str("impressions")
+                .unwrap()
+                .meta_value(),
+            "IMPRESSIONS"
+        );
+        assert_eq!(
+            OptimizationGoal::from_str("REACH").unwrap().meta_value(),
+            "REACH"
+        );
+        assert!(billing_event_allowed(
+            OptimizationGoal::LinkClicks,
+            BillingEvent::LinkClicks
+        ));
+        assert!(!billing_event_allowed(
+            OptimizationGoal::Reach,
+            BillingEvent::LinkClicks
+        ));
+        assert!(supported_adset_pairing(
+            CampaignObjective::Awareness,
+            OptimizationGoal::Reach,
+            BillingEvent::Impressions
+        ));
+        assert!(!supported_adset_pairing(
+            CampaignObjective::Awareness,
+            OptimizationGoal::LinkClicks,
+            BillingEvent::Impressions
+        ));
+        assert_eq!(
             CampaignObjective::from_str("sales").unwrap().meta_value(),
             "OUTCOME_SALES"
         );
@@ -848,8 +1027,8 @@ mod tests {
                 campaign_id: "12".into(),
                 daily_budget: 0,
                 bid_strategy: BidStrategy::LowestCostWithoutCap,
-                billing_event: "IMPRESSIONS".into(),
-                optimization_goal: "REACH".into(),
+                billing_event: BillingEvent::Impressions,
+                optimization_goal: OptimizationGoal::Reach,
                 targeting: json!({}),
             }),
         };
@@ -865,8 +1044,8 @@ mod tests {
                 campaign_id: "12".into(),
                 daily_budget: 100,
                 bid_strategy: BidStrategy::LowestCostWithoutCap,
-                billing_event: "IMPRESSIONS".into(),
-                optimization_goal: "REACH".into(),
+                billing_event: BillingEvent::Impressions,
+                optimization_goal: OptimizationGoal::Reach,
                 targeting: json!([]),
             }),
         };
