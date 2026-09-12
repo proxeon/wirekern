@@ -1110,7 +1110,11 @@ impl Client {
         self.with_creds(key, deadline, move |app, creds| {
             let source = source.clone();
             let query = query.clone();
-            Box::pin(async move { source.start_insights_job(&app, &creds, &query, deadline).await })
+            Box::pin(async move {
+                source
+                    .start_insights_job(&app, &creds, &query, deadline)
+                    .await
+            })
         })
         .await
     }
@@ -1171,13 +1175,17 @@ impl Client {
         self.with_creds(key, deadline, move |app, creds| {
             let source = source.clone();
             let job_id = job_id.clone();
-            Box::pin(async move { source.cancel_insights_job(&app, &creds, &job_id, deadline).await })
+            Box::pin(async move {
+                source
+                    .cancel_insights_job(&app, &creds, &job_id, deadline)
+                    .await
+            })
         })
         .await
     }
 
     /// Poll until the job is terminal or `deadline` fires. Pending is a
-    /// successful document, not a timeout error.
+    /// successful document, not a timeout error. Same 2s cadence as ads review.
     #[cfg(feature = "meta-ads")]
     pub async fn wait_for_insights_job(
         &self,
@@ -1186,26 +1194,45 @@ impl Client {
         query: InsightsQuery,
         deadline: Deadline,
     ) -> Result<InsightsJobWait, Error> {
+        self.wait_for_insights_job_with_interval(key, job_id, query, deadline, REVIEW_POLL_INTERVAL)
+            .await
+    }
+
+    #[cfg(feature = "meta-ads")]
+    pub(crate) async fn wait_for_insights_job_with_interval(
+        &self,
+        key: &AccountKey,
+        job_id: &str,
+        query: InsightsQuery,
+        deadline: Deadline,
+        poll_interval: std::time::Duration,
+    ) -> Result<InsightsJobWait, Error> {
         loop {
-            deadline.check(&key.site)?;
             let job = self.insights_job(key, job_id, deadline).await?;
-            match job.status {
-                InsightsJobStatus::Completed => {
-                    let reply = self
-                        .insights_job_result(key, job_id, query, deadline)
-                        .await?;
-                    return Ok(InsightsJobWait::Completed(reply));
-                }
-                InsightsJobStatus::Failed | InsightsJobStatus::Skipped => {
-                    return Ok(InsightsJobWait::Failed(job));
-                }
-                _ => {
-                    if deadline.remaining() < std::time::Duration::from_millis(200) {
-                        return Ok(InsightsJobWait::Pending(job));
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                }
+            // Meta: fetch results only when async_status is Job Completed and
+            // async_percent_completion is 100.
+            if job.status == InsightsJobStatus::Completed && job.percent_complete == 100 {
+                let reply = self
+                    .insights_job_result(key, job_id, query, deadline)
+                    .await?;
+                return Ok(InsightsJobWait::Completed(reply));
             }
+            if matches!(
+                job.status,
+                InsightsJobStatus::Failed | InsightsJobStatus::Skipped
+            ) {
+                return Ok(InsightsJobWait::Failed(job));
+            }
+            let remaining = deadline.remaining();
+            if remaining.is_zero() {
+                return Ok(InsightsJobWait::Pending(job));
+            }
+            let delay = if poll_interval.is_zero() {
+                remaining
+            } else {
+                poll_interval.min(remaining)
+            };
+            tokio::time::sleep(delay).await;
         }
     }
 

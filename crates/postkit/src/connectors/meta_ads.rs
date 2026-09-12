@@ -377,7 +377,16 @@ impl InsightsSource for MetaAds {
             .http
             .send(self.http.delete(&url), deadline, &self.site)
             .await?;
-        let _ = read_json(resp, &self.site).await?;
+        // DELETE may return `{success:true}` or an empty 200. Do not require
+        // an Ad Report Run document after cancel.
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|_| Error::request_failed(&self.site))?;
+        if !status.is_success() {
+            return Err(map_graph_error(status.as_u16(), &text));
+        }
         Ok(InsightsJob {
             site: self.site.clone(),
             id: job_id.into(),
@@ -1023,7 +1032,11 @@ async fn read_insights_job(
     );
     let percent = body
         .get("async_percent_completion")
-        .and_then(|v| v.as_u64())
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_f64().map(|n| n as u64))
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
         .unwrap_or(0)
         .min(100) as u8;
     let error_message = body
@@ -2853,7 +2866,8 @@ mod tests {
         mock_account_currency(&server, "MYR");
         let start = server.mock(|when, then| {
             when.method(POST).path("/v26.0/act_123/insights");
-            then.status(200).json_body(json!({ "report_run_id": "999" }));
+            then.status(200)
+                .json_body(json!({ "report_run_id": "999" }));
         });
         let status = server.mock(|when, then| {
             when.method(GET).path("/v26.0/999");
@@ -2874,17 +2888,27 @@ mod tests {
         });
         let cancel = server.mock(|when, then| {
             when.method(DELETE).path("/v26.0/999");
-            then.status(200).json_body(json!({ "success": true }));
+            then.status(200).body("");
         });
         let t = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
         let q = query();
         let job = t
-            .start_insights_job(&empty_app(), &token_creds("123"), &q, Deadline::from_secs(30))
+            .start_insights_job(
+                &empty_app(),
+                &token_creds("123"),
+                &q,
+                Deadline::from_secs(30),
+            )
             .await
             .unwrap();
         assert_eq!(job.id, "999");
         let st = t
-            .insights_job(&empty_app(), &token_creds("123"), "999", Deadline::from_secs(30))
+            .insights_job(
+                &empty_app(),
+                &token_creds("123"),
+                "999",
+                Deadline::from_secs(30),
+            )
             .await
             .unwrap();
         assert_eq!(st.status, InsightsJobStatus::Completed);
@@ -2899,9 +2923,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reply.rows.len(), 1);
-        t.cancel_insights_job(&empty_app(), &token_creds("123"), "999", Deadline::from_secs(30))
-            .await
-            .unwrap();
+        t.cancel_insights_job(
+            &empty_app(),
+            &token_creds("123"),
+            "999",
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
         start.assert();
         status.assert();
         result.assert();
@@ -2915,7 +2944,9 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(bad, Error::InvalidQuery { reason, .. } if reason == "bad_insights_job_id"));
+        assert!(
+            matches!(bad, Error::InvalidQuery { reason, .. } if reason == "bad_insights_job_id")
+        );
     }
 
     #[test]

@@ -241,8 +241,7 @@ pub fn validate_breakdowns(breakdowns: &[Breakdown]) -> Result<(), String> {
         (Breakdown::Age, Breakdown::Gender)
             | (Breakdown::Country, Breakdown::Age)
             | (Breakdown::Country, Breakdown::PublisherPlatform)
-            | (Breakdown::DevicePlatform, Breakdown::PublisherPlatform)
-            | (Breakdown::PlatformPosition, Breakdown::PublisherPlatform)
+            | (Breakdown::PublisherPlatform, Breakdown::PlatformPosition)
     );
     if allowed {
         Ok(())
@@ -671,15 +670,15 @@ mod tests {
         validate_breakdowns(&[Breakdown::Age, Breakdown::Gender]).unwrap();
         validate_breakdowns(&[Breakdown::Country, Breakdown::Age]).unwrap();
         assert!(validate_breakdowns(&[Breakdown::Age, Breakdown::Age]).is_err());
-        assert!(validate_breakdowns(&[
-            Breakdown::Age,
-            Breakdown::Gender,
-            Breakdown::Country
-        ])
-        .is_err());
         assert!(
-            validate_breakdowns(&[Breakdown::Gender, Breakdown::DevicePlatform]).is_err()
+            validate_breakdowns(&[Breakdown::Age, Breakdown::Gender, Breakdown::Country]).is_err()
         );
+        assert!(validate_breakdowns(&[Breakdown::Gender, Breakdown::DevicePlatform]).is_err());
+        assert!(
+            validate_breakdowns(&[Breakdown::DevicePlatform, Breakdown::PublisherPlatform])
+                .is_err()
+        );
+        validate_breakdowns(&[Breakdown::PlatformPosition, Breakdown::PublisherPlatform]).unwrap();
     }
 
     #[test]
@@ -775,6 +774,10 @@ mod tests {
         );
         assert!(InsightsJobStatus::Completed.is_terminal());
         assert!(!InsightsJobStatus::Running.is_terminal());
+        assert_eq!(
+            InsightsJobStatus::from_meta("Job Not Started"),
+            InsightsJobStatus::NotStarted
+        );
     }
 
     #[test]
@@ -792,11 +795,17 @@ mod tests {
             breakdowns: vec![],
             report: InsightsReportKind::Delivery,
         };
-        assert!(q.validate().unwrap_err().contains("metric_not_in_report:clicks"));
+        assert!(q
+            .validate()
+            .unwrap_err()
+            .contains("metric_not_in_report:clicks"));
         q.report = InsightsReportKind::Creative;
         q.metrics = vec![Metric::Clicks];
         q.validate().unwrap();
         q.metrics = vec![Metric::Spend];
-        assert!(q.validate().unwrap_err().contains("metric_not_in_report:spend"));
+        assert!(q
+            .validate()
+            .unwrap_err()
+            .contains("metric_not_in_report:spend"));
     }
 }
