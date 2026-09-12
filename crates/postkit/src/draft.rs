@@ -269,6 +269,48 @@ impl PausedDraftManifest {
             require_text("headline", &self.creative.headline)?;
             require_https_url("destination_url", &self.creative.destination_url)?;
         }
+        match self.creative.kind {
+            DraftCreativeKind::Carousel => {
+                require_text("message", &self.creative.message)?;
+                if self.creative.cards.len() < 2 || self.creative.cards.len() > 10 {
+                    return Err("carousel_cards_out_of_range".into());
+                }
+                for (i, card) in self.creative.cards.iter().enumerate() {
+                    require_text("image_hash", &card.image_hash)
+                        .map_err(|_| format!("missing_card_image_hash:{i}"))?;
+                    require_https_url("link", &card.link)?;
+                    require_text("name", &card.name)
+                        .map_err(|_| format!("missing_card_name:{i}"))?;
+                }
+            }
+            DraftCreativeKind::Catalog => {
+                require_text("message", &self.creative.message)?;
+                let product_set = self.creative.product_set_id.as_deref().unwrap_or("");
+                require_numeric_id("product_set_id", product_set)?;
+                let link = self
+                    .creative
+                    .link
+                    .as_deref()
+                    .unwrap_or(&self.creative.destination_url);
+                require_https_url("link", link)?;
+            }
+            DraftCreativeKind::AppInstall => {
+                require_text("message", &self.creative.message)?;
+                let app = self.creative.application_id.as_deref().unwrap_or("");
+                require_numeric_id("application_id", app)?;
+                let store = self.creative.object_store_url.as_deref().unwrap_or("");
+                require_https_url("object_store_url", store)?;
+            }
+            DraftCreativeKind::Video => {
+                let video = self.creative.video_id.as_deref().unwrap_or("");
+                require_numeric_id("video_id", video)?;
+            }
+            DraftCreativeKind::LeadForm => {
+                let form = self.creative.lead_gen_form_id.as_deref().unwrap_or("");
+                require_numeric_id("lead_gen_form_id", form)?;
+            }
+            DraftCreativeKind::Link => {}
+        }
         crate::ads::validate_link_cta_values(&crate::ads::LinkAdCreative {
             name: self.creative.name.clone(),
             page_id: self.creative.page_id.clone(),
@@ -1078,6 +1120,24 @@ mod tests {
         manifest.adset.start_time = Some("2026-11-11T14:26:09-08:00".into());
         manifest.adset.end_time = Some("2026-11-21T14:26:09-08:00".into());
         manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn draft_catalog_and_carousel_validate_at_parse_time() {
+        let mut manifest = example_manifest();
+        manifest.creative.kind = DraftCreativeKind::Catalog;
+        manifest.creative.product_set_id = None;
+        assert_eq!(manifest.validate().unwrap_err(), "bad_product_set_id:");
+        manifest.creative.product_set_id = Some("555".into());
+        manifest.creative.link = Some("https://example.com".into());
+        manifest.validate().unwrap();
+
+        manifest.creative.kind = DraftCreativeKind::Carousel;
+        manifest.creative.cards = vec![];
+        assert_eq!(
+            manifest.validate().unwrap_err(),
+            "carousel_cards_out_of_range"
+        );
     }
 
     #[test]

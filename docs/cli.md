@@ -245,6 +245,7 @@ postkit ads archive meta_ads --entity campaign|adset|ad --id <id> --confirm-id <
 postkit ads delete meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-delete --confirm-delete
 postkit ads duplicate meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-duplicate [--confirm-daily-budget N]
 postkit ads update-budget meta_ads --entity campaign|adset --id <id> --confirm-id <id> --current-daily-budget N --new-daily-budget N --allow-budget-edit
+postkit ads update-lifetime-budget meta_ads --entity campaign|adset --id <id> --confirm-id <id> --current-lifetime-budget N --new-lifetime-budget N --allow-budget-edit
 postkit ads update-bid meta_ads --entity campaign|adset --id <id> --confirm-id <id> --bid-strategy lowest_cost_without_cap --allow-bid-edit
 postkit ads update-schedule meta_ads --id <adset-id> --confirm-id <id> --start-time RFC3339 --end-time RFC3339 --allow-schedule-edit
 postkit ads update-placement meta_ads --id <adset-id> --confirm-id <id> --publisher-platform facebook [--facebook-position feed] --allow-placement-edit

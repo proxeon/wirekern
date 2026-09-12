@@ -187,6 +187,8 @@ impl Server {
             "ads_inspect" => tools::ads_inspect(&self.client, arguments).await,
             "ads_status" => tools::ads_status(&self.client, arguments).await,
             "ads_create_paused" => tools::ads_create_paused(&self.client, arguments).await,
+            "ads_pause" => tools::ads_pause(&self.client, arguments).await,
+            "ads_create_creative" => tools::ads_create_creative(&self.client, arguments).await,
             "pages_accounts" => tools::pages_accounts(&self.client, arguments).await,
             "media_list" => tools::media_list(&self.client, arguments).await,
             other => {
@@ -389,6 +391,8 @@ mod tests {
                 "ads_inspect",
                 "ads_status",
                 "ads_create_paused",
+                "ads_pause",
+                "ads_create_creative",
                 "pages_accounts",
                 "media_list"
             ]
@@ -780,7 +784,10 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(denied["result"]["structuredContent"]["error"], "policy_denied");
+        assert_eq!(
+            denied["result"]["structuredContent"]["error"],
+            "policy_denied"
+        );
         let status = call(
             &server,
             "ads_status",
@@ -790,6 +797,28 @@ mod tests {
         assert_eq!(
             status["result"]["structuredContent"]["error"],
             "unknown_account"
+        );
+        let paused = call(
+            &server,
+            "ads_pause",
+            json!({ "site": "meta_ads", "entity": "adset", "id": "456" }),
+        )
+        .await;
+        assert_eq!(
+            paused["result"]["structuredContent"]["error"],
+            "unknown_account"
+        );
+        let creative = call(
+            &server,
+            "ads_create_creative",
+            json!({
+                "kind": { "kind": "catalog", "name": "x", "page_id": "1", "product_set_id": "2", "link": "https://example.com", "message": "m", "call_to_action": "shop_now" }
+            }),
+        )
+        .await;
+        assert_eq!(
+            creative["result"]["structuredContent"]["error"],
+            "policy_denied"
         );
         let bad_attr = call(
             &server,

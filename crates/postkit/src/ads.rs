@@ -517,6 +517,46 @@ impl AdsBudgetUpdateRequest {
     }
 }
 
+/// Lifetime-budget edit. Same guards as daily: current must match Graph,
+/// relative change cannot exceed `max_change_ratio`. Campaign/ad set only.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AdsLifetimeBudgetUpdateRequest {
+    pub entity: AdEntity,
+    pub id: String,
+    pub confirm_id: String,
+    pub current_lifetime_budget: u64,
+    pub new_lifetime_budget: u64,
+    #[serde(default = "default_budget_max_change_ratio")]
+    pub max_change_ratio: f64,
+}
+
+impl AdsLifetimeBudgetUpdateRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("ad_entity_id", &self.id)?;
+        require_numeric_id("confirm_id", &self.confirm_id)?;
+        if self.confirm_id != self.id {
+            return Err("confirm_id_mismatch".into());
+        }
+        if self.entity == AdEntity::Ad {
+            return Err("budget_not_on_object".into());
+        }
+        if self.current_lifetime_budget == 0 || self.new_lifetime_budget == 0 {
+            return Err("budget_must_be_positive".into());
+        }
+        if !(self.max_change_ratio > 0.0 && self.max_change_ratio <= 1.0) {
+            return Err("max_change_ratio_out_of_range".into());
+        }
+        let delta = self
+            .new_lifetime_budget
+            .abs_diff(self.current_lifetime_budget) as f64;
+        let ratio = delta / self.current_lifetime_budget as f64;
+        if ratio > self.max_change_ratio {
+            return Err("budget_change_exceeds_guard".into());
+        }
+        Ok(())
+    }
+}
+
 fn confirm_ids(id: &str, confirm_id: &str) -> Result<(), String> {
     require_numeric_id("ad_entity_id", id)?;
     require_numeric_id("confirm_id", confirm_id)?;

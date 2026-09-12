@@ -568,7 +568,7 @@ impl AdsManager for MockPub {
             effective_status: Some("PAUSED".into()),
             status: None,
             daily_budget: Some("500".into()),
-            lifetime_budget: None,
+            lifetime_budget: Some("10000".into()),
             bid_strategy: Some("LOWEST_COST_WITHOUT_CAP".into()),
             bid_amount: None,
             roas_average_floor: None,
@@ -3043,6 +3043,26 @@ async fn client_typed_edits_require_policy_and_guards() {
         max_change_ratio: 0.2,
     };
     assert_eq!(ad_budget.validate().unwrap_err(), "budget_not_on_object");
+
+    let lifetime = crate::ads::AdsLifetimeBudgetUpdateRequest {
+        entity: AdEntity::Adset,
+        id: "456".into(),
+        confirm_id: "456".into(),
+        current_lifetime_budget: 10000,
+        new_lifetime_budget: 11000,
+        max_change_ratio: 0.2,
+    };
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let allowed =
+        client.with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::UpdateBudget)));
+    let outcome = allowed
+        .update_ad_lifetime_budget(&key, lifetime, Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        crate::ads::AdsEditOutcome::Applied { .. }
+    ));
 }
 
 /// A poller is useful only if it stops on the platform's final state. The

@@ -12,10 +12,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use postkit::{
-    AccountKey, AdEntity, AdReviewStatusRequest, AdsInspectRequest, AdsInventoryKind,
-    AdsInventoryRequest, AttributionWindow, Breakdown, Client, DateRange, Deadline, Error,
-    FileKeyStore, InsightsLevel, InsightsQuery, Metric, PostRequest, Site, Vault, WhatsAppMessage,
-    WhatsAppSendRequest, WireError, KEY_PREFIX,
+    AccountKey, AdEntity, AdPreviewFormat, AdReviewStatusRequest, AdsInspectRequest,
+    AdsInventoryKind, AdsInventoryRequest, AdsPauseRequest, AttributionWindow, Breakdown, Client,
+    CreativePreviewRequest, DateRange, Deadline, Error, FileKeyStore, InsightsLevel, InsightsQuery,
+    Metric, PostRequest, Site, Vault, WhatsAppMessage, WhatsAppSendRequest, WireError, KEY_PREFIX,
 };
 use serde::Deserialize;
 use std::io::Write;
@@ -118,13 +118,16 @@ pub fn router(client: Arc<Client>, whatsapp: Arc<Client>, keys: Arc<FileKeyStore
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/accounts", get(accounts))
         .route("/v1/whoami", get(whoami))
-        // Ads reads only. pk_live_ is not a spend key: there is no HTTP
-        // activate, budget edit, or paused-create route.
+        // Ads reads plus emergency pause. pk_live_ is not a spend key: there
+        // is no HTTP activate, budget edit, or paused-create route. Pause
+        // can only stop delivery.
         .route("/v1/insights", get(insights))
         .route("/v1/ads/accounts", get(ads_accounts))
         .route("/v1/ads/list", get(ads_list))
         .route("/v1/ads/inspect", get(ads_inspect))
         .route("/v1/ads/status", get(ads_status))
+        .route("/v1/ads/preview", get(ads_preview))
+        .route("/v1/ads/pause", post(ads_pause))
         .with_state(AppState {
             client,
             whatsapp,
@@ -500,6 +503,8 @@ struct AdsReadQuery {
     entity_id: Vec<String>,
     breakdowns: Option<String>,
     report: Option<String>,
+    creative_id: Option<String>,
+    ad_format: Option<String>,
 }
 
 fn ads_key(q: &AdsReadQuery) -> Result<AccountKey, Error> {
@@ -660,6 +665,109 @@ async fn ads_status(
     match state
         .client
         .ad_review_status(&key, request, deadline_from(&headers))
+        .await
+    {
+        Ok(reply) => (StatusCode::OK, Json(reply)).into_response(),
+        Err(e) => wire_response(e),
+    }
+}
+
+/// GET preview returns the iframe body in JSON. CLI writes a local file
+/// instead so agent logs do not swallow markup.
+async fn ads_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<AdsReadQuery>,
+) -> Response {
+    if let Err(e) = authorize(&state, &headers).await {
+        return wire_response(e);
+    }
+    let key = match ads_key(&q) {
+        Ok(key) => key,
+        Err(e) => return wire_response(e),
+    };
+    let creative_id = match q.creative_id.as_deref() {
+        Some(id) => id,
+        None => {
+            return wire_response(Error::InvalidQuery {
+                site: key.site.clone(),
+                reason: "missing_creative_id".into(),
+            })
+        }
+    };
+    let raw = q.ad_format.as_deref().unwrap_or("mobile_feed_standard");
+    let ad_format = match AdPreviewFormat::from_str(raw) {
+        Ok(format) => format,
+        Err(reason) => {
+            return wire_response(Error::InvalidQuery {
+                site: key.site.clone(),
+                reason,
+            })
+        }
+    };
+    let request = CreativePreviewRequest {
+        creative_id: creative_id.into(),
+        ad_format,
+    };
+    match state
+        .client
+        .preview_ad_creative(&key, request, deadline_from(&headers))
+        .await
+    {
+        Ok(preview) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "site": preview.site,
+                "creative_id": preview.creative_id,
+                "ad_format": preview.ad_format.as_str(),
+                "body": preview.body,
+            })),
+        )
+            .into_response(),
+        Err(e) => wire_response(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct HttpAdsPause {
+    #[serde(default = "default_ads_site")]
+    site: String,
+    #[serde(default = "default_http_account")]
+    account: String,
+    entity: String,
+    id: String,
+}
+
+fn default_ads_site() -> String {
+    "meta_ads".into()
+}
+
+/// Emergency stop. Cannot start spend; default ads policy allows it.
+async fn ads_pause(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<HttpAdsPause>,
+) -> Response {
+    if let Err(e) = authorize(&state, &headers).await {
+        return wire_response(e);
+    }
+    let key = AccountKey::new(&body.site, &body.account);
+    let entity = match AdEntity::from_str(&body.entity) {
+        Ok(entity) => entity,
+        Err(reason) => {
+            return wire_response(Error::InvalidQuery {
+                site: key.site.clone(),
+                reason,
+            })
+        }
+    };
+    let request = AdsPauseRequest {
+        entity,
+        id: body.id,
+    };
+    match state
+        .client
+        .pause_ad(&key, request, deadline_from(&headers))
         .await
     {
         Ok(reply) => (StatusCode::OK, Json(reply)).into_response(),
@@ -1333,6 +1441,8 @@ mod tests {
                 Capability::ReadAdsInventory,
                 Capability::ReadAdReviewStatus,
                 Capability::ReadMetrics,
+                Capability::ReadAdPreviews,
+                Capability::ManageAdsLifecycle,
             ]
         }
         fn auth_kind(&self) -> AuthKind {
@@ -1488,12 +1598,14 @@ mod tests {
             &self,
             _app: &postkit::AppConfig,
             _creds: &AccountCreds,
-            _request: &postkit::CreativePreviewRequest,
+            request: &postkit::CreativePreviewRequest,
             _deadline: Deadline,
         ) -> Result<postkit::CreativePreview, Error> {
-            Err(Error::UnsupportedCapability {
+            Ok(postkit::CreativePreview {
                 site: self.site.clone(),
-                need: Capability::CreateAdCreative,
+                creative_id: request.creative_id.clone(),
+                ad_format: request.ad_format,
+                body: "<iframe></iframe>".into(),
             })
         }
         async fn ad_review_status(
@@ -1594,6 +1706,7 @@ mod tests {
         assert_eq!(listed.status(), StatusCode::OK);
 
         let status = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/v1/ads/status?site=meta_ads&entity=adset&id=456")
@@ -1604,6 +1717,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status.status(), StatusCode::OK);
+
+        let preview = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/ads/preview?site=meta_ads&creative_id=789&ad_format=mobile_feed_standard")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(preview.status(), StatusCode::OK);
+
+        let paused = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/ads/pause")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"site":"meta_ads","entity":"adset","id":"456"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(paused.status(), StatusCode::OK);
     }
 
     #[test]

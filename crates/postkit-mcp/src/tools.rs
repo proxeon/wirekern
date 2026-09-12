@@ -4,10 +4,11 @@
 //! kernel first; this file only adapts JSON-RPC arguments onto those types.
 
 use postkit::{
-    AccountKey, AdEntity, AdReviewStatusRequest, AdsInspectRequest, AdsInventoryKind,
-    AdsInventoryRequest, AttributionWindow, Breakdown, Client, CreatePausedAdRequest, DateRange,
-    Deadline, Error, InsightsLevel, InsightsQuery, MediaQuery, Metric, PausedAdCreate, PostRequest,
-    Site, WhatsAppSendRequest, WireError, DEFAULT_MEDIA_LIMIT,
+    AccountKey, AdCreativeKind, AdEntity, AdReviewStatusRequest, AdsInspectRequest,
+    AdsInventoryKind, AdsInventoryRequest, AdsPauseRequest, AttributionWindow, Breakdown, Client,
+    CreateAdCreativeRequest, CreatePausedAdRequest, DateRange, Deadline, Error, InsightsLevel,
+    InsightsQuery, MediaQuery, Metric, PausedAdCreate, PostRequest, Site, WhatsAppSendRequest,
+    WireError, DEFAULT_MEDIA_LIMIT,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -103,6 +104,20 @@ pub fn catalog() -> &'static [ToolSpec] {
             read_only: false,
             destructive: true,
             schema: ads_create_paused_schema,
+        },
+        ToolSpec {
+            name: "ads_pause",
+            description: "Emergency ACTIVE → PAUSED. Cannot start spend. Default policy allows it.",
+            read_only: false,
+            destructive: true,
+            schema: ads_pause_schema,
+        },
+        ToolSpec {
+            name: "ads_create_creative",
+            description: "Create a paused carousel, catalog, lead-form, or app-install creative. Requires allow_create=true.",
+            read_only: false,
+            destructive: true,
+            schema: ads_create_creative_schema,
         },
         ToolSpec {
             name: "pages_accounts",
@@ -289,6 +304,37 @@ fn ads_create_paused_schema() -> Value {
             "deadline": { "type": "integer", "minimum": 1, "default": 30 }
         },
         "required": ["allow_create", "create"],
+        "additionalProperties": false
+    })
+}
+
+fn ads_pause_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "site": { "type": "string", "default": "meta_ads" },
+            "account": { "type": "string", "default": "default" },
+            "entity": { "type": "string", "enum": ["campaign", "adset", "ad"] },
+            "id": { "type": "string" },
+            "deadline": { "type": "integer", "minimum": 1, "default": 30 }
+        },
+        "required": ["entity", "id"],
+        "additionalProperties": false
+    })
+}
+
+fn ads_create_creative_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "site": { "type": "string", "default": "meta_ads" },
+            "account": { "type": "string", "default": "default" },
+            "allow_create": { "type": "boolean" },
+            "ad_account": { "type": "string" },
+            "kind": { "type": "object" },
+            "deadline": { "type": "integer", "minimum": 1, "default": 30 }
+        },
+        "required": ["allow_create", "kind"],
         "additionalProperties": false
     })
 }
@@ -537,6 +583,33 @@ struct AdsCreatePausedArgs {
 }
 
 #[derive(Deserialize)]
+struct AdsPauseArgs {
+    #[serde(default = "default_ads_site")]
+    site: String,
+    #[serde(default = "default_account")]
+    account: String,
+    entity: String,
+    id: String,
+    #[serde(default = "default_deadline")]
+    deadline: u64,
+}
+
+#[derive(Deserialize)]
+struct AdsCreateCreativeArgs {
+    #[serde(default = "default_ads_site")]
+    site: String,
+    #[serde(default = "default_account")]
+    account: String,
+    #[serde(default)]
+    allow_create: bool,
+    #[serde(default)]
+    ad_account: Option<String>,
+    kind: AdCreativeKind,
+    #[serde(default = "default_deadline")]
+    deadline: u64,
+}
+
+#[derive(Deserialize)]
 struct InsightsArgs {
     #[serde(default = "default_ads_site")]
     site: String,
@@ -685,6 +758,55 @@ pub async fn ads_create_paused(client: &Client, arguments: Value) -> Value {
     let key = AccountKey::new(&args.site, &args.account);
     match client
         .create_paused_ad(&key, request, Deadline::from_secs(args.deadline.max(1)))
+        .await
+    {
+        Ok(reply) => value_ok(&args.site, reply),
+        Err(error) => tool_err(error),
+    }
+}
+
+pub async fn ads_pause(client: &Client, arguments: Value) -> Value {
+    let args: AdsPauseArgs = match serde_json::from_value(arguments) {
+        Ok(value) => value,
+        Err(error) => return tool_err(invalid_query("meta_ads", format!("json:{error}"))),
+    };
+    let entity = match AdEntity::from_str(&args.entity) {
+        Ok(entity) => entity,
+        Err(reason) => return tool_err(invalid_query(&args.site, reason)),
+    };
+    let request = AdsPauseRequest {
+        entity,
+        id: args.id,
+    };
+    let key = AccountKey::new(&args.site, &args.account);
+    match client
+        .pause_ad(&key, request, Deadline::from_secs(args.deadline.max(1)))
+        .await
+    {
+        Ok(reply) => value_ok(&args.site, reply),
+        Err(error) => tool_err(error),
+    }
+}
+
+pub async fn ads_create_creative(client: &Client, arguments: Value) -> Value {
+    let args: AdsCreateCreativeArgs = match serde_json::from_value(arguments) {
+        Ok(value) => value,
+        Err(error) => return tool_err(invalid_query("meta_ads", format!("json:{error}"))),
+    };
+    if !args.allow_create {
+        return tool_err(Error::PolicyDenied {
+            site: Site::new(&args.site),
+            action: "create_ad_creative".into(),
+            reason: "explicit_paused_create_required".into(),
+        });
+    }
+    let request = CreateAdCreativeRequest {
+        account: args.ad_account,
+        kind: args.kind,
+    };
+    let key = AccountKey::new(&args.site, &args.account);
+    match client
+        .create_ad_creative(&key, request, Deadline::from_secs(args.deadline.max(1)))
         .await
     {
         Ok(reply) => value_ok(&args.site, reply),

@@ -8,12 +8,13 @@ use postkit::{
     AdsBidUpdateRequest, AdsBudgetUpdateRequest, AdsCreativeSwapRequest, AdsDeleteRequest,
     AdsDuplicateRequest, AdsEditOutcome, AdsInspectReply, AdsInspectRequest, AdsInventoryItem,
     AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest, AdsLifecycleCheckpoint,
-    AdsLifecycleOutcome, AdsPauseRequest, AdsPlacementUpdateRequest, AdsScheduleUpdateRequest,
-    AdsTargetingUpdateRequest, AppInstallAdCreative, AttributionWindow, BidStrategy, Breakdown,
-    CampaignObjective, CarouselAdCreative, CarouselCard, CatalogAdCreative, Client,
-    CreateAdCreativeRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
-    CreatedAdCreative, CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply,
-    Error, FacebookPosition, InsightRow, InsightsLevel, InsightsQuery, InstagramPosition,
+    AdsLifecycleOutcome, AdsLifetimeBudgetUpdateRequest, AdsPauseRequest,
+    AdsPlacementUpdateRequest, AdsScheduleUpdateRequest, AdsTargetingUpdateRequest,
+    AppInstallAdCreative, AttributionWindow, BidStrategy, Breakdown, CampaignObjective,
+    CarouselAdCreative, CarouselCard, CatalogAdCreative, Client, CreateAdCreativeRequest,
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, Error,
+    FacebookPosition, InsightRow, InsightsLevel, InsightsQuery, InstagramPosition,
     LeadFormAdCreative, LinkAdCreative, LinkCallToAction, Metric, PausedAd, PausedAdCreate,
     PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult, PublishedMedia,
     PublisherPlatform, Site, UploadAdImageRequest, UploadedAdImage, WhatsAppPosition,
@@ -1220,6 +1221,46 @@ pub(crate) fn build_ads_budget_update_request(
         .validate()
         .map_err(|reason| ads_input_error(site, reason))?;
     Ok(request)
+}
+
+pub(crate) fn build_ads_lifetime_budget_update_request(
+    site: &str,
+    entity: &str,
+    id: &str,
+    confirm_id: &str,
+    current_lifetime_budget: u64,
+    new_lifetime_budget: u64,
+    max_change_ratio: f64,
+) -> Result<AdsLifetimeBudgetUpdateRequest, Error> {
+    let entity = AdEntity::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
+    let request = AdsLifetimeBudgetUpdateRequest {
+        entity,
+        id: id.into(),
+        confirm_id: confirm_id.into(),
+        current_lifetime_budget,
+        new_lifetime_budget,
+        max_change_ratio,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_ads_lifetime_budget_update(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsLifetimeBudgetUpdateRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client
+        .update_ad_lifetime_budget(key, request, deadline)
+        .await
+    {
+        Ok(outcome) => emit_edit_outcome(&outcome, json),
+        Err(error) => Err(fail(&error, json)),
+    }
 }
 
 pub(crate) async fn one_ads_budget_update(

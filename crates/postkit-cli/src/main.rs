@@ -377,6 +377,23 @@ enum AdsCmd {
         #[arg(long, default_value_t = 0.2)]
         max_change_ratio: f64,
     },
+    UpdateLifetimeBudget {
+        site: String,
+        #[arg(long)]
+        entity: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        confirm_id: String,
+        #[arg(long)]
+        allow_budget_edit: bool,
+        #[arg(long)]
+        current_lifetime_budget: u64,
+        #[arg(long)]
+        new_lifetime_budget: u64,
+        #[arg(long, default_value_t = 0.2)]
+        max_change_ratio: f64,
+    },
     UpdateBid {
         site: String,
         #[arg(long)]
@@ -1449,6 +1466,10 @@ fn apply_ads_lifecycle_policy(client: Client, command: &Commands) -> Client {
         Commands::Ads(AdsCmd::UpdateBudget {
             allow_budget_edit: true,
             ..
+        })
+        | Commands::Ads(AdsCmd::UpdateLifetimeBudget {
+            allow_budget_edit: true,
+            ..
         }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
             postkit::AdsAction::UpdateBudget,
         ))),
@@ -2375,6 +2396,35 @@ async fn dispatch(
             )
             .map_err(|e| fail(&e, json))?;
             one_ads_budget_update(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::UpdateLifetimeBudget {
+            site,
+            entity,
+            id,
+            confirm_id,
+            allow_budget_edit: _,
+            current_lifetime_budget,
+            new_lifetime_budget,
+            max_change_ratio,
+        }) => {
+            let request = build_ads_lifetime_budget_update_request(
+                &site,
+                &entity,
+                &id,
+                &confirm_id,
+                current_lifetime_budget,
+                new_lifetime_budget,
+                max_change_ratio,
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_ads_lifetime_budget_update(
                 &client,
                 &AccountKey::new(&site, &account),
                 request,

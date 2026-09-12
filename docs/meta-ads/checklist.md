@@ -122,12 +122,12 @@ spend key).
 |------|---------|-----|-----|--------------|
 | Insights | [x] | [x] | [x] `insights` | [x] GET |
 | Ad account list | [x] | [x] | [x] `ads_accounts` | [x] GET |
-| Paused creates / drafts | [x] | [x] | [x] `ads_create_paused` | [ ] |
-| Status / preview | [x] | [x] | [x] `ads_status` | [x] status GET |
+| Paused creates / drafts | [x] | [x] | [x] `ads_create_paused` / `ads_create_creative` | [ ] |
+| Status / preview | [x] | [x] | [x] `ads_status` | [x] status GET + preview GET |
 | Inventory list | [x] | [x] | [x] `ads_list` | [x] GET |
 | Object inspect | [x] | [x] | [x] `ads_inspect` | [x] GET |
 | Activate | policy deny default | [x] `--allow-activate` | [ ] | [ ] |
-| Pause | [x] default allow | [x] | [ ] | [ ] |
+| Pause | [x] default allow | [x] | [x] `ads_pause` | [x] POST |
 | Archive / delete / duplicate | policy deny | [x] | [ ] | [ ] |
 | Typed edits (budget/bid/schedule/placement/targeting/creative) | policy deny | [x] | [ ] | [ ] |
 
@@ -142,7 +142,7 @@ spend key).
 - [x] Rate-limit → `rate_limited` (exit 4); no blind retry of creates
 - [x] Meta `error_user_msg` preserved when present; tokens redacted
 - [x] `error_user_title` / Marketing subcodes used when they change guidance
-- [x] Dedicated regression fixture per Marketing error shape that changes retry/guidance (partial today)
+- [x] Dedicated regression fixture per Marketing error shape that changes retry/guidance
 
 ## Not this kernel
 

@@ -5,13 +5,13 @@ use crate::ads::{
     AdsBidUpdateRequest, AdsBudgetUpdateRequest, AdsConfiguredStatus, AdsCreativeSwapRequest,
     AdsDeleteRequest, AdsDuplicateReply, AdsDuplicateRequest, AdsEditOutcome, AdsInspectReply,
     AdsInspectRequest, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
-    AdsLifecycleOutcome, AdsPauseRequest, AdsPlacementUpdateRequest, AdsScheduleUpdateRequest,
-    AdsStatusUpdateRequest, AdsTargetingDiff, AdsTargetingUpdateRequest, AdsTokenInspection,
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest,
-    UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE, ARCHIVE_RECONCILE_GUIDANCE,
-    DELETE_RECONCILE_GUIDANCE, EDIT_RECONCILE_GUIDANCE, PAUSE_RECONCILE_GUIDANCE,
-    SYSTEM_USER_TOKEN_KIND,
+    AdsLifecycleOutcome, AdsLifetimeBudgetUpdateRequest, AdsPauseRequest,
+    AdsPlacementUpdateRequest, AdsScheduleUpdateRequest, AdsStatusUpdateRequest, AdsTargetingDiff,
+    AdsTargetingUpdateRequest, AdsTokenInspection, CreateLinkAdCreativeRequest,
+    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
+    MarketingApiAccessTier, UploadAdImageRequest, UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE,
+    ARCHIVE_RECONCILE_GUIDANCE, DELETE_RECONCILE_GUIDANCE, EDIT_RECONCILE_GUIDANCE,
+    PAUSE_RECONCILE_GUIDANCE, SYSTEM_USER_TOKEN_KIND,
 };
 use crate::apps::AppStore;
 use crate::error::Error;
@@ -1829,6 +1829,72 @@ impl Client {
                     request.entity,
                     &request.id,
                     &[("daily_budget".into(), request.new_daily_budget.to_string())],
+                    None,
+                    deadline,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
+    /// Same confirmation and max-change guard as daily, posting
+    /// `lifetime_budget`. Campaign/ad set only.
+    pub async fn update_ad_lifetime_budget(
+        &self,
+        key: &AccountKey,
+        request: AdsLifetimeBudgetUpdateRequest,
+        deadline: Deadline,
+    ) -> Result<AdsEditOutcome, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy
+            .authorize(&key.site, AdsAction::UpdateBudget)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                let inspect = ads
+                    .inspect_ads_object(
+                        &app,
+                        &creds,
+                        &AdsInspectRequest {
+                            kind: AdsInventoryKind::from_entity(request.entity),
+                            id: request.id.clone(),
+                        },
+                        deadline,
+                    )
+                    .await?;
+                if inspect.lifetime_budget.is_none() {
+                    return Err(Error::InvalidQuery {
+                        site: inspect.site.clone(),
+                        reason: "budget_not_on_object".into(),
+                    });
+                }
+                let current = inspect
+                    .lifetime_budget
+                    .as_deref()
+                    .and_then(|raw| raw.parse::<u64>().ok());
+                if current != Some(request.current_lifetime_budget) {
+                    return Err(Error::InvalidQuery {
+                        site: inspect.site.clone(),
+                        reason: "current_lifetime_budget_mismatch".into(),
+                    });
+                }
+                post_then_inspect(
+                    &*ads,
+                    &app,
+                    &creds,
+                    request.entity,
+                    &request.id,
+                    &[(
+                        "lifetime_budget".into(),
+                        request.new_lifetime_budget.to_string(),
+                    )],
                     None,
                     deadline,
                 )

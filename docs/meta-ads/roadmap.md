@@ -20,27 +20,10 @@ as authorization to spend.
 
 ## Tier C — controlled lifecycle changes
 
-**Goal:** let an operator deliberately move a reviewed paused draft through a
-small lifecycle without turning Postkit into an unattended spending engine.
-
-1. Define a typed lifecycle request for a known campaign, ad set, or ad:
-   `PAUSED` → `ACTIVE`, plus a reverse `ACTIVE` → `PAUSED` emergency stop.
-   Do not accept arbitrary Graph `status` strings.
-2. Add an explicit ads policy action for activation and pause. The default
-   policy must continue to deny activation. A policy that allows it must be
-   deliberately selected by the embedding application or command, record the
-   exact object ID, and require a human-readable confirmation of the delivery
-   and budget consequences.
-3. Before activation, read and show configured/effective status, review
-   issues, ad account currency, selected daily/lifetime budget, bid strategy,
-   optimization goal, Page/creative identity, and destination URL. Refuse a
-   non-paused object or unresolved review issue rather than guessing.
-4. Keep a write-ahead checkpoint/audit record that distinguishes a confirmed
-   Meta response from a timeout after send. Never blindly retry an ambiguous
-   activation write.
-5. Test success, denial before vault/HTTP, malformed ID, review-pending,
-   token-expiry retry, idempotency/concurrency, ambiguous network outcome, and
-   a live test on a deliberately funded low-budget account.
+**Shipped on CLI.** `ads activate` / `ads pause` / `--state` write-ahead are
+on `main`. Default policy still denies activate; pause is the emergency
+valve. Remaining live operator passes are in
+[live-remaining.md](./live-remaining.md).
 
 **Non-goal:** automated activation rules, auto-bidding, or auto-reload. Those
 are a separate product decision with materially different financial risk.
