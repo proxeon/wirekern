@@ -68,10 +68,12 @@ pub use ads::{
     validate_link_cta_values, validate_promoted_object, AdCreativeKind, AdEntity, AdPreviewFormat,
     AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdReviewWait, AdTargeting, AdVideoStatus,
     AdVideoStatusKind, AdVideoStatusRequest, AdVideoWait, AdsActivateRequest, AdsArchiveRequest,
-    AdsConfiguredStatus, AdsDeleteRequest, AdsDuplicateReply, AdsDuplicateRequest, AdsInspectReply,
-    AdsInspectRequest, AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
-    AdsLifecycleCheckpoint, AdsLifecycleOutcome, AdsPauseRequest, AdsStatusUpdateRequest,
-    AdsTargetingReadback, AdsTokenInspection, AdsTokenKind, AppInstallAdCreative, BidStrategy,
+    AdsBidUpdateRequest, AdsBudgetUpdateRequest, AdsConfiguredStatus, AdsCreativeSwapRequest,
+    AdsDeleteRequest, AdsDuplicateReply, AdsDuplicateRequest, AdsInspectReply, AdsInspectRequest,
+    AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
+    AdsLifecycleCheckpoint, AdsLifecycleOutcome, AdsPauseRequest, AdsPlacementUpdateRequest,
+    AdsScheduleUpdateRequest, AdsStatusUpdateRequest, AdsTargetingDiff, AdsTargetingReadback,
+    AdsTargetingUpdateRequest, AdsTokenInspection, AdsTokenKind, AppInstallAdCreative, BidStrategy,
     BillingEvent, CampaignObjective, CarouselAdCreative, CarouselCard, CatalogAdCreative,
     CreateAdCreativeRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
     CreateVideoAdCreativeRequest, CreatedAd, CreatedAdCreative, CreativePreview,
@@ -80,8 +82,9 @@ pub use ads::{
     MarketingApiAccessTierKind, OptimizationGoal, PausedAd, PausedAdCreate, PausedAdset,
     PausedCampaign, PromotedObject, PublisherPlatform, UploadAdImageRequest, UploadAdVideoRequest,
     UploadedAdImage, UploadedAdVideo, VideoAdCreative, WhatsAppPosition, WhatsAppStatusIdentity,
-    ACTIVATE_RECONCILE_GUIDANCE, ARCHIVE_RECONCILE_GUIDANCE, DELETE_RECONCILE_GUIDANCE,
-    MARKETING_API_ACCESS_TIER_DASHBOARD, PAUSE_RECONCILE_GUIDANCE, SYSTEM_USER_TOKEN_KIND,
+    ACTIVATE_RECONCILE_GUIDANCE, ARCHIVE_RECONCILE_GUIDANCE, DEFAULT_BUDGET_MAX_CHANGE_RATIO,
+    DELETE_RECONCILE_GUIDANCE, MARKETING_API_ACCESS_TIER_DASHBOARD, PAUSE_RECONCILE_GUIDANCE,
+    SYSTEM_USER_TOKEN_KIND,
 };
 pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
 pub use bundle::bundled_registry;

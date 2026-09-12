@@ -619,6 +619,40 @@ impl AdsManager for MockPub {
         })
     }
 
+    async fn post_ad_update(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _id: &str,
+        _fields: &[(String, String)],
+        _deadline: Deadline,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn read_ad_targeting_json(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _id: &str,
+        _deadline: Deadline,
+    ) -> Result<serde_json::Value, Error> {
+        Ok(serde_json::json!({
+            "geo_locations": { "countries": ["MY"] },
+            "publisher_platforms": ["facebook"]
+        }))
+    }
+
+    async fn read_special_ad_categories(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _id: &str,
+        _deadline: Deadline,
+    ) -> Result<Vec<String>, Error> {
+        Ok(vec![])
+    }
+
     async fn ad_review_status(
         &self,
         _app: &AppConfig,
@@ -2927,6 +2961,61 @@ async fn client_delete_and_duplicate_are_denied_until_opt_in() {
         .unwrap();
     assert_eq!(copied.copied_id, "999");
     assert_eq!(copied.status, "PAUSED");
+}
+
+#[tokio::test]
+async fn client_typed_edits_require_policy_and_guards() {
+    let request = crate::ads::AdsBudgetUpdateRequest {
+        entity: AdEntity::Adset,
+        id: "456".into(),
+        confirm_id: "456".into(),
+        current_daily_budget: 500,
+        new_daily_budget: 550,
+        max_change_ratio: 0.2,
+    };
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let denied = client
+        .update_ad_budget(&key, request.clone(), Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(denied, Error::PolicyDenied { action, reason, .. } if action == "update_budget" && reason == "paused_only")
+    );
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let allowed =
+        client.with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::UpdateBudget)));
+    let inspect = allowed
+        .update_ad_budget(&key, request, Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(inspect.daily_budget.as_deref(), Some("500"));
+
+    let too_big = crate::ads::AdsBudgetUpdateRequest {
+        entity: AdEntity::Adset,
+        id: "456".into(),
+        confirm_id: "456".into(),
+        current_daily_budget: 500,
+        new_daily_budget: 800,
+        max_change_ratio: 0.2,
+    };
+    assert_eq!(
+        too_big.validate().unwrap_err(),
+        "budget_change_exceeds_guard"
+    );
+
+    let swap = crate::ads::AdsCreativeSwapRequest {
+        id: "456".into(),
+        confirm_id: "456".into(),
+        creative_id: "789".into(),
+    };
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let allowed =
+        client.with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::SwapCreative)));
+    let inspect = allowed
+        .swap_ad_creative(&key, swap, Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(inspect.id, "456");
 }
 
 /// A poller is useful only if it stops on the platform's final state. The

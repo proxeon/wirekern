@@ -106,12 +106,12 @@ policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 - [x] Archive
 - [x] Delete (destructive; separate proposal)
 - [x] Duplicate (can inherit delivery/budget; separate proposal)
-- [ ] Typed daily-budget edit (currency, current/new minor units, max-change guard)
-- [ ] Typed bid-strategy edit
-- [ ] Typed schedule edit
-- [ ] Typed placement edit
-- [ ] Typed targeting edit with before/after diff; refuse special-ad-category contract changes
-- [ ] Creative swap on an existing ad
+- [x] Typed daily-budget edit (currency, current/new minor units, max-change guard)
+- [x] Typed bid-strategy edit
+- [x] Typed schedule edit
+- [x] Typed placement edit
+- [x] Typed targeting edit with before/after diff; refuse special-ad-category contract changes
+- [x] Creative swap on an existing ad
 
 ## Surfaces
 
@@ -125,6 +125,8 @@ policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 | Object inspect | [x] | [x] | [x] `ads_inspect` | [ ] |
 | Activate | policy deny default | [x] `--allow-activate` | [ ] | [ ] |
 | Pause | [x] default allow | [x] | [ ] | [ ] |
+| Archive / delete / duplicate | policy deny | [x] | [ ] | [ ] |
+| Typed edits (budget/bid/schedule/placement/targeting/creative) | policy deny | [x] | [ ] | [ ] |
 
 - [x] Not routable via generic `post` (`publish_unsupported`)
 - [x] MCP omits creates (no unattended spend over a tool call)

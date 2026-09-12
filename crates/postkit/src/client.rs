@@ -2,13 +2,15 @@
 use crate::ads::AdReviewWait;
 use crate::ads::{
     AdReviewStatus, AdReviewStatusRequest, AdsActivateRequest, AdsArchiveRequest,
-    AdsConfiguredStatus, AdsDeleteRequest, AdsDuplicateReply, AdsDuplicateRequest, AdsInspectReply,
-    AdsInspectRequest, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
-    AdsLifecycleOutcome, AdsPauseRequest, AdsStatusUpdateRequest, AdsTokenInspection,
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest,
-    UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE, ARCHIVE_RECONCILE_GUIDANCE,
-    DELETE_RECONCILE_GUIDANCE, PAUSE_RECONCILE_GUIDANCE, SYSTEM_USER_TOKEN_KIND,
+    AdsBidUpdateRequest, AdsBudgetUpdateRequest, AdsConfiguredStatus, AdsCreativeSwapRequest,
+    AdsDeleteRequest, AdsDuplicateReply, AdsDuplicateRequest, AdsInspectReply, AdsInspectRequest,
+    AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest, AdsLifecycleOutcome, AdsPauseRequest,
+    AdsPlacementUpdateRequest, AdsScheduleUpdateRequest, AdsStatusUpdateRequest, AdsTargetingDiff,
+    AdsTargetingUpdateRequest, AdsTokenInspection, CreateLinkAdCreativeRequest,
+    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
+    MarketingApiAccessTier, UploadAdImageRequest, UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE,
+    ARCHIVE_RECONCILE_GUIDANCE, DELETE_RECONCILE_GUIDANCE, PAUSE_RECONCILE_GUIDANCE,
+    SYSTEM_USER_TOKEN_KIND,
 };
 use crate::apps::AppStore;
 use crate::error::Error;
@@ -1754,6 +1756,375 @@ impl Client {
         .await
     }
 
+    pub async fn update_ad_budget(
+        &self,
+        key: &AccountKey,
+        request: AdsBudgetUpdateRequest,
+        deadline: Deadline,
+    ) -> Result<AdsInspectReply, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy
+            .authorize(&key.site, AdsAction::UpdateBudget)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                let inspect = ads
+                    .inspect_ads_object(
+                        &app,
+                        &creds,
+                        &AdsInspectRequest {
+                            kind: AdsInventoryKind::from_entity(request.entity),
+                            id: request.id.clone(),
+                        },
+                        deadline,
+                    )
+                    .await?;
+                let current = inspect
+                    .daily_budget
+                    .as_deref()
+                    .and_then(|raw| raw.parse::<u64>().ok());
+                if current != Some(request.current_daily_budget) {
+                    return Err(Error::InvalidQuery {
+                        site: inspect.site.clone(),
+                        reason: "current_daily_budget_mismatch".into(),
+                    });
+                }
+                ads.post_ad_update(
+                    &app,
+                    &creds,
+                    &request.id,
+                    &[("daily_budget".into(), request.new_daily_budget.to_string())],
+                    deadline,
+                )
+                .await?;
+                ads.inspect_ads_object(
+                    &app,
+                    &creds,
+                    &AdsInspectRequest {
+                        kind: AdsInventoryKind::from_entity(request.entity),
+                        id: request.id.clone(),
+                    },
+                    deadline,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
+    pub async fn update_ad_bid(
+        &self,
+        key: &AccountKey,
+        request: AdsBidUpdateRequest,
+        deadline: Deadline,
+    ) -> Result<AdsInspectReply, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy.authorize(&key.site, AdsAction::UpdateBid)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                let mut fields = vec![(
+                    "bid_strategy".into(),
+                    request.bid_strategy.meta_value().into(),
+                )];
+                if let Some(amount) = request.bid_amount {
+                    fields.push(("bid_amount".into(), amount.to_string()));
+                }
+                if let Some(floor) = request.roas_average_floor {
+                    fields.push((
+                        "bid_constraints".into(),
+                        serde_json::json!({ "roas_average_floor": floor }).to_string(),
+                    ));
+                }
+                ads.post_ad_update(&app, &creds, &request.id, &fields, deadline)
+                    .await?;
+                ads.inspect_ads_object(
+                    &app,
+                    &creds,
+                    &AdsInspectRequest {
+                        kind: AdsInventoryKind::from_entity(request.entity),
+                        id: request.id.clone(),
+                    },
+                    deadline,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
+    pub async fn update_ad_schedule(
+        &self,
+        key: &AccountKey,
+        request: AdsScheduleUpdateRequest,
+        deadline: Deadline,
+    ) -> Result<AdsInspectReply, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy
+            .authorize(&key.site, AdsAction::UpdateSchedule)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                let mut fields = Vec::new();
+                if let Some(start) = &request.start_time {
+                    fields.push(("start_time".into(), start.clone()));
+                }
+                if let Some(end) = &request.end_time {
+                    fields.push(("end_time".into(), end.clone()));
+                }
+                ads.post_ad_update(&app, &creds, &request.id, &fields, deadline)
+                    .await?;
+                ads.inspect_ads_object(
+                    &app,
+                    &creds,
+                    &AdsInspectRequest {
+                        kind: AdsInventoryKind::Adset,
+                        id: request.id.clone(),
+                    },
+                    deadline,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
+    pub async fn update_ad_placement(
+        &self,
+        key: &AccountKey,
+        request: AdsPlacementUpdateRequest,
+        deadline: Deadline,
+    ) -> Result<AdsInspectReply, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy
+            .authorize(&key.site, AdsAction::UpdatePlacement)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                let mut targeting = ads
+                    .read_ad_targeting_json(&app, &creds, &request.id, deadline)
+                    .await?;
+                if !targeting.is_object() {
+                    targeting = serde_json::json!({});
+                }
+                merge_string_list(
+                    &mut targeting,
+                    "publisher_platforms",
+                    request
+                        .publisher_platforms
+                        .iter()
+                        .map(|p| p.as_str().to_string())
+                        .collect(),
+                );
+                merge_string_list(
+                    &mut targeting,
+                    "facebook_positions",
+                    request
+                        .facebook_positions
+                        .iter()
+                        .map(|p| p.as_str().to_string())
+                        .collect(),
+                );
+                merge_string_list(
+                    &mut targeting,
+                    "instagram_positions",
+                    request
+                        .instagram_positions
+                        .iter()
+                        .map(|p| p.as_str().to_string())
+                        .collect(),
+                );
+                merge_string_list(
+                    &mut targeting,
+                    "whatsapp_positions",
+                    request
+                        .whatsapp_positions
+                        .iter()
+                        .map(|p| p.as_str().to_string())
+                        .collect(),
+                );
+                ads.post_ad_update(
+                    &app,
+                    &creds,
+                    &request.id,
+                    &[("targeting".into(), targeting.to_string())],
+                    deadline,
+                )
+                .await?;
+                ads.inspect_ads_object(
+                    &app,
+                    &creds,
+                    &AdsInspectRequest {
+                        kind: AdsInventoryKind::Adset,
+                        id: request.id.clone(),
+                    },
+                    deadline,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
+    pub async fn update_ad_targeting(
+        &self,
+        key: &AccountKey,
+        request: AdsTargetingUpdateRequest,
+        deadline: Deadline,
+    ) -> Result<(AdsInspectReply, AdsTargetingDiff), Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy
+            .authorize(&key.site, AdsAction::UpdateTargeting)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                let inspect = ads
+                    .inspect_ads_object(
+                        &app,
+                        &creds,
+                        &AdsInspectRequest {
+                            kind: AdsInventoryKind::Adset,
+                            id: request.id.clone(),
+                        },
+                        deadline,
+                    )
+                    .await?;
+                if let Some(campaign_id) = inspect.campaign_id.as_deref() {
+                    let categories = ads
+                        .read_special_ad_categories(&app, &creds, campaign_id, deadline)
+                        .await?;
+                    if !categories.is_empty() {
+                        return Err(Error::InvalidQuery {
+                            site: inspect.site.clone(),
+                            reason: "special_ad_category_contract".into(),
+                        });
+                    }
+                }
+                let before = inspect.targeting.clone().unwrap_or_default();
+                let mut targeting = ads
+                    .read_ad_targeting_json(&app, &creds, &request.id, deadline)
+                    .await?;
+                if !targeting.is_object() {
+                    targeting = serde_json::json!({});
+                }
+                targeting["geo_locations"] = serde_json::to_value(&request.targeting.geo_locations)
+                    .unwrap_or(serde_json::Value::Null);
+                if let Some(min) = request.targeting.age_min {
+                    targeting["age_min"] = serde_json::json!(min);
+                }
+                if let Some(max) = request.targeting.age_max {
+                    targeting["age_max"] = serde_json::json!(max);
+                }
+                merge_string_list(
+                    &mut targeting,
+                    "publisher_platforms",
+                    request
+                        .targeting
+                        .publisher_platforms
+                        .iter()
+                        .map(|p| p.as_str().to_string())
+                        .collect(),
+                );
+                ads.post_ad_update(
+                    &app,
+                    &creds,
+                    &request.id,
+                    &[("targeting".into(), targeting.to_string())],
+                    deadline,
+                )
+                .await?;
+                let after_inspect = ads
+                    .inspect_ads_object(
+                        &app,
+                        &creds,
+                        &AdsInspectRequest {
+                            kind: AdsInventoryKind::Adset,
+                            id: request.id.clone(),
+                        },
+                        deadline,
+                    )
+                    .await?;
+                let after = after_inspect.targeting.clone().unwrap_or_default();
+                Ok((after_inspect, AdsTargetingDiff { before, after }))
+            })
+        })
+        .await
+    }
+
+    pub async fn swap_ad_creative(
+        &self,
+        key: &AccountKey,
+        request: AdsCreativeSwapRequest,
+        deadline: Deadline,
+    ) -> Result<AdsInspectReply, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy
+            .authorize(&key.site, AdsAction::SwapCreative)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                ads.post_ad_update(
+                    &app,
+                    &creds,
+                    &request.id,
+                    &[(
+                        "creative".into(),
+                        serde_json::json!({ "creative_id": request.creative_id }).to_string(),
+                    )],
+                    deadline,
+                )
+                .await?;
+                ads.inspect_ads_object(
+                    &app,
+                    &creds,
+                    &AdsInspectRequest {
+                        kind: AdsInventoryKind::Ad,
+                        id: request.id.clone(),
+                    },
+                    deadline,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
     /// Read one ad object's configured and effective state once. This is a
     /// GET-only operation, so it bypasses `AdsPolicy`: inspecting a Meta
     /// review cannot activate an object, alter a budget, or affect billing.
@@ -2326,6 +2697,13 @@ async fn activate_ad_inner(
         }
         Err(error) => Err(error),
     }
+}
+
+fn merge_string_list(targeting: &mut serde_json::Value, key: &str, values: Vec<String>) {
+    if values.is_empty() {
+        return;
+    }
+    targeting[key] = serde_json::json!(values);
 }
 
 fn confirm_activate_budget(

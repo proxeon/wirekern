@@ -433,6 +433,176 @@ pub struct AdsDuplicateReply {
     pub status: String,
 }
 
+pub const DEFAULT_BUDGET_MAX_CHANGE_RATIO: f64 = 0.2;
+
+/// Daily-budget edit. Current must match Graph; the relative change cannot
+/// exceed `max_change_ratio` (default 0.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AdsBudgetUpdateRequest {
+    pub entity: AdEntity,
+    pub id: String,
+    pub confirm_id: String,
+    pub current_daily_budget: u64,
+    pub new_daily_budget: u64,
+    #[serde(default = "default_budget_max_change_ratio")]
+    pub max_change_ratio: f64,
+}
+
+fn default_budget_max_change_ratio() -> f64 {
+    DEFAULT_BUDGET_MAX_CHANGE_RATIO
+}
+
+impl AdsBudgetUpdateRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("ad_entity_id", &self.id)?;
+        require_numeric_id("confirm_id", &self.confirm_id)?;
+        if self.confirm_id != self.id {
+            return Err("confirm_id_mismatch".into());
+        }
+        if self.current_daily_budget == 0 || self.new_daily_budget == 0 {
+            return Err("budget_must_be_positive".into());
+        }
+        if !(self.max_change_ratio > 0.0 && self.max_change_ratio <= 1.0) {
+            return Err("max_change_ratio_out_of_range".into());
+        }
+        let delta = self.new_daily_budget.abs_diff(self.current_daily_budget) as f64;
+        let ratio = delta / self.current_daily_budget as f64;
+        if ratio > self.max_change_ratio {
+            return Err("budget_change_exceeds_guard".into());
+        }
+        Ok(())
+    }
+}
+
+fn confirm_ids(id: &str, confirm_id: &str) -> Result<(), String> {
+    require_numeric_id("ad_entity_id", id)?;
+    require_numeric_id("confirm_id", confirm_id)?;
+    if confirm_id != id {
+        return Err("confirm_id_mismatch".into());
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsBidUpdateRequest {
+    pub entity: AdEntity,
+    pub id: String,
+    pub confirm_id: String,
+    pub bid_strategy: BidStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid_amount: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roas_average_floor: Option<u64>,
+}
+
+impl AdsBidUpdateRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        confirm_ids(&self.id, &self.confirm_id)?;
+        if self.bid_strategy.requires_bid_amount() {
+            match self.bid_amount {
+                Some(amount) if amount > 0 => {}
+                _ => return Err("missing_bid_amount".into()),
+            }
+        } else if self.bid_amount.is_some() {
+            return Err("bid_amount_without_cap_strategy".into());
+        }
+        if self.bid_strategy.requires_roas_floor() {
+            match self.roas_average_floor {
+                Some(floor) if (100..=10_000_000).contains(&floor) => {}
+                Some(_) => return Err("roas_average_floor_out_of_range".into()),
+                None => return Err("missing_roas_average_floor".into()),
+            }
+        } else if self.roas_average_floor.is_some() {
+            return Err("roas_floor_without_min_roas_strategy".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsScheduleUpdateRequest {
+    pub entity: AdEntity,
+    pub id: String,
+    pub confirm_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<String>,
+}
+
+impl AdsScheduleUpdateRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        confirm_ids(&self.id, &self.confirm_id)?;
+        if self.entity != AdEntity::Adset {
+            return Err("schedule_adset_only".into());
+        }
+        validate_adset_schedule(self.start_time.as_deref(), self.end_time.as_deref(), None)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsPlacementUpdateRequest {
+    pub entity: AdEntity,
+    pub id: String,
+    pub confirm_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub publisher_platforms: Vec<PublisherPlatform>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facebook_positions: Vec<FacebookPosition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instagram_positions: Vec<InstagramPosition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub whatsapp_positions: Vec<WhatsAppPosition>,
+}
+
+impl AdsPlacementUpdateRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        confirm_ids(&self.id, &self.confirm_id)?;
+        if self.entity != AdEntity::Adset {
+            return Err("placement_adset_only".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AdsTargetingUpdateRequest {
+    pub entity: AdEntity,
+    pub id: String,
+    pub confirm_id: String,
+    pub targeting: AdTargeting,
+}
+
+impl AdsTargetingUpdateRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        confirm_ids(&self.id, &self.confirm_id)?;
+        if self.entity != AdEntity::Adset {
+            return Err("targeting_adset_only".into());
+        }
+        self.targeting.validate()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsTargetingDiff {
+    pub before: AdsTargetingReadback,
+    pub after: AdsTargetingReadback,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsCreativeSwapRequest {
+    pub id: String,
+    pub confirm_id: String,
+    pub creative_id: String,
+}
+
+impl AdsCreativeSwapRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        confirm_ids(&self.id, &self.confirm_id)?;
+        require_numeric_id("creative_id", &self.creative_id)
+    }
+}
+
 /// Meta's outcome-based campaign objectives. Keeping this closed prevents a
 /// misspelled command-line objective from becoming an opaque Graph error
 /// after a write has already been attempted.

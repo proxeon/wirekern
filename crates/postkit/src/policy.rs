@@ -27,6 +27,11 @@ pub enum AdsAction {
     Delete,
     Duplicate,
     UpdateBudget,
+    UpdateBid,
+    UpdateSchedule,
+    UpdatePlacement,
+    UpdateTargeting,
+    SwapCreative,
 }
 
 impl AdsAction {
@@ -52,6 +57,11 @@ impl AdsAction {
             Self::Delete => "delete",
             Self::Duplicate => "duplicate",
             Self::UpdateBudget => "update_budget",
+            Self::UpdateBid => "update_bid",
+            Self::UpdateSchedule => "update_schedule",
+            Self::UpdatePlacement => "update_placement",
+            Self::UpdateTargeting => "update_targeting",
+            Self::SwapCreative => "swap_creative",
         }
     }
 }
@@ -87,7 +97,12 @@ impl AdsPolicy for PausedOnlyAdsPolicy {
             | AdsAction::Archive
             | AdsAction::Delete
             | AdsAction::Duplicate
-            | AdsAction::UpdateBudget => Err(Error::PolicyDenied {
+            | AdsAction::UpdateBudget
+            | AdsAction::UpdateBid
+            | AdsAction::UpdateSchedule
+            | AdsAction::UpdatePlacement
+            | AdsAction::UpdateTargeting
+            | AdsAction::SwapCreative => Err(Error::PolicyDenied {
                 site: site.clone(),
                 action: action.as_str().into(),
                 reason: "paused_only".into(),

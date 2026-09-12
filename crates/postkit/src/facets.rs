@@ -225,6 +225,50 @@ pub trait AdsManager: Send + Sync {
         })
     }
 
+    /// POST selected fields on `/{id}`. Callers must only send typed,
+    /// already-validated pairs — this is not a Graph JSON hatch.
+    async fn post_ad_update(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _id: &str,
+        _fields: &[(String, String)],
+        _deadline: Deadline,
+    ) -> Result<(), Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ManageAdsLifecycle,
+        })
+    }
+
+    /// GET raw `targeting` so edits can merge unknown Graph keys.
+    async fn read_ad_targeting_json(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _id: &str,
+        _deadline: Deadline,
+    ) -> Result<serde_json::Value, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ManageAdsLifecycle,
+        })
+    }
+
+    /// GET campaign `special_ad_categories` for targeting-edit refusal.
+    async fn read_special_ad_categories(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _id: &str,
+        _deadline: Deadline,
+    ) -> Result<Vec<String>, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ManageAdsLifecycle,
+        })
+    }
+
     /// POST `/{id}/copies` with `status_option=PAUSED`. Default refuses.
     async fn duplicate_ad_object(
         &self,

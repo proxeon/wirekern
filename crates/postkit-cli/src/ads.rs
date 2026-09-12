@@ -4,15 +4,18 @@ use crate::app::fail;
 use crate::output::{emit_ok, emit_raw, human_line};
 use postkit::{
     AccountKey, AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest,
-    AdReviewWait, AdsActivateRequest, AdsArchiveRequest, AdsDeleteRequest, AdsDuplicateRequest,
+    AdReviewWait, AdTargeting, AdsActivateRequest, AdsArchiveRequest, AdsBidUpdateRequest,
+    AdsBudgetUpdateRequest, AdsCreativeSwapRequest, AdsDeleteRequest, AdsDuplicateRequest,
     AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind, AdsInventoryReply,
     AdsInventoryRequest, AdsLifecycleCheckpoint, AdsLifecycleOutcome, AdsPauseRequest,
+    AdsPlacementUpdateRequest, AdsScheduleUpdateRequest, AdsTargetingUpdateRequest,
     AttributionWindow, BidStrategy, Breakdown, CampaignObjective, Client,
     CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
     CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, Error, InsightRow,
     InsightsLevel, InsightsQuery, LinkAdCreative, LinkCallToAction, Metric, PausedAd,
     PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
-    PublishedMedia, Site, UploadAdImageRequest, UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE,
+    PublishedMedia, PublisherPlatform, Site, UploadAdImageRequest, UploadedAdImage,
+    ACTIVATE_RECONCILE_GUIDANCE,
 };
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -981,6 +984,241 @@ pub(crate) fn build_ads_duplicate_request(
         .validate()
         .map_err(|reason| ads_input_error(site, reason))?;
     Ok(request)
+}
+
+pub(crate) fn build_ads_budget_update_request(
+    site: &str,
+    entity: &str,
+    id: &str,
+    confirm_id: &str,
+    current_daily_budget: u64,
+    new_daily_budget: u64,
+    max_change_ratio: f64,
+) -> Result<AdsBudgetUpdateRequest, Error> {
+    let entity = AdEntity::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
+    let request = AdsBudgetUpdateRequest {
+        entity,
+        id: id.into(),
+        confirm_id: confirm_id.into(),
+        current_daily_budget,
+        new_daily_budget,
+        max_change_ratio,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_ads_budget_update(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsBudgetUpdateRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.update_ad_budget(key, request, deadline).await {
+        Ok(reply) => emit_inspect_edit(reply, json),
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+pub(crate) fn build_ads_bid_update_request(
+    site: &str,
+    entity: &str,
+    id: &str,
+    confirm_id: &str,
+    bid_strategy: &str,
+    bid_amount: Option<u64>,
+    roas_average_floor: Option<u64>,
+) -> Result<AdsBidUpdateRequest, Error> {
+    let entity = AdEntity::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
+    let bid_strategy =
+        BidStrategy::from_str(bid_strategy).map_err(|reason| ads_input_error(site, reason))?;
+    let request = AdsBidUpdateRequest {
+        entity,
+        id: id.into(),
+        confirm_id: confirm_id.into(),
+        bid_strategy,
+        bid_amount,
+        roas_average_floor,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_ads_bid_update(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsBidUpdateRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.update_ad_bid(key, request, deadline).await {
+        Ok(reply) => emit_inspect_edit(reply, json),
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+pub(crate) fn build_ads_schedule_update_request(
+    site: &str,
+    id: &str,
+    confirm_id: &str,
+    start_time: Option<String>,
+    end_time: Option<String>,
+) -> Result<AdsScheduleUpdateRequest, Error> {
+    let request = AdsScheduleUpdateRequest {
+        entity: AdEntity::Adset,
+        id: id.into(),
+        confirm_id: confirm_id.into(),
+        start_time,
+        end_time,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_ads_schedule_update(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsScheduleUpdateRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.update_ad_schedule(key, request, deadline).await {
+        Ok(reply) => emit_inspect_edit(reply, json),
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+pub(crate) fn build_ads_placement_update_request(
+    site: &str,
+    id: &str,
+    confirm_id: &str,
+    publisher_platform: Vec<String>,
+) -> Result<AdsPlacementUpdateRequest, Error> {
+    let mut platforms = Vec::new();
+    for value in publisher_platform {
+        platforms.push(
+            PublisherPlatform::from_str(&value).map_err(|reason| ads_input_error(site, reason))?,
+        );
+    }
+    let request = AdsPlacementUpdateRequest {
+        entity: AdEntity::Adset,
+        id: id.into(),
+        confirm_id: confirm_id.into(),
+        publisher_platforms: platforms,
+        facebook_positions: vec![],
+        instagram_positions: vec![],
+        whatsapp_positions: vec![],
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_ads_placement_update(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsPlacementUpdateRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.update_ad_placement(key, request, deadline).await {
+        Ok(reply) => emit_inspect_edit(reply, json),
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+pub(crate) fn build_ads_targeting_update_request(
+    site: &str,
+    id: &str,
+    confirm_id: &str,
+    targeting_file: &Path,
+) -> Result<AdsTargetingUpdateRequest, Error> {
+    let raw = std::fs::read_to_string(targeting_file)
+        .map_err(|_| ads_input_error(site, "targeting_unreadable"))?;
+    let targeting: AdTargeting = serde_json::from_str(&raw)
+        .map_err(|e| ads_input_error(site, format!("bad_targeting:{e}")))?;
+    let request = AdsTargetingUpdateRequest {
+        entity: AdEntity::Adset,
+        id: id.into(),
+        confirm_id: confirm_id.into(),
+        targeting,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_ads_targeting_update(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsTargetingUpdateRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.update_ad_targeting(key, request, deadline).await {
+        Ok((reply, diff)) => {
+            if json {
+                emit_raw(&serde_json::json!({ "inspect": reply, "diff": diff }));
+            } else {
+                human_line(inspect_line(&reply));
+                human_line(format!(
+                    "targeting_diff before_countries={} after_countries={}",
+                    diff.before.countries.join(","),
+                    diff.after.countries.join(",")
+                ));
+            }
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+pub(crate) fn build_ads_creative_swap_request(
+    site: &str,
+    id: &str,
+    confirm_id: &str,
+    creative_id: &str,
+) -> Result<AdsCreativeSwapRequest, Error> {
+    let request = AdsCreativeSwapRequest {
+        id: id.into(),
+        confirm_id: confirm_id.into(),
+        creative_id: creative_id.into(),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_ads_creative_swap(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsCreativeSwapRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.swap_ad_creative(key, request, deadline).await {
+        Ok(reply) => emit_inspect_edit(reply, json),
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+fn emit_inspect_edit(reply: postkit::AdsInspectReply, json: bool) -> Result<(), i32> {
+    if json {
+        emit_raw(&serde_json::to_value(&reply).expect("json"));
+    } else {
+        human_line(inspect_line(&reply));
+    }
+    Ok(())
 }
 
 pub(crate) async fn one_ads_duplicate(

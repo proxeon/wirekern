@@ -244,6 +244,12 @@ postkit ads pause meta_ads --entity campaign|adset|ad --id <id>
 postkit ads archive meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-archive
 postkit ads delete meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-delete --confirm-delete
 postkit ads duplicate meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-duplicate
+postkit ads update-budget meta_ads --entity campaign|adset --id <id> --confirm-id <id> --current-daily-budget N --new-daily-budget N --allow-budget-edit
+postkit ads update-bid meta_ads --entity campaign|adset --id <id> --confirm-id <id> --bid-strategy lowest_cost_without_cap --allow-bid-edit
+postkit ads update-schedule meta_ads --id <adset-id> --confirm-id <id> --start-time RFC3339 --end-time RFC3339 --allow-schedule-edit
+postkit ads update-placement meta_ads --id <adset-id> --confirm-id <id> --publisher-platform facebook --allow-placement-edit
+postkit ads update-targeting meta_ads --id <adset-id> --confirm-id <id> --targeting-file targeting.json --allow-targeting-edit
+postkit ads swap-creative meta_ads --id <ad-id> --confirm-id <id> --creative-id <id> --allow-creative-swap
 postkit ads status meta_ads --entity ad --id <id> [--wait]
 postkit ads upload-image meta_ads --file hero.png [--ad-account act_123]
 postkit ads create-link-creative meta_ads --name <name> --page-id <id> --image-hash <hash> --message <copy> --headline <headline> --destination-url https://example.com --call-to-action learn_more [--ad-account act_123]

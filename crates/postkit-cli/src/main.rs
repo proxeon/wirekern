@@ -356,6 +356,86 @@ enum AdsCmd {
         #[arg(long)]
         allow_duplicate: bool,
     },
+    UpdateBudget {
+        site: String,
+        #[arg(long)]
+        entity: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        confirm_id: String,
+        #[arg(long)]
+        allow_budget_edit: bool,
+        #[arg(long)]
+        current_daily_budget: u64,
+        #[arg(long)]
+        new_daily_budget: u64,
+        #[arg(long, default_value_t = 0.2)]
+        max_change_ratio: f64,
+    },
+    UpdateBid {
+        site: String,
+        #[arg(long)]
+        entity: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        confirm_id: String,
+        #[arg(long)]
+        allow_bid_edit: bool,
+        #[arg(long)]
+        bid_strategy: String,
+        #[arg(long)]
+        bid_amount: Option<u64>,
+        #[arg(long)]
+        roas_average_floor: Option<u64>,
+    },
+    UpdateSchedule {
+        site: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        confirm_id: String,
+        #[arg(long)]
+        allow_schedule_edit: bool,
+        #[arg(long)]
+        start_time: Option<String>,
+        #[arg(long)]
+        end_time: Option<String>,
+    },
+    UpdatePlacement {
+        site: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        confirm_id: String,
+        #[arg(long)]
+        allow_placement_edit: bool,
+        #[arg(long)]
+        publisher_platform: Vec<String>,
+    },
+    UpdateTargeting {
+        site: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        confirm_id: String,
+        #[arg(long)]
+        allow_targeting_edit: bool,
+        #[arg(long)]
+        targeting_file: PathBuf,
+    },
+    SwapCreative {
+        site: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        confirm_id: String,
+        #[arg(long)]
+        creative_id: String,
+        #[arg(long)]
+        allow_creative_swap: bool,
+    },
     /// Async Insights Ad Report Run: status, result, or cancel. Jobs expire
     /// in ~30 days and are not stored in the vault.
     #[command(name = "insights-job", subcommand)]
@@ -1264,6 +1344,42 @@ fn apply_ads_lifecycle_policy(client: Client, command: &Commands) -> Client {
         }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
             postkit::AdsAction::Duplicate,
         ))),
+        Commands::Ads(AdsCmd::UpdateBudget {
+            allow_budget_edit: true,
+            ..
+        }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
+            postkit::AdsAction::UpdateBudget,
+        ))),
+        Commands::Ads(AdsCmd::UpdateBid {
+            allow_bid_edit: true,
+            ..
+        }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
+            postkit::AdsAction::UpdateBid,
+        ))),
+        Commands::Ads(AdsCmd::UpdateSchedule {
+            allow_schedule_edit: true,
+            ..
+        }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
+            postkit::AdsAction::UpdateSchedule,
+        ))),
+        Commands::Ads(AdsCmd::UpdatePlacement {
+            allow_placement_edit: true,
+            ..
+        }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
+            postkit::AdsAction::UpdatePlacement,
+        ))),
+        Commands::Ads(AdsCmd::UpdateTargeting {
+            allow_targeting_edit: true,
+            ..
+        }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
+            postkit::AdsAction::UpdateTargeting,
+        ))),
+        Commands::Ads(AdsCmd::SwapCreative {
+            allow_creative_swap: true,
+            ..
+        }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
+            postkit::AdsAction::SwapCreative,
+        ))),
         _ => client,
     }
 }
@@ -2119,6 +2235,140 @@ async fn dispatch(
             let request = build_ads_duplicate_request(&site, &entity, &id, &confirm_id)
                 .map_err(|e| fail(&e, json))?;
             one_ads_duplicate(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::UpdateBudget {
+            site,
+            entity,
+            id,
+            confirm_id,
+            allow_budget_edit: _,
+            current_daily_budget,
+            new_daily_budget,
+            max_change_ratio,
+        }) => {
+            let request = build_ads_budget_update_request(
+                &site,
+                &entity,
+                &id,
+                &confirm_id,
+                current_daily_budget,
+                new_daily_budget,
+                max_change_ratio,
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_ads_budget_update(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::UpdateBid {
+            site,
+            entity,
+            id,
+            confirm_id,
+            allow_bid_edit: _,
+            bid_strategy,
+            bid_amount,
+            roas_average_floor,
+        }) => {
+            let request = build_ads_bid_update_request(
+                &site,
+                &entity,
+                &id,
+                &confirm_id,
+                &bid_strategy,
+                bid_amount,
+                roas_average_floor,
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_ads_bid_update(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::UpdateSchedule {
+            site,
+            id,
+            confirm_id,
+            allow_schedule_edit: _,
+            start_time,
+            end_time,
+        }) => {
+            let request =
+                build_ads_schedule_update_request(&site, &id, &confirm_id, start_time, end_time)
+                    .map_err(|e| fail(&e, json))?;
+            one_ads_schedule_update(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::UpdatePlacement {
+            site,
+            id,
+            confirm_id,
+            allow_placement_edit: _,
+            publisher_platform,
+        }) => {
+            let request =
+                build_ads_placement_update_request(&site, &id, &confirm_id, publisher_platform)
+                    .map_err(|e| fail(&e, json))?;
+            one_ads_placement_update(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::UpdateTargeting {
+            site,
+            id,
+            confirm_id,
+            allow_targeting_edit: _,
+            targeting_file,
+        }) => {
+            let request =
+                build_ads_targeting_update_request(&site, &id, &confirm_id, &targeting_file)
+                    .map_err(|e| fail(&e, json))?;
+            one_ads_targeting_update(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::SwapCreative {
+            site,
+            id,
+            confirm_id,
+            creative_id,
+            allow_creative_swap: _,
+        }) => {
+            let request = build_ads_creative_swap_request(&site, &id, &confirm_id, &creative_id)
+                .map_err(|e| fail(&e, json))?;
+            one_ads_creative_swap(
                 &client,
                 &AccountKey::new(&site, &account),
                 request,

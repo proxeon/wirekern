@@ -658,6 +658,71 @@ impl AdsManager for MetaAds {
         let token = access_token(creds)?;
         duplicate_ad_object(&self.http, &self.base, &self.site, token, request, deadline).await
     }
+
+    async fn post_ad_update(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        id: &str,
+        fields: &[(String, String)],
+        deadline: Deadline,
+    ) -> Result<(), Error> {
+        let token = access_token(creds)?;
+        post_ad_update(
+            &self.http, &self.base, &self.site, token, id, fields, deadline,
+        )
+        .await
+    }
+
+    async fn read_ad_targeting_json(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        id: &str,
+        deadline: Deadline,
+    ) -> Result<Value, Error> {
+        let token = access_token(creds)?;
+        read_ad_json_field(
+            &self.http,
+            &self.base,
+            &self.site,
+            token,
+            id,
+            "targeting",
+            deadline,
+        )
+        .await
+    }
+
+    async fn read_special_ad_categories(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        id: &str,
+        deadline: Deadline,
+    ) -> Result<Vec<String>, Error> {
+        let token = access_token(creds)?;
+        let value = read_ad_json_field(
+            &self.http,
+            &self.base,
+            &self.site,
+            token,
+            id,
+            "special_ad_categories",
+            deadline,
+        )
+        .await?;
+        Ok(value
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| nonempty_value_string(Some(item)))
+                    .filter(|item| item != "NONE")
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
 }
 
 /// Submit the one intentionally narrow Tier B form. `status=PAUSED` lives in
@@ -1541,6 +1606,62 @@ async fn duplicate_ad_object(
         copied_id,
         status: "PAUSED".into(),
     })
+}
+
+async fn post_ad_update(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    token: &str,
+    id: &str,
+    fields: &[(String, String)],
+    deadline: Deadline,
+) -> Result<(), Error> {
+    let mut pairs: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    pairs.push(("access_token", token));
+    let body = form(&pairs);
+    let url = format!("{base}/{id}");
+    let response = http
+        .send(
+            http.post(&url)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(body),
+            deadline,
+            site,
+        )
+        .await?;
+    let response = read_json(response, site).await?;
+    if !response
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(Error::Platform {
+            site: site.clone(),
+            code: "update_unconfirmed".into(),
+            message: "ad object update returned no success".into(),
+        });
+    }
+    Ok(())
+}
+
+async fn read_ad_json_field(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    token: &str,
+    id: &str,
+    field: &str,
+    deadline: Deadline,
+) -> Result<Value, Error> {
+    let params = form(&[("fields", field), ("access_token", token)]);
+    let url = format!("{base}/{id}?{params}");
+    let response = http.send(http.get(&url), deadline, site).await?;
+    let response = read_json(response, site).await?;
+    Ok(response.get(field).cloned().unwrap_or(Value::Null))
 }
 
 fn inventory_list_fields(kind: AdsInventoryKind) -> &'static str {
