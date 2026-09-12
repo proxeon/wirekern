@@ -179,6 +179,9 @@ pub enum Breakdown {
     Country,
     PublisherPlatform,
     Age,
+    Gender,
+    DevicePlatform,
+    PlatformPosition,
 }
 
 impl Breakdown {
@@ -187,6 +190,9 @@ impl Breakdown {
             Self::Country => "country",
             Self::PublisherPlatform => "publisher_platform",
             Self::Age => "age",
+            Self::Gender => "gender",
+            Self::DevicePlatform => "device_platform",
+            Self::PlatformPosition => "platform_position",
         }
     }
 }
@@ -199,8 +205,53 @@ impl FromStr for Breakdown {
             "country" => Ok(Self::Country),
             "publisher_platform" => Ok(Self::PublisherPlatform),
             "age" => Ok(Self::Age),
+            "gender" => Ok(Self::Gender),
+            "device_platform" => Ok(Self::DevicePlatform),
+            "platform_position" => Ok(Self::PlatformPosition),
             other => Err(format!("unknown_breakdown:{other}")),
         }
+    }
+}
+
+/// Meta documents only some permutations. More than two dimensions explode
+/// the 90-day daily row cap; hourly breakdowns are omitted (some accounts
+/// require async after 2026-08-06).
+pub const MAX_INSIGHTS_BREAKDOWNS: usize = 2;
+
+pub fn validate_breakdowns(breakdowns: &[Breakdown]) -> Result<(), String> {
+    if breakdowns.len() > MAX_INSIGHTS_BREAKDOWNS {
+        return Err(format!(
+            "too_many_breakdowns:{}:max_{MAX_INSIGHTS_BREAKDOWNS}",
+            breakdowns.len()
+        ));
+    }
+    let mut unique = breakdowns.to_vec();
+    unique.sort();
+    unique.dedup();
+    if unique.len() != breakdowns.len() {
+        return Err("duplicate_breakdown".into());
+    }
+    if unique.len() <= 1 {
+        return Ok(());
+    }
+    let a = unique[0];
+    let b = unique[1];
+    let allowed = matches!(
+        (a, b),
+        (Breakdown::Age, Breakdown::Gender)
+            | (Breakdown::Country, Breakdown::Age)
+            | (Breakdown::Country, Breakdown::PublisherPlatform)
+            | (Breakdown::DevicePlatform, Breakdown::PublisherPlatform)
+            | (Breakdown::PlatformPosition, Breakdown::PublisherPlatform)
+    );
+    if allowed {
+        Ok(())
+    } else {
+        Err(format!(
+            "breakdown_combination_unsupported:{}+{}",
+            a.as_str(),
+            b.as_str()
+        ))
     }
 }
 
@@ -218,6 +269,14 @@ pub enum AttributionWindow {
     OneDayClick,
     #[serde(rename = "1d_view")]
     OneDayView,
+    #[serde(rename = "7d_click")]
+    SevenDayClick,
+    #[serde(rename = "28d_click")]
+    TwentyEightDayClick,
+    #[serde(rename = "7d_view")]
+    SevenDayView,
+    #[serde(rename = "28d_view")]
+    TwentyEightDayView,
 }
 
 impl AttributionWindow {
@@ -226,6 +285,24 @@ impl AttributionWindow {
             Self::SevenDayClickOneDayView => "7d_click_1d_view",
             Self::OneDayClick => "1d_click",
             Self::OneDayView => "1d_view",
+            Self::SevenDayClick => "7d_click",
+            Self::TwentyEightDayClick => "28d_click",
+            Self::SevenDayView => "7d_view",
+            Self::TwentyEightDayView => "28d_view",
+        }
+    }
+
+    /// Graph `action_attribution_windows` array. Combined Ads Manager names
+    /// expand; sending `7d_click_1d_view` as one string is code 100.
+    pub fn graph_windows(self) -> &'static str {
+        match self {
+            Self::SevenDayClickOneDayView => r#"["7d_click","1d_view"]"#,
+            Self::OneDayClick => r#"["1d_click"]"#,
+            Self::OneDayView => r#"["1d_view"]"#,
+            Self::SevenDayClick => r#"["7d_click"]"#,
+            Self::TwentyEightDayClick => r#"["28d_click"]"#,
+            Self::SevenDayView => r#"["7d_view"]"#,
+            Self::TwentyEightDayView => r#"["28d_view"]"#,
         }
     }
 }
@@ -238,6 +315,10 @@ impl FromStr for AttributionWindow {
             "7d_click_1d_view" => Ok(Self::SevenDayClickOneDayView),
             "1d_click" => Ok(Self::OneDayClick),
             "1d_view" => Ok(Self::OneDayView),
+            "7d_click" => Ok(Self::SevenDayClick),
+            "28d_click" => Ok(Self::TwentyEightDayClick),
+            "7d_view" => Ok(Self::SevenDayView),
+            "28d_view" => Ok(Self::TwentyEightDayView),
             other => Err(format!("unknown_attribution:{other}")),
         }
     }
@@ -343,6 +424,13 @@ pub struct InsightsQuery {
     pub breakdowns: Vec<Breakdown>,
 }
 
+impl InsightsQuery {
+    pub fn validate(&self) -> Result<(), String> {
+        self.range.validate()?;
+        validate_breakdowns(&self.breakdowns)
+    }
+}
+
 /// One daily row. Metrics serialize as a JSON object (alphabetically keyed
 /// by the default `serde_json::Map`, so the bytes are deterministic — the
 /// property agents and golden tests rely on).
@@ -436,21 +524,56 @@ mod tests {
 
     #[test]
     fn breakdown_round_trip_and_unknown_value() {
-        for s in ["country", "publisher_platform", "age"] {
+        for s in [
+            "country",
+            "publisher_platform",
+            "age",
+            "gender",
+            "device_platform",
+            "platform_position",
+        ] {
             assert_eq!(Breakdown::from_str(s).unwrap().as_str(), s);
         }
         assert_eq!(
-            Breakdown::from_str("device_platform").unwrap_err(),
-            "unknown_breakdown:device_platform"
+            Breakdown::from_str("dma").unwrap_err(),
+            "unknown_breakdown:dma"
+        );
+        validate_breakdowns(&[Breakdown::Age, Breakdown::Gender]).unwrap();
+        validate_breakdowns(&[Breakdown::Country, Breakdown::Age]).unwrap();
+        assert!(validate_breakdowns(&[Breakdown::Age, Breakdown::Age]).is_err());
+        assert!(validate_breakdowns(&[
+            Breakdown::Age,
+            Breakdown::Gender,
+            Breakdown::Country
+        ])
+        .is_err());
+        assert!(
+            validate_breakdowns(&[Breakdown::Gender, Breakdown::DevicePlatform]).is_err()
         );
     }
 
     #[test]
     fn attribution_round_trip_and_no_default() {
-        for s in ["7d_click_1d_view", "1d_click", "1d_view"] {
+        for s in [
+            "7d_click_1d_view",
+            "1d_click",
+            "1d_view",
+            "7d_click",
+            "28d_click",
+            "7d_view",
+            "28d_view",
+        ] {
             assert_eq!(AttributionWindow::from_str(s).unwrap().as_str(), s);
         }
         assert!(AttributionWindow::from_str("default").is_err());
+        assert_eq!(
+            AttributionWindow::SevenDayClick.graph_windows(),
+            r#"["7d_click"]"#
+        );
+        assert_eq!(
+            AttributionWindow::TwentyEightDayView.graph_windows(),
+            r#"["28d_view"]"#
+        );
     }
 
     #[test]

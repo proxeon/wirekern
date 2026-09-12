@@ -121,9 +121,11 @@ enum Commands {
             help = "Comma-separated: spend,impressions,clicks,reach,ctr,cpc,cpm,purchases,purchase_value,roas,frequency,unique_clicks,inline_link_clicks,inline_link_click_ctr,quality_ranking,video_thruplay"
         )]
         metrics: String,
-        /// 7d_click_1d_view | 1d_click | 1d_view. Explicit — ROAS answers
-        /// change with the window, so there is no default.
-        #[arg(long)]
+        /// Explicit window. ROAS answers change with it; there is no default.
+        #[arg(
+            long,
+            help = "7d_click_1d_view | 1d_click | 1d_view | 7d_click | 28d_click | 7d_view | 28d_view"
+        )]
         attribution: String,
         /// Override the stored ad account (123 or act_123).
         #[arg(long)]
@@ -131,8 +133,13 @@ enum Commands {
         /// Repeatable campaign, ad set, or ad ID filter. Not valid at account level.
         #[arg(long = "entity-id")]
         entity_ids: Vec<String>,
-        /// Comma-separated: country,publisher_platform,age.
-        #[arg(long, default_value = "")]
+        /// At most two. age+gender and publisher_platform+platform_position are
+        /// documented Meta pairs.
+        #[arg(
+            long,
+            default_value = "",
+            help = "Comma-separated: country,publisher_platform,age,gender,device_platform,platform_position"
+        )]
         breakdowns: String,
     },
     /// Read-only advertising-account discovery (not local vault aliases).

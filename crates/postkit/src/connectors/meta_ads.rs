@@ -869,11 +869,7 @@ fn meta_field(m: Metric) -> Option<&'static str> {
 /// (`["7d_click","1d_view"]`); the combined `7d_click_1d_view` is only the
 /// Ads Manager display name for that preset and is rejected with code 100.
 fn attribution_param(a: AttributionWindow) -> &'static str {
-    match a {
-        AttributionWindow::SevenDayClickOneDayView => r#"["7d_click","1d_view"]"#,
-        AttributionWindow::OneDayClick => r#"["1d_click"]"#,
-        AttributionWindow::OneDayView => r#"["1d_view"]"#,
-    }
+    a.graph_windows()
 }
 
 /// Graph returns numerics as JSON *strings* ("12.34", "12345") — parse

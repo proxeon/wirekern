@@ -1079,13 +1079,10 @@ impl Client {
         query: InsightsQuery,
         deadline: Deadline,
     ) -> Result<InsightsReply, Error> {
-        query
-            .range
-            .validate()
-            .map_err(|reason| Error::InvalidQuery {
-                site: key.site.clone(),
-                reason,
-            })?;
+        query.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
         self.require_capability(&key.site, Capability::ReadMetrics)?;
         let source = self.insights_source(&key.site, Capability::ReadMetrics)?;
         self.with_creds(key, deadline, move |app, creds| {

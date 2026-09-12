@@ -37,7 +37,7 @@ Last aligned with Meta Marketing API / Graph docs and
 - [x] Cursor paging, cap 50 pages (`paging_exceeded`); opaque cursors only
 - [x] Deterministic row order `(entity_id, date_start, dimensions)`
 - [x] Additional typed metrics (each with a definition so it cannot be read as a billing total)
-- [ ] Additional typed breakdowns / attribution windows
+- [x] Additional typed breakdowns / attribution windows
 - [ ] Async / bulk Insights jobs (bounded job, cancel, poll deadline, result-size cap)
 - [ ] Separate creative / delivery report contracts (not one unbounded Graph query)
 
