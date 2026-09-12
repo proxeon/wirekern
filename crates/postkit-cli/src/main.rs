@@ -313,6 +313,26 @@ enum AdsCmd {
         #[arg(long)]
         file: PathBuf,
     },
+    /// Upload a local video for a later Meta video creative. Encoding is a
+    /// later status poll; uploading creates no ad.
+    UploadVideo {
+        site: String,
+        #[arg(long)]
+        ad_account: Option<String>,
+        #[arg(long)]
+        file: PathBuf,
+        /// Poll Graph until ready/error or `--deadline`.
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Read Meta `status.video_status` for an uploaded video.
+    VideoStatus {
+        site: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        wait: bool,
+    },
     /// Create a Page-backed image-link creative. The creative itself cannot
     /// deliver; a later `create-ad` still creates an ad as PAUSED.
     CreateLinkCreative {
@@ -1877,6 +1897,43 @@ async fn dispatch(
                 &client,
                 &AccountKey::new(&site, &account),
                 request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::UploadVideo {
+            site,
+            ad_account,
+            file,
+            wait,
+        }) => {
+            let filename = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+                .ok_or_else(|| fail(&ads_input_error(&site, "invalid_video_filename"), json))?;
+            let bytes = std::fs::read(file)
+                .map_err(|_| fail(&ads_input_error(&site, "video_file_unreadable"), json))?;
+            let request = build_upload_ad_video_request(&site, ad_account, filename, bytes)
+                .map_err(|e| fail(&e, json))?;
+            one_video_upload(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                wait,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::VideoStatus { site, id, wait }) => {
+            one_video_status(
+                &client,
+                &AccountKey::new(&site, &account),
+                &site,
+                id,
+                wait,
                 deadline,
                 json,
             )

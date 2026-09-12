@@ -413,6 +413,35 @@ impl AdsManager for MockPub {
         })
     }
 
+    async fn upload_ad_video(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &crate::ads::UploadAdVideoRequest,
+        _deadline: Deadline,
+    ) -> Result<crate::ads::UploadedAdVideo, Error> {
+        Ok(crate::ads::UploadedAdVideo {
+            site: self.site.clone(),
+            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
+            id: "9001".into(),
+        })
+    }
+
+    async fn ad_video_status(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &crate::ads::AdVideoStatusRequest,
+        _deadline: Deadline,
+    ) -> Result<crate::ads::AdVideoStatus, Error> {
+        Ok(crate::ads::AdVideoStatus {
+            site: self.site.clone(),
+            video_id: request.video_id.clone(),
+            video_status: crate::ads::AdVideoStatusKind::Ready,
+            raw: Some("ready".into()),
+        })
+    }
+
     async fn create_link_ad_creative(
         &self,
         _app: &AppConfig,
@@ -2797,6 +2826,36 @@ mod draft_tests {
                 hash: format!("img-{}", self.uploads.fetch_add(1, Ordering::SeqCst)),
             })
         }
+        async fn upload_ad_video(
+            &self,
+            _app: &AppConfig,
+            _creds: &AccountCreds,
+            _request: &crate::ads::UploadAdVideoRequest,
+            _deadline: Deadline,
+        ) -> Result<crate::ads::UploadedAdVideo, Error> {
+            self.write_gate()?;
+            Ok(crate::ads::UploadedAdVideo {
+                site: self.site.clone(),
+                account_id: "act_777".into(),
+                id: "9001".into(),
+            })
+        }
+
+        async fn ad_video_status(
+            &self,
+            _app: &AppConfig,
+            _creds: &AccountCreds,
+            request: &crate::ads::AdVideoStatusRequest,
+            _deadline: Deadline,
+        ) -> Result<crate::ads::AdVideoStatus, Error> {
+            Ok(crate::ads::AdVideoStatus {
+                site: self.site.clone(),
+                video_id: request.video_id.clone(),
+                video_status: crate::ads::AdVideoStatusKind::Ready,
+                raw: Some("ready".into()),
+            })
+        }
+
         async fn create_link_ad_creative(
             &self,
             _app: &AppConfig,

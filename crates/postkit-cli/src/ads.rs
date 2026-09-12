@@ -379,6 +379,105 @@ pub(crate) fn build_upload_ad_image_request(
     Ok(request)
 }
 
+pub(crate) fn build_upload_ad_video_request(
+    site: &str,
+    ad_account: Option<String>,
+    filename: String,
+    bytes: Vec<u8>,
+) -> Result<postkit::UploadAdVideoRequest, Error> {
+    let request = postkit::UploadAdVideoRequest {
+        account: ad_account,
+        filename,
+        bytes,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_video_upload(
+    client: &Client,
+    key: &AccountKey,
+    request: postkit::UploadAdVideoRequest,
+    wait: bool,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.upload_ad_video(key, request, deadline).await {
+        Ok(uploaded) => {
+            if wait {
+                return one_video_status(
+                    client,
+                    key,
+                    uploaded.site.as_str(),
+                    uploaded.id,
+                    true,
+                    deadline,
+                    json,
+                )
+                .await;
+            }
+            emit_ok(&uploaded, json, || {
+                format!(
+                    "video id={} account={} encoding=pending",
+                    uploaded.id, uploaded.account_id
+                )
+            });
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+pub(crate) async fn one_video_status(
+    client: &Client,
+    key: &AccountKey,
+    site: &str,
+    id: String,
+    wait: bool,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    let request = postkit::AdVideoStatusRequest { video_id: id };
+    request
+        .validate()
+        .map_err(|reason| fail(&ads_input_error(site, reason), json))?;
+    if wait {
+        match client.wait_for_ad_video(key, request, deadline).await {
+            Ok(waited) => {
+                emit_ok(&waited, json, || match &waited {
+                    postkit::AdVideoWait::Ready(status) => {
+                        format!("video {} status=ready", status.video_id)
+                    }
+                    postkit::AdVideoWait::Error(status) => {
+                        format!("video {} status=error", status.video_id)
+                    }
+                    postkit::AdVideoWait::Pending(status) => {
+                        format!("video {} status=pending", status.video_id)
+                    }
+                });
+                Ok(())
+            }
+            Err(error) => Err(fail(&error, json)),
+        }
+    } else {
+        match client.ad_video_status(key, request, deadline).await {
+            Ok(status) => {
+                emit_ok(&status, json, || {
+                    format!(
+                        "video {} status={}",
+                        status.video_id,
+                        status.video_status.as_str()
+                    )
+                });
+                Ok(())
+            }
+            Err(error) => Err(fail(&error, json)),
+        }
+    }
+}
+
 /// Required fields for the one supported creative shape travel together so
 /// future image, video, and carousel types cannot silently inherit fields
 /// intended only for this Page image-link contract.

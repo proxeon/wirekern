@@ -1048,6 +1048,101 @@ impl UploadAdImageRequest {
     }
 }
 
+/// Bytes for one account-scoped ad video. Same path-free contract as images:
+/// the CLI reads the file; the library never sees a filesystem path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UploadAdVideoRequest {
+    pub account: Option<String>,
+    pub filename: String,
+    pub bytes: Vec<u8>,
+}
+
+impl UploadAdVideoRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_account(self.account.as_deref())?;
+        if self.filename.trim().is_empty()
+            || self.filename.contains('/')
+            || self.filename.contains('\\')
+        {
+            return Err("invalid_video_filename".into());
+        }
+        if self.bytes.is_empty() {
+            return Err("video_file_empty".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UploadedAdVideo {
+    pub site: Site,
+    pub account_id: String,
+    pub id: String,
+}
+
+/// Meta `status.video_status`: ready, processing, uploading, error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdVideoStatusKind {
+    Ready,
+    Processing,
+    Uploading,
+    Error,
+}
+
+impl AdVideoStatusKind {
+    pub fn from_meta(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "ready" => Self::Ready,
+            "error" => Self::Error,
+            "uploading" => Self::Uploading,
+            _ => Self::Processing,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Processing => "processing",
+            Self::Uploading => "uploading",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Ready | Self::Error)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdVideoStatusRequest {
+    pub video_id: String,
+}
+
+impl AdVideoStatusRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("video_id", &self.video_id)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdVideoStatus {
+    pub site: Site,
+    pub video_id: String,
+    pub video_status: AdVideoStatusKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
+}
+
+/// Bounded poll result. Pending at deadline is not a delivery claim.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AdVideoWait {
+    Ready(AdVideoStatus),
+    Error(AdVideoStatus),
+    Pending(AdVideoStatus),
+}
+
 /// The exact input for a static image website creative. It purposefully has
 /// no implicit Page, media, copy, destination, or CTA: these determine the
 /// future ad even though the creative alone cannot deliver.
@@ -1682,6 +1777,31 @@ mod tests {
             ..valid_image
         };
         assert_eq!(empty_image.validate().unwrap_err(), "image_file_empty");
+
+        let valid_video = UploadAdVideoRequest {
+            account: Some("act_123".into()),
+            filename: "hero.mp4".into(),
+            bytes: b"video bytes".to_vec(),
+        };
+        assert!(valid_video.validate().is_ok());
+        assert_eq!(
+            UploadAdVideoRequest {
+                filename: "private/hero.mp4".into(),
+                ..valid_video.clone()
+            }
+            .validate()
+            .unwrap_err(),
+            "invalid_video_filename"
+        );
+        assert_eq!(
+            UploadAdVideoRequest {
+                bytes: vec![],
+                ..valid_video
+            }
+            .validate()
+            .unwrap_err(),
+            "video_file_empty"
+        );
 
         assert!(CreativePreviewRequest {
             creative_id: "789".into(),

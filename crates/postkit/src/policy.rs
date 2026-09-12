@@ -18,6 +18,7 @@ pub enum AdsAction {
     CreatePausedAdset,
     CreatePausedAd,
     UploadAdImage,
+    UploadAdVideo,
     CreateLinkAdCreative,
     Activate,
     UpdateBudget,
@@ -38,6 +39,7 @@ impl AdsAction {
             Self::CreatePausedAdset => "create_paused_adset",
             Self::CreatePausedAd => "create_paused_ad",
             Self::UploadAdImage => "upload_ad_image",
+            Self::UploadAdVideo => "upload_ad_video",
             Self::CreateLinkAdCreative => "create_link_ad_creative",
             Self::Activate => "activate",
             Self::UpdateBudget => "update_budget",
@@ -67,6 +69,7 @@ impl AdsPolicy for PausedOnlyAdsPolicy {
             // Images and creatives are account assets, not delivery objects.
             // Their later use is still gated by the structurally paused ad.
             | AdsAction::UploadAdImage
+            | AdsAction::UploadAdVideo
             | AdsAction::CreateLinkAdCreative => Ok(()),
             AdsAction::Activate | AdsAction::UpdateBudget => Err(Error::PolicyDenied {
                 site: site.clone(),
@@ -185,6 +188,7 @@ mod tests {
             .authorize(&site, AdsAction::CreatePausedCampaign)
             .is_ok());
         assert!(policy.authorize(&site, AdsAction::UploadAdImage).is_ok());
+        assert!(policy.authorize(&site, AdsAction::UploadAdVideo).is_ok());
         assert!(policy
             .authorize(&site, AdsAction::CreateLinkAdCreative)
             .is_ok());

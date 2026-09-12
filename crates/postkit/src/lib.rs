@@ -67,12 +67,14 @@ pub use ads::{
     supported_adset_pairing, validate_adset_schedule, validate_bid_constraints,
     validate_link_cta_values, validate_promoted_object, AdEntity, AdPreviewFormat, AdReviewIssue,
     AdReviewStatus, AdReviewStatusRequest, AdReviewWait, AdTargeting, AdsTokenInspection,
-    AdsTokenKind, BidStrategy, BillingEvent, CampaignObjective, CreateLinkAdCreativeRequest,
+    AdsTokenKind, AdVideoStatus, AdVideoStatusKind, AdVideoStatusRequest, AdVideoWait, BidStrategy,
+    BillingEvent, CampaignObjective, CreateLinkAdCreativeRequest,
     CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
     CustomEventType, FacebookPosition, GeoLocations, InstagramPosition, LinkAdCreative,
     LinkCallToAction, MarketingApiAccessTier, MarketingApiAccessTierKind, OptimizationGoal,
     PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PromotedObject, PublisherPlatform,
-    UploadAdImageRequest, UploadedAdImage, MARKETING_API_ACCESS_TIER_DASHBOARD,
+    UploadAdImageRequest, UploadAdVideoRequest, UploadedAdImage, UploadedAdVideo,
+    MARKETING_API_ACCESS_TIER_DASHBOARD,
     SYSTEM_USER_TOKEN_KIND,
 };
 pub use apps::{app_source, env_override, AppStore, MemoryAppStore};

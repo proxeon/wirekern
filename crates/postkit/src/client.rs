@@ -1338,6 +1338,112 @@ impl Client {
         .await
     }
 
+    /// Upload a video after local validation and policy approval. Encoding
+    /// is a later status poll; this write only stores the asset.
+    pub async fn upload_ad_video(
+        &self,
+        key: &AccountKey,
+        request: crate::ads::UploadAdVideoRequest,
+        deadline: Deadline,
+    ) -> Result<crate::ads::UploadedAdVideo, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy
+            .authorize(&key.site, AdsAction::UploadAdVideo)?;
+        self.require_capability(&key.site, Capability::CreateAdCreative)?;
+        let ads = self.ads_manager(&key.site, Capability::CreateAdCreative)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move { ads.upload_ad_video(&app, &creds, &request, deadline).await })
+        })
+        .await
+    }
+
+    /// One GET of Meta `status.video_status`. Encoding is not delivery.
+    pub async fn ad_video_status(
+        &self,
+        key: &AccountKey,
+        request: crate::ads::AdVideoStatusRequest,
+        deadline: Deadline,
+    ) -> Result<crate::ads::AdVideoStatus, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.require_capability(&key.site, Capability::CreateAdCreative)?;
+        let ads = self.ads_manager(&key.site, Capability::CreateAdCreative)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move { ads.ad_video_status(&app, &creds, &request, deadline).await })
+        })
+        .await
+    }
+
+    /// Poll every 2s until ready/error or the deadline. Pending is success.
+    #[cfg(feature = "meta-ads")]
+    pub async fn wait_for_ad_video(
+        &self,
+        key: &AccountKey,
+        request: crate::ads::AdVideoStatusRequest,
+        deadline: Deadline,
+    ) -> Result<crate::ads::AdVideoWait, Error> {
+        self.wait_for_ad_video_with_interval(key, request, deadline, REVIEW_POLL_INTERVAL)
+            .await
+    }
+
+    #[cfg(feature = "meta-ads")]
+    pub(crate) async fn wait_for_ad_video_with_interval(
+        &self,
+        key: &AccountKey,
+        request: crate::ads::AdVideoStatusRequest,
+        deadline: Deadline,
+        poll_interval: std::time::Duration,
+    ) -> Result<crate::ads::AdVideoWait, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.require_capability(&key.site, Capability::CreateAdCreative)?;
+        let ads = self.ads_manager(&key.site, Capability::CreateAdCreative)?;
+        let (publisher, app, mut creds) = self.prepare_creds(key, deadline, true).await?;
+        let mut retried_expired_token = false;
+        loop {
+            let status = match ads.ad_video_status(&app, &creds, &request, deadline).await {
+                Err(e) if !retried_expired_token => {
+                    creds = self
+                        .recover_expired(&*publisher, &app, key, creds, deadline, e)
+                        .await?;
+                    retried_expired_token = true;
+                    continue;
+                }
+                other => other,
+            }?;
+            match status.video_status {
+                crate::ads::AdVideoStatusKind::Ready => {
+                    return Ok(crate::ads::AdVideoWait::Ready(status));
+                }
+                crate::ads::AdVideoStatusKind::Error => {
+                    return Ok(crate::ads::AdVideoWait::Error(status));
+                }
+                _ => {}
+            }
+            let remaining = deadline.remaining();
+            if remaining.is_zero() {
+                return Ok(crate::ads::AdVideoWait::Pending(status));
+            }
+            let delay = if poll_interval.is_zero() {
+                remaining
+            } else {
+                poll_interval.min(remaining)
+            };
+            tokio::time::sleep(delay).await;
+        }
+    }
+
     /// Create a Page-backed image-link creative behind the same validation,
     /// policy, capability, and refresh ordering as every other Tier B write.
     /// The returned creative cannot deliver until a separate paused ad uses it.

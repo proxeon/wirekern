@@ -436,6 +436,32 @@ impl AdsManager for MetaAds {
         .await
     }
 
+    async fn upload_ad_video(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &crate::ads::UploadAdVideoRequest,
+        deadline: Deadline,
+    ) -> Result<crate::ads::UploadedAdVideo, Error> {
+        let token = access_token(creds)?;
+        let account = account_id(creds, request.account.as_deref())?;
+        upload_ad_video(
+            &self.http, &self.base, &self.site, &account, token, request, deadline,
+        )
+        .await
+    }
+
+    async fn ad_video_status(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &crate::ads::AdVideoStatusRequest,
+        deadline: Deadline,
+    ) -> Result<crate::ads::AdVideoStatus, Error> {
+        let token = access_token(creds)?;
+        read_ad_video_status(&self.http, &self.base, &self.site, token, request, deadline).await
+    }
+
     async fn create_link_ad_creative(
         &self,
         _app: &AppConfig,
@@ -731,6 +757,75 @@ async fn upload_ad_image(
         site: site.clone(),
         account_id: format!("act_{account}"),
         hash,
+    })
+}
+
+/// Multipart `source` upload to `/advideos`. Encoding is a later GET of
+/// `status.video_status`; this call only returns the numeric video id.
+async fn upload_ad_video(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    account: &str,
+    token: &str,
+    request: &crate::ads::UploadAdVideoRequest,
+    deadline: Deadline,
+) -> Result<crate::ads::UploadedAdVideo, Error> {
+    let form = reqwest::multipart::Form::new()
+        .part(
+            "source",
+            reqwest::multipart::Part::bytes(request.bytes.clone())
+                .file_name(request.filename.clone()),
+        )
+        .text("access_token", token.to_string());
+    let url = format!("{base}/act_{account}/advideos");
+    let response = http
+        .send(http.post(&url).multipart(form), deadline, site)
+        .await?;
+    let response = read_json(response, site).await?;
+    let id = value_string(response.get("id")).ok_or_else(|| Error::Platform {
+        site: site.clone(),
+        code: "missing_video_id".into(),
+        message: "video upload returned no id".into(),
+    })?;
+    Ok(crate::ads::UploadedAdVideo {
+        site: site.clone(),
+        account_id: format!("act_{account}"),
+        id,
+    })
+}
+
+async fn read_ad_video_status(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    token: &str,
+    request: &crate::ads::AdVideoStatusRequest,
+    deadline: Deadline,
+) -> Result<crate::ads::AdVideoStatus, Error> {
+    let params = form(&[("fields", "status"), ("access_token", token)]);
+    let url = format!("{base}/{}?{params}", request.video_id);
+    let response = http.send(http.get(&url), deadline, site).await?;
+    let response = read_json(response, site).await?;
+    let raw = response
+        .get("status")
+        .and_then(|status| status.get("video_status"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            response
+                .get("status")
+                .and_then(Value::as_str)
+        });
+    let raw = raw.ok_or_else(|| Error::Platform {
+        site: site.clone(),
+        code: "missing_video_status".into(),
+        message: "video status returned no video_status".into(),
+    })?;
+    Ok(crate::ads::AdVideoStatus {
+        site: site.clone(),
+        video_id: request.video_id.clone(),
+        video_status: crate::ads::AdVideoStatusKind::from_meta(raw),
+        raw: Some(raw.to_string()),
     })
 }
 
@@ -2402,6 +2497,59 @@ mod tests {
         creative.assert();
         assert_eq!(created.id, "500");
         assert_eq!(created.account_id, "act_123");
+    }
+
+    #[tokio::test]
+    async fn video_upload_posts_source_and_status_reads_video_status() {
+        let server = MockServer::start();
+        let upload = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/advideos")
+                .body_contains("name=\"source\"; filename=\"hero.mp4\"");
+            then.status(200).json_body(json!({ "id": "9001" }));
+        });
+        let status = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/9001")
+                .query_param("fields", "status");
+            then.status(200).json_body(json!({
+                "id": "9001",
+                "status": { "video_status": "processing" }
+            }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let creds = token_creds("123");
+        let uploaded = connector
+            .upload_ad_video(
+                &empty_app(),
+                &creds,
+                &crate::ads::UploadAdVideoRequest {
+                    account: None,
+                    filename: "hero.mp4".into(),
+                    bytes: b"not-a-real-mp4".to_vec(),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        let status_out = connector
+            .ad_video_status(
+                &empty_app(),
+                &creds,
+                &crate::ads::AdVideoStatusRequest {
+                    video_id: uploaded.id.clone(),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        upload.assert();
+        status.assert();
+        assert_eq!(uploaded.id, "9001");
+        assert_eq!(
+            status_out.video_status,
+            crate::ads::AdVideoStatusKind::Processing
+        );
     }
 
     #[tokio::test]
