@@ -88,8 +88,8 @@ pub use facets::{
 pub use insights::{
     validate_breakdowns, AdAccount, AdAccountsReply, AttributionWindow, Breakdown, DateRange,
     InsightRow, InsightsJob, InsightsJobStatus, InsightsJobWait, InsightsLevel, InsightsQuery,
-    InsightsReportKind,
-    InsightsReply, Metric, MAX_INSIGHTS_BREAKDOWNS, MAX_INSIGHTS_RESULT_ROWS, MAX_RANGE_DAYS,
+    InsightsReply, InsightsReportKind, Metric, MAX_INSIGHTS_BREAKDOWNS, MAX_INSIGHTS_RESULT_ROWS,
+    MAX_RANGE_DAYS,
 };
 pub use media::{MediaQuery, MediaReply, PublishedMedia, DEFAULT_MEDIA_LIMIT, MAX_MEDIA_LIMIT};
 pub use pages::{PageAccount, PagesReply};
