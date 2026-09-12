@@ -10,7 +10,9 @@ use crate::error::Error;
 #[cfg(feature = "whatsapp-cloud")]
 use crate::facets::WhatsAppSender;
 use crate::facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
-use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
+use crate::insights::{
+    AdAccountsReply, InsightsJob, InsightsJobStatus, InsightsJobWait, InsightsQuery, InsightsReply,
+};
 use crate::media::{MediaQuery, MediaReply};
 use crate::pages::PagesReply;
 use crate::policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};
@@ -1091,6 +1093,120 @@ impl Client {
             Box::pin(async move { source.insights(&app, &creds, &query, deadline).await })
         })
         .await
+    }
+
+    pub async fn start_insights_job(
+        &self,
+        key: &AccountKey,
+        query: InsightsQuery,
+        deadline: Deadline,
+    ) -> Result<InsightsJob, Error> {
+        query.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.require_capability(&key.site, Capability::ReadMetrics)?;
+        let source = self.insights_source(&key.site, Capability::ReadMetrics)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let source = source.clone();
+            let query = query.clone();
+            Box::pin(async move { source.start_insights_job(&app, &creds, &query, deadline).await })
+        })
+        .await
+    }
+
+    pub async fn insights_job(
+        &self,
+        key: &AccountKey,
+        job_id: &str,
+        deadline: Deadline,
+    ) -> Result<InsightsJob, Error> {
+        self.require_capability(&key.site, Capability::ReadMetrics)?;
+        let source = self.insights_source(&key.site, Capability::ReadMetrics)?;
+        let job_id = job_id.to_string();
+        self.with_creds(key, deadline, move |app, creds| {
+            let source = source.clone();
+            let job_id = job_id.clone();
+            Box::pin(async move { source.insights_job(&app, &creds, &job_id, deadline).await })
+        })
+        .await
+    }
+
+    pub async fn insights_job_result(
+        &self,
+        key: &AccountKey,
+        job_id: &str,
+        query: InsightsQuery,
+        deadline: Deadline,
+    ) -> Result<InsightsReply, Error> {
+        query.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.require_capability(&key.site, Capability::ReadMetrics)?;
+        let source = self.insights_source(&key.site, Capability::ReadMetrics)?;
+        let job_id = job_id.to_string();
+        self.with_creds(key, deadline, move |app, creds| {
+            let source = source.clone();
+            let job_id = job_id.clone();
+            let query = query.clone();
+            Box::pin(async move {
+                source
+                    .insights_job_result(&app, &creds, &job_id, &query, deadline)
+                    .await
+            })
+        })
+        .await
+    }
+
+    pub async fn cancel_insights_job(
+        &self,
+        key: &AccountKey,
+        job_id: &str,
+        deadline: Deadline,
+    ) -> Result<InsightsJob, Error> {
+        self.require_capability(&key.site, Capability::ReadMetrics)?;
+        let source = self.insights_source(&key.site, Capability::ReadMetrics)?;
+        let job_id = job_id.to_string();
+        self.with_creds(key, deadline, move |app, creds| {
+            let source = source.clone();
+            let job_id = job_id.clone();
+            Box::pin(async move { source.cancel_insights_job(&app, &creds, &job_id, deadline).await })
+        })
+        .await
+    }
+
+    /// Poll until the job is terminal or `deadline` fires. Pending is a
+    /// successful document, not a timeout error.
+    #[cfg(feature = "meta-ads")]
+    pub async fn wait_for_insights_job(
+        &self,
+        key: &AccountKey,
+        job_id: &str,
+        query: InsightsQuery,
+        deadline: Deadline,
+    ) -> Result<InsightsJobWait, Error> {
+        loop {
+            deadline.check(&key.site)?;
+            let job = self.insights_job(key, job_id, deadline).await?;
+            match job.status {
+                InsightsJobStatus::Completed => {
+                    let reply = self
+                        .insights_job_result(key, job_id, query, deadline)
+                        .await?;
+                    return Ok(InsightsJobWait::Completed(reply));
+                }
+                InsightsJobStatus::Failed | InsightsJobStatus::Skipped => {
+                    return Ok(InsightsJobWait::Failed(job));
+                }
+                _ => {
+                    if deadline.remaining() < std::time::Duration::from_millis(200) {
+                        return Ok(InsightsJobWait::Pending(job));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            }
+        }
     }
 
     /// Discover remote advertising accounts for the credential. This is a

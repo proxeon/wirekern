@@ -12,7 +12,7 @@ use crate::ads::{
     MarketingApiAccessTier, UploadAdImageRequest, UploadedAdImage,
 };
 use crate::error::Error;
-use crate::insights::{AdAccountsReply, InsightsQuery, InsightsReply};
+use crate::insights::{AdAccountsReply, InsightsJob, InsightsQuery, InsightsReply};
 use crate::media::{MediaQuery, MediaReply};
 use crate::pages::PagesReply;
 #[cfg(feature = "whatsapp-cloud")]
@@ -45,6 +45,59 @@ pub trait InsightsSource: Send + Sync {
         creds: &AccountCreds,
         deadline: Deadline,
     ) -> Result<AdAccountsReply, Error>;
+
+    async fn start_insights_job(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _query: &InsightsQuery,
+        _deadline: Deadline,
+    ) -> Result<InsightsJob, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ReadMetrics,
+        })
+    }
+
+    async fn insights_job(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _job_id: &str,
+        _deadline: Deadline,
+    ) -> Result<InsightsJob, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ReadMetrics,
+        })
+    }
+
+    async fn insights_job_result(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _job_id: &str,
+        _query: &InsightsQuery,
+        _deadline: Deadline,
+    ) -> Result<InsightsReply, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ReadMetrics,
+        })
+    }
+
+    async fn cancel_insights_job(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _job_id: &str,
+        _deadline: Deadline,
+    ) -> Result<InsightsJob, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ReadMetrics,
+        })
+    }
 }
 
 /// Advertising-management writes and review reads. Policy still sits in

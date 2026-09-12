@@ -141,6 +141,9 @@ enum Commands {
             help = "Comma-separated: country,publisher_platform,age,gender,device_platform,platform_position"
         )]
         breakdowns: String,
+        /// POST an Ad Report Run and poll until --deadline. Pending is explicit.
+        #[arg(long = "async")]
+        async_report: bool,
     },
     /// Read-only advertising-account discovery (not local vault aliases).
     #[command(subcommand)]
@@ -211,9 +214,51 @@ enum AccountsCmd {
 }
 
 #[derive(Subcommand, Debug)]
+enum InsightsJobCmd {
+    Status {
+        site: String,
+        #[arg(long)]
+        id: String,
+    },
+    /// Fetch completed rows. Pass the same query flags used to start the job.
+    Result {
+        site: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long, default_value = "account")]
+        level: String,
+        #[arg(long, default_value = "spend,impressions,clicks,purchases")]
+        metrics: String,
+        #[arg(long)]
+        attribution: String,
+        #[arg(long)]
+        ad_account: Option<String>,
+        #[arg(long = "entity-id")]
+        entity_ids: Vec<String>,
+        #[arg(long, default_value = "")]
+        breakdowns: String,
+    },
+    Cancel {
+        site: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum AdsCmd {
     /// List Meta ad accounts visible to the selected credential.
     Accounts { site: String },
+    /// Async Insights Ad Report Run: status, result, or cancel. Jobs expire
+    /// in ~30 days and are not stored in the vault.
+    #[command(name = "insights-job", subcommand)]
+    InsightsJob(InsightsJobCmd),
     /// Inspect the stored access token via Graph `/debug_token`. Never prints
     /// the token. Requires app config (app access token).
     InspectToken { site: String },
@@ -1574,6 +1619,76 @@ async fn dispatch(
                 Err(error) => Err(fail(&error, json)),
             }
         }
+        Commands::Ads(AdsCmd::InsightsJob(InsightsJobCmd::Status { site, id })) => {
+            let key = AccountKey::new(&site, &account);
+            match client.insights_job(&key, &id, deadline).await {
+                Ok(job) => {
+                    if json {
+                        emit_raw(&serde_json::to_value(&job).expect("json"));
+                    } else {
+                        human_line(format!(
+                            "{} {} {} {}%",
+                            job.site,
+                            job.id,
+                            format!("{:?}", job.status).to_ascii_lowercase(),
+                            job.percent_complete
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(fail(&e, json)),
+            }
+        }
+        Commands::Ads(AdsCmd::InsightsJob(InsightsJobCmd::Result {
+            site,
+            id,
+            from,
+            to,
+            level,
+            metrics,
+            attribution,
+            ad_account,
+            entity_ids,
+            breakdowns,
+        })) => {
+            let query = build_insights_query(
+                &site,
+                &from,
+                &to,
+                &level,
+                &metrics,
+                &attribution,
+                InsightsOptions {
+                    ad_account,
+                    entity_ids,
+                    breakdowns,
+                },
+            )
+            .map_err(|e| fail(&e, json))?;
+            let key = AccountKey::new(&site, &account);
+            match client.insights_job_result(&key, &id, query, deadline).await {
+                Ok(reply) => emit_insights_reply(&reply, json),
+                Err(e) => Err(fail(&e, json)),
+            }
+        }
+        Commands::Ads(AdsCmd::InsightsJob(InsightsJobCmd::Cancel { site, id, yes })) => {
+            if !yes {
+                eprintln!("pass --yes to cancel insights job {id}");
+                return Err(2);
+            }
+            let key = AccountKey::new(&site, &account);
+            match client.cancel_insights_job(&key, &id, deadline).await {
+                Ok(job) => {
+                    if json {
+                        emit_raw(&serde_json::to_value(&job).expect("json"));
+                    } else {
+                        human_line(format!("{} {} cancelled", job.site, job.id));
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(fail(&e, json)),
+            }
+        }
         Commands::Ads(AdsCmd::InspectToken { site }) => {
             let key = AccountKey::new(&site, &account);
             match client.inspect_ads_token(&key, deadline).await {
@@ -1985,6 +2100,7 @@ async fn dispatch(
             ad_account,
             entity_ids,
             breakdowns,
+            async_report,
         } => {
             let query = build_insights_query(
                 &site,
@@ -2001,6 +2117,9 @@ async fn dispatch(
             )
             .map_err(|e| fail(&e, json))?;
             let key = AccountKey::new(&site, &account);
+            if async_report {
+                return run_async_insights(&client, &key, query, deadline, json).await;
+            }
             match client.insights(&key, query, deadline).await {
                 Ok(reply) => {
                     if json {

@@ -585,6 +585,52 @@ pub(crate) fn build_insights_query(
 /// One human-mode row: `date level entity dimension=v metric=v …`. Keeping
 /// dimensions before metrics prevents a country/platform label from looking
 /// like a number that callers may sum across rows.
+pub(crate) fn emit_insights_reply(reply: &postkit::InsightsReply, json: bool) -> Result<(), i32> {
+    if json {
+        emit_raw(&serde_json::to_value(reply).expect("json"));
+    } else {
+        human_line(format!(
+            "{} {} {}",
+            reply.site,
+            reply.account_id,
+            reply.currency.as_deref().unwrap_or("-")
+        ));
+        for row in &reply.rows {
+            human_line(insight_line(row));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn run_async_insights(
+    client: &Client,
+    key: &AccountKey,
+    query: InsightsQuery,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    let job = client
+        .start_insights_job(key, query.clone(), deadline)
+        .await
+        .map_err(|e| fail(&e, json))?;
+    let waited = client
+        .wait_for_insights_job(key, &job.id, query, deadline)
+        .await
+        .map_err(|e| fail(&e, json))?;
+    match waited {
+        postkit::InsightsJobWait::Completed(reply) => emit_insights_reply(&reply, json),
+        other => {
+            if json {
+                emit_raw(&serde_json::to_value(&other).expect("json"));
+                Ok(())
+            } else {
+                human_line(format!("{other:?}"));
+                Ok(())
+            }
+        }
+    }
+}
+
 pub(crate) fn insight_line(row: &InsightRow) -> String {
     let mut parts = vec![
         row.date_start.clone(),

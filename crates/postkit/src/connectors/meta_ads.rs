@@ -18,8 +18,8 @@ use crate::facets::{AdsManager, InsightsSource};
 use crate::form::form;
 use crate::http::Http;
 use crate::insights::{
-    AdAccount, AdAccountsReply, AttributionWindow, InsightRow, InsightsLevel, InsightsQuery,
-    InsightsReply, Metric,
+    AdAccount, AdAccountsReply, AttributionWindow, InsightRow, InsightsJob, InsightsJobStatus,
+    InsightsLevel, InsightsQuery, InsightsReply, Metric, MAX_INSIGHTS_RESULT_ROWS,
 };
 use crate::oauth::{authorize_url, exchange_code, extract_code, new_state};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
@@ -256,107 +256,9 @@ impl InsightsSource for MetaAds {
     ) -> Result<InsightsReply, Error> {
         let token = access_token(creds)?;
         let account = account_id(creds, query.account.as_deref())?;
-        let mut fields: std::collections::BTreeSet<&str> = query
-            .metrics
-            .iter()
-            .copied()
-            .filter_map(meta_field)
-            .collect();
-        // Purchases and purchase value are reductions of Meta's action
-        // arrays; ROAS needs both a purchase value and spend even if the
-        // operator requested only the derived metric.
-        if query.metrics.contains(&Metric::Purchases) {
-            fields.insert("actions");
-        }
-        if query
-            .metrics
-            .iter()
-            .any(|metric| matches!(metric, Metric::PurchaseValue | Metric::Roas))
-        {
-            fields.insert("action_values");
-        }
-        if query.metrics.contains(&Metric::Roas) {
-            fields.insert("spend");
-        }
-        let fields: Vec<&str> = fields.into_iter().collect();
-        let field_list = fields.join(",");
-        let range = format!(
-            "{{\"since\":\"{}\",\"until\":\"{}\"}}",
-            query.range.from, query.range.to
-        );
-        let filter = entity_filter(query)?;
-        let breakdowns = query
-            .breakdowns
-            .iter()
-            .map(|breakdown| breakdown.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
-        let mut pairs = vec![
-            ("level", query.level.as_str()),
-            ("fields", &field_list),
-            ("time_range", &range),
-            ("time_increment", "1"),
-            (
-                "action_attribution_windows",
-                attribution_param(query.attribution),
-            ),
-            ("access_token", token),
-        ];
-        // Graph accepts these as JSON / comma-separated data parameters. The
-        // values come from typed query fields and `form` percent-encodes them;
-        // no caller input is interpolated into a URL expression.
-        if let Some(filter) = filter.as_deref() {
-            pairs.push(("filtering", filter));
-        }
-        if !breakdowns.is_empty() {
-            pairs.push(("breakdowns", &breakdowns));
-        }
-        let params = form(&pairs);
-        let mut rows: Vec<InsightRow> = Vec::new();
-        let mut next = Some(format!("{}/act_{}/insights?{}", self.base, account, params));
-        let mut pages = 0usize;
-        while let Some(url) = next {
-            deadline.check(&self.site)?;
-            pages += 1;
-            if pages > MAX_PAGES {
-                return Err(Error::Platform {
-                    site: self.site.clone(),
-                    code: "paging_exceeded".into(),
-                    message: format!("insights paging exceeded {MAX_PAGES} pages"),
-                });
-            }
-            let resp = self
-                .http
-                .send(self.http.get(&url), deadline, &self.site)
-                .await?;
-            let body = read_json(resp, &self.site).await?;
-            if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
-                for item in data {
-                    rows.push(row_from(item, query));
-                }
-            }
-            next = body
-                .get("paging")
-                .and_then(|p| p.get("next"))
-                .and_then(|n| n.as_str())
-                .map(str::to_string);
-        }
-        // Deterministic reply bytes: same query always yields rows in the
-        // same order regardless of how Graph paginated them.
-        rows.sort_by(|a, b| {
-            (
-                &a.entity_id,
-                &a.date_start,
-                serde_json::to_string(&a.dimensions).unwrap_or_default(),
-            )
-                .cmp(&(
-                    &b.entity_id,
-                    &b.date_start,
-                    serde_json::to_string(&b.dimensions).unwrap_or_default(),
-                ))
-        });
-        // A money report without a known currency is ambiguous. The previous
-        // best-effort lookup hid a failed account request as `currency: null`.
+        let params = insights_form(query, token)?;
+        let url = format!("{}/act_{}/insights?{}", self.base, account, params);
+        let rows = fetch_insights_pages(&self.http, &self.site, &url, query, deadline).await?;
         let currency = account_currency(&self.http, &self.base, &account, token, deadline).await?;
         Ok(InsightsReply {
             site: self.site.clone(),
@@ -377,6 +279,112 @@ impl InsightsSource for MetaAds {
         Ok(AdAccountsReply {
             site: self.site.clone(),
             accounts,
+        })
+    }
+
+    async fn start_insights_job(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        query: &InsightsQuery,
+        deadline: Deadline,
+    ) -> Result<InsightsJob, Error> {
+        let token = access_token(creds)?;
+        let account = account_id(creds, query.account.as_deref())?;
+        let params = insights_form(query, token)?;
+        let url = format!("{}/act_{}/insights", self.base, account);
+        let resp = self
+            .http
+            .send(
+                self.http
+                    .post(&url)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(params),
+                deadline,
+                &self.site,
+            )
+            .await?;
+        let body = read_json(resp, &self.site).await?;
+        let id = body
+            .get("report_run_id")
+            .or_else(|| body.get("id"))
+            .and_then(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .or_else(|| v.as_u64().map(|n| n.to_string()))
+            })
+            .ok_or_else(|| Error::Platform {
+                site: self.site.clone(),
+                code: "missing_report_run_id".into(),
+                message: "insights job did not return report_run_id".into(),
+            })?;
+        Ok(InsightsJob {
+            site: self.site.clone(),
+            id,
+            status: InsightsJobStatus::NotStarted,
+            percent_complete: 0,
+            error_code: None,
+            error_message: None,
+        })
+    }
+
+    async fn insights_job(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        job_id: &str,
+        deadline: Deadline,
+    ) -> Result<InsightsJob, Error> {
+        let token = access_token(creds)?;
+        read_insights_job(&self.http, &self.base, &self.site, token, job_id, deadline).await
+    }
+
+    async fn insights_job_result(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        job_id: &str,
+        query: &InsightsQuery,
+        deadline: Deadline,
+    ) -> Result<InsightsReply, Error> {
+        let token = access_token(creds)?;
+        validate_insights_job_id(job_id)?;
+        let account = account_id(creds, query.account.as_deref())?;
+        let q = form(&[("access_token", token)]);
+        let url = format!("{}/{}/insights?{q}", self.base, job_id);
+        let rows = fetch_insights_pages(&self.http, &self.site, &url, query, deadline).await?;
+        let currency = account_currency(&self.http, &self.base, &account, token, deadline).await?;
+        Ok(InsightsReply {
+            site: self.site.clone(),
+            account_id: format!("act_{account}"),
+            currency,
+            rows,
+        })
+    }
+
+    async fn cancel_insights_job(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        job_id: &str,
+        deadline: Deadline,
+    ) -> Result<InsightsJob, Error> {
+        let token = access_token(creds)?;
+        validate_insights_job_id(job_id)?;
+        let q = form(&[("access_token", token)]);
+        let url = format!("{}/{job_id}?{q}", self.base);
+        let resp = self
+            .http
+            .send(self.http.delete(&url), deadline, &self.site)
+            .await?;
+        let _ = read_json(resp, &self.site).await?;
+        Ok(InsightsJob {
+            site: self.site.clone(),
+            id: job_id.into(),
+            status: InsightsJobStatus::Skipped,
+            percent_complete: 0,
+            error_code: None,
+            error_message: None,
         })
     }
 }
@@ -870,6 +878,176 @@ fn meta_field(m: Metric) -> Option<&'static str> {
 /// Ads Manager display name for that preset and is rejected with code 100.
 fn attribution_param(a: AttributionWindow) -> &'static str {
     a.graph_windows()
+}
+
+fn insights_form(query: &InsightsQuery, token: &str) -> Result<String, Error> {
+    let mut fields: std::collections::BTreeSet<&str> = query
+        .metrics
+        .iter()
+        .copied()
+        .filter_map(meta_field)
+        .collect();
+    if query.metrics.contains(&Metric::Purchases) {
+        fields.insert("actions");
+    }
+    if query
+        .metrics
+        .iter()
+        .any(|metric| matches!(metric, Metric::PurchaseValue | Metric::Roas))
+    {
+        fields.insert("action_values");
+    }
+    if query.metrics.contains(&Metric::Roas) {
+        fields.insert("spend");
+    }
+    let fields: Vec<&str> = fields.into_iter().collect();
+    let field_list = fields.join(",");
+    let range = format!(
+        "{{\"since\":\"{}\",\"until\":\"{}\"}}",
+        query.range.from, query.range.to
+    );
+    let filter = entity_filter(query)?;
+    let breakdowns = query
+        .breakdowns
+        .iter()
+        .map(|breakdown| breakdown.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut pairs = vec![
+        ("level", query.level.as_str()),
+        ("fields", field_list.as_str()),
+        ("time_range", range.as_str()),
+        ("time_increment", "1"),
+        (
+            "action_attribution_windows",
+            attribution_param(query.attribution),
+        ),
+        ("access_token", token),
+    ];
+    if let Some(filter) = filter.as_deref() {
+        pairs.push(("filtering", filter));
+    }
+    if !breakdowns.is_empty() {
+        pairs.push(("breakdowns", breakdowns.as_str()));
+    }
+    Ok(form(&pairs))
+}
+
+fn validate_insights_job_id(id: &str) -> Result<(), Error> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+        return Err(Error::InvalidQuery {
+            site: Site::new(SITE),
+            reason: "bad_insights_job_id".into(),
+        });
+    }
+    Ok(())
+}
+
+async fn fetch_insights_pages(
+    http: &Http,
+    site: &Site,
+    start_url: &str,
+    query: &InsightsQuery,
+    deadline: Deadline,
+) -> Result<Vec<InsightRow>, Error> {
+    let mut rows: Vec<InsightRow> = Vec::new();
+    let mut next = Some(start_url.to_string());
+    let mut pages = 0usize;
+    while let Some(url) = next {
+        deadline.check(site)?;
+        pages += 1;
+        if pages > MAX_PAGES {
+            return Err(Error::Platform {
+                site: site.clone(),
+                code: "paging_exceeded".into(),
+                message: format!("insights paging exceeded {MAX_PAGES} pages"),
+            });
+        }
+        let resp = http.send(http.get(&url), deadline, site).await?;
+        let body = read_json(resp, site).await?;
+        if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+            for item in data {
+                rows.push(row_from(item, query));
+                if rows.len() > MAX_INSIGHTS_RESULT_ROWS {
+                    return Err(Error::InvalidQuery {
+                        site: site.clone(),
+                        reason: format!("insights_row_cap:{MAX_INSIGHTS_RESULT_ROWS}"),
+                    });
+                }
+            }
+        }
+        next = body
+            .get("paging")
+            .and_then(|p| p.get("next"))
+            .and_then(|n| n.as_str())
+            .map(str::to_string);
+    }
+    rows.sort_by(|a, b| {
+        (
+            &a.entity_id,
+            &a.date_start,
+            serde_json::to_string(&a.dimensions).unwrap_or_default(),
+        )
+            .cmp(&(
+                &b.entity_id,
+                &b.date_start,
+                serde_json::to_string(&b.dimensions).unwrap_or_default(),
+            ))
+    });
+    Ok(rows)
+}
+
+async fn read_insights_job(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    token: &str,
+    job_id: &str,
+    deadline: Deadline,
+) -> Result<InsightsJob, Error> {
+    validate_insights_job_id(job_id)?;
+    let q = form(&[
+        (
+            "fields",
+            "async_status,async_percent_completion,error_code,error_message,error_user_msg",
+        ),
+        ("access_token", token),
+    ]);
+    let url = format!("{base}/{job_id}?{q}");
+    let resp = http.send(http.get(&url), deadline, site).await?;
+    let body = read_json(resp, site).await?;
+    let status = InsightsJobStatus::from_meta(
+        body.get("async_status")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+    );
+    let percent = body
+        .get("async_percent_completion")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        .min(100) as u8;
+    let error_message = body
+        .get("error_user_msg")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| body.get("error_message").and_then(|v| v.as_str()))
+        .map(str::to_string);
+    Ok(InsightsJob {
+        site: site.clone(),
+        id: job_id.into(),
+        status,
+        percent_complete: percent,
+        error_code: body
+            .get("error_code")
+            .map(|v| {
+                v.as_i64()
+                    .map(|n| n.to_string())
+                    .or_else(|| v.as_str().map(str::to_string))
+                    .unwrap_or_default()
+            })
+            .filter(|s| !s.is_empty()),
+        error_message,
+    })
 }
 
 /// Graph returns numerics as JSON *strings* ("12.34", "12345") — parse
@@ -1583,7 +1761,7 @@ mod tests {
         CreateLinkAdCreativeRequest, CreativePreviewRequest, LinkAdCreative, LinkCallToAction,
         PausedAd, PausedAdset, PausedCampaign, UploadAdImageRequest,
     };
-    use crate::facets::AdsManager;
+    use crate::facets::{AdsManager, InsightsSource};
     use crate::insights::{AttributionWindow, InsightsLevel, InsightsQuery, Metric};
     use httpmock::prelude::*;
     use serde_json::json;
@@ -2666,6 +2844,77 @@ mod tests {
         assert!(
             matches!(err, Error::InvalidPost { reason, .. } if reason == "publish_unsupported")
         );
+    }
+
+    #[tokio::test]
+    async fn insights_async_job_start_status_result_and_cancel() {
+        let server = MockServer::start();
+        mock_account_currency(&server, "MYR");
+        let start = server.mock(|when, then| {
+            when.method(POST).path("/v26.0/act_123/insights");
+            then.status(200).json_body(json!({ "report_run_id": "999" }));
+        });
+        let status = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/999");
+            then.status(200).json_body(json!({
+                "async_status": "Job Completed",
+                "async_percent_completion": 100
+            }));
+        });
+        let result = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/999/insights");
+            then.status(200).json_body(json!({
+                "data": [{
+                    "date_start": "2026-06-01",
+                    "campaign_id": "1",
+                    "spend": "1.00"
+                }]
+            }));
+        });
+        let cancel = server.mock(|when, then| {
+            when.method(DELETE).path("/v26.0/999");
+            then.status(200).json_body(json!({ "success": true }));
+        });
+        let t = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let q = query();
+        let job = t
+            .start_insights_job(&empty_app(), &token_creds("123"), &q, Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(job.id, "999");
+        let st = t
+            .insights_job(&empty_app(), &token_creds("123"), "999", Deadline::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(st.status, InsightsJobStatus::Completed);
+        let reply = t
+            .insights_job_result(
+                &empty_app(),
+                &token_creds("123"),
+                "999",
+                &q,
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.rows.len(), 1);
+        t.cancel_insights_job(&empty_app(), &token_creds("123"), "999", Deadline::from_secs(30))
+            .await
+            .unwrap();
+        start.assert();
+        status.assert();
+        result.assert();
+        cancel.assert();
+        let bad = t
+            .insights_job(
+                &empty_app(),
+                &token_creds("123"),
+                "not-a-job",
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(bad, Error::InvalidQuery { reason, .. } if reason == "bad_insights_job_id"));
     }
 
     #[test]

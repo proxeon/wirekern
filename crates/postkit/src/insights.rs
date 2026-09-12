@@ -480,6 +480,62 @@ pub struct InsightsReply {
     pub rows: Vec<InsightRow>,
 }
 
+/// Hard cap on rows returned from sync or async Insights. 90 daily rows times
+/// two breakdowns stays well under this; a runaway cursor cannot grow forever.
+pub const MAX_INSIGHTS_RESULT_ROWS: usize = 5_000;
+
+/// Meta Ad Report Run. IDs expire in ~30 days — do not vault them.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InsightsJob {
+    pub site: crate::types::Site,
+    pub id: String,
+    pub status: InsightsJobStatus,
+    pub percent_complete: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InsightsJobStatus {
+    NotStarted,
+    Started,
+    Running,
+    Completed,
+    Failed,
+    Skipped,
+    Unknown,
+}
+
+impl InsightsJobStatus {
+    pub fn from_meta(value: &str) -> Self {
+        match value {
+            "Job Not Started" => Self::NotStarted,
+            "Job Started" => Self::Started,
+            "Job Running" => Self::Running,
+            "Job Completed" => Self::Completed,
+            "Job Failed" => Self::Failed,
+            "Job Skipped" => Self::Skipped,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Skipped)
+    }
+}
+
+/// Bounded wait for an async Insights job. Pending is success, like ads review.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "job", content = "result", rename_all = "snake_case")]
+pub enum InsightsJobWait {
+    Completed(InsightsReply),
+    Pending(InsightsJob),
+    Failed(InsightsJob),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,5 +687,19 @@ mod tests {
         .validate()
         .unwrap_err();
         assert_eq!(err, "range_too_long:91");
+    }
+
+    #[test]
+    fn insights_job_status_from_meta() {
+        assert_eq!(
+            InsightsJobStatus::from_meta("Job Completed"),
+            InsightsJobStatus::Completed
+        );
+        assert_eq!(
+            InsightsJobStatus::from_meta("Job Failed"),
+            InsightsJobStatus::Failed
+        );
+        assert!(InsightsJobStatus::Completed.is_terminal());
+        assert!(!InsightsJobStatus::Running.is_terminal());
     }
 }

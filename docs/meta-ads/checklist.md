@@ -38,7 +38,7 @@ Last aligned with Meta Marketing API / Graph docs and
 - [x] Deterministic row order `(entity_id, date_start, dimensions)`
 - [x] Additional typed metrics (each with a definition so it cannot be read as a billing total)
 - [x] Additional typed breakdowns / attribution windows
-- [ ] Async / bulk Insights jobs (bounded job, cancel, poll deadline, result-size cap)
+- [x] Async / bulk Insights jobs (bounded job, cancel, poll deadline, result-size cap)
 - [ ] Separate creative / delivery report contracts (not one unbounded Graph query)
 
 ## Paused creates
