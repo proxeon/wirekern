@@ -59,6 +59,8 @@ and no calendar.
 | `ads_accounts` | `Client::ad_accounts` | Remote `act_` ids, not vault aliases |
 | `ads_list` | `Client::list_ads_inventory` | Campaigns, ad sets, ads, or creatives; capped pages |
 | `ads_inspect` | `Client::inspect_ads_object` | Budget, bid, targeting, Page, destination; GET-only |
+| `ads_status` | `Client::ad_review_status` | Configured vs effective; GET-only |
+| `ads_create_paused` | `Client::create_paused_ad` | Requires `allow_create: true`; always PAUSED |
 | `pages_accounts` | `Client::pages` | Page identities, never Page tokens |
 | `media_list` | `Client::media` | First page, limit 1–25 |
 

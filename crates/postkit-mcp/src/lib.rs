@@ -185,6 +185,8 @@ impl Server {
             "ads_accounts" => tools::ads_accounts(&self.client, arguments).await,
             "ads_list" => tools::ads_list(&self.client, arguments).await,
             "ads_inspect" => tools::ads_inspect(&self.client, arguments).await,
+            "ads_status" => tools::ads_status(&self.client, arguments).await,
+            "ads_create_paused" => tools::ads_create_paused(&self.client, arguments).await,
             "pages_accounts" => tools::pages_accounts(&self.client, arguments).await,
             "media_list" => tools::media_list(&self.client, arguments).await,
             other => {
@@ -385,6 +387,8 @@ mod tests {
                 "ads_accounts",
                 "ads_list",
                 "ads_inspect",
+                "ads_status",
+                "ads_create_paused",
                 "pages_accounts",
                 "media_list"
             ]
@@ -766,6 +770,25 @@ mod tests {
         .await;
         assert_eq!(
             inspected["result"]["structuredContent"]["error"],
+            "unknown_account"
+        );
+        let denied = call(
+            &server,
+            "ads_create_paused",
+            json!({
+                "create": { "entity": "campaign", "spec": { "name": "x", "objective": "traffic" } }
+            }),
+        )
+        .await;
+        assert_eq!(denied["result"]["structuredContent"]["error"], "policy_denied");
+        let status = call(
+            &server,
+            "ads_status",
+            json!({ "site": "meta_ads", "entity": "ad", "id": "1" }),
+        )
+        .await;
+        assert_eq!(
+            status["result"]["structuredContent"]["error"],
             "unknown_account"
         );
         let bad_attr = call(

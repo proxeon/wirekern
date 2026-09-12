@@ -119,8 +119,8 @@ policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 |------|---------|-----|-----|--------------|
 | Insights | [x] | [x] | [x] `insights` | [x] GET |
 | Ad account list | [x] | [x] | [x] `ads_accounts` | [x] GET |
-| Paused creates / drafts | [x] | [x] | [ ] | [ ] |
-| Status / preview | [x] | [x] | [ ] | [x] status GET |
+| Paused creates / drafts | [x] | [x] | [x] `ads_create_paused` | [ ] |
+| Status / preview | [x] | [x] | [x] `ads_status` | [x] status GET |
 | Inventory list | [x] | [x] | [x] `ads_list` | [x] GET |
 | Object inspect | [x] | [x] | [x] `ads_inspect` | [x] GET |
 | Activate | policy deny default | [x] `--allow-activate` | [ ] | [ ] |
@@ -131,7 +131,7 @@ policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 - [x] Not routable via generic `post` (`publish_unsupported`)
 - [x] MCP omits creates (no unattended spend over a tool call)
 - [x] HTTP ads reads (only if a named non-exec caller needs them; `pk_live_` is not a spend key)
-- [ ] MCP paused creates (only with a confirmation field as strict as `--allow-send`)
+- [x] MCP paused creates (only with a confirmation field as strict as `--allow-send`)
 
 ## Reliability already in the kernel
 

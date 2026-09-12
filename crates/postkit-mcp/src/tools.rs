@@ -4,9 +4,10 @@
 //! kernel first; this file only adapts JSON-RPC arguments onto those types.
 
 use postkit::{
-    AccountKey, AdsInspectRequest, AdsInventoryKind, AdsInventoryRequest, AttributionWindow,
-    Breakdown, Client, DateRange, Deadline, Error, InsightsLevel, InsightsQuery, MediaQuery,
-    Metric, PostRequest, Site, WhatsAppSendRequest, WireError, DEFAULT_MEDIA_LIMIT,
+    AccountKey, AdEntity, AdReviewStatusRequest, AdsInspectRequest, AdsInventoryKind,
+    AdsInventoryRequest, AttributionWindow, Breakdown, Client, CreatePausedAdRequest, DateRange,
+    Deadline, Error, InsightsLevel, InsightsQuery, MediaQuery, Metric, PausedAdCreate, PostRequest,
+    Site, WhatsAppSendRequest, WireError, DEFAULT_MEDIA_LIMIT,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -88,6 +89,20 @@ pub fn catalog() -> &'static [ToolSpec] {
             read_only: true,
             destructive: false,
             schema: ads_inspect_schema,
+        },
+        ToolSpec {
+            name: "ads_status",
+            description: "Read configured and effective review status for one campaign, ad set, or ad. GET-only.",
+            read_only: true,
+            destructive: false,
+            schema: ads_status_schema,
+        },
+        ToolSpec {
+            name: "ads_create_paused",
+            description: "Create a PAUSED campaign, ad set, or ad. Requires allow_create=true. Cannot activate or spend.",
+            read_only: false,
+            destructive: true,
+            schema: ads_create_paused_schema,
         },
         ToolSpec {
             name: "pages_accounts",
@@ -243,6 +258,37 @@ fn ads_list_schema() -> Value {
             "deadline": { "type": "integer", "minimum": 1, "default": 30 }
         },
         "required": ["site", "entity"],
+        "additionalProperties": false
+    })
+}
+
+fn ads_status_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "site": { "type": "string" },
+            "account": { "type": "string", "default": "default" },
+            "entity": { "type": "string", "enum": ["campaign", "adset", "ad"] },
+            "id": { "type": "string" },
+            "deadline": { "type": "integer", "minimum": 1, "default": 30 }
+        },
+        "required": ["site", "entity", "id"],
+        "additionalProperties": false
+    })
+}
+
+fn ads_create_paused_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "site": { "type": "string", "default": "meta_ads" },
+            "account": { "type": "string", "default": "default" },
+            "allow_create": { "type": "boolean", "description": "Must be true. Twin of CLI acknowledgement; omitted/false is policy_denied." },
+            "ad_account": { "type": "string" },
+            "create": { "type": "object" },
+            "deadline": { "type": "integer", "minimum": 1, "default": 30 }
+        },
+        "required": ["allow_create", "create"],
         "additionalProperties": false
     })
 }
@@ -476,6 +522,21 @@ struct AdsInspectArgs {
 }
 
 #[derive(Deserialize)]
+struct AdsCreatePausedArgs {
+    #[serde(default = "default_ads_site")]
+    site: String,
+    #[serde(default = "default_account")]
+    account: String,
+    #[serde(default)]
+    allow_create: bool,
+    #[serde(default)]
+    ad_account: Option<String>,
+    create: PausedAdCreate,
+    #[serde(default = "default_deadline")]
+    deadline: u64,
+}
+
+#[derive(Deserialize)]
 struct InsightsArgs {
     #[serde(default = "default_ads_site")]
     site: String,
@@ -572,6 +633,58 @@ pub async fn ads_list(client: &Client, arguments: Value) -> Value {
     let key = AccountKey::new(&args.site, &args.account);
     match client
         .list_ads_inventory(&key, request, Deadline::from_secs(args.deadline.max(1)))
+        .await
+    {
+        Ok(reply) => value_ok(&args.site, reply),
+        Err(error) => tool_err(error),
+    }
+}
+
+pub async fn ads_status(client: &Client, arguments: Value) -> Value {
+    let args: AdsInspectArgs = match serde_json::from_value(arguments) {
+        Ok(value) => value,
+        Err(error) => return tool_err(invalid_query("", format!("json:{error}"))),
+    };
+    let entity = match AdEntity::from_str(&args.entity) {
+        Ok(entity) => entity,
+        Err(reason) => return tool_err(invalid_query(&args.site, reason)),
+    };
+    let request = AdReviewStatusRequest {
+        entity,
+        id: args.id,
+    };
+    let key = AccountKey::new(&args.site, &args.account);
+    match client
+        .ad_review_status(&key, request, Deadline::from_secs(args.deadline.max(1)))
+        .await
+    {
+        Ok(reply) => value_ok(&args.site, reply),
+        Err(error) => tool_err(error),
+    }
+}
+
+pub async fn ads_create_paused(client: &Client, arguments: Value) -> Value {
+    let args: AdsCreatePausedArgs = match serde_json::from_value(arguments) {
+        Ok(value) => value,
+        Err(error) => return tool_err(invalid_query("meta_ads", format!("json:{error}"))),
+    };
+    // Same shape as WhatsApp allow_send: the boolean is the acknowledgement.
+    // PausedOnlyAdsPolicy already allows the write; this stops an unattended
+    // host from creating drafts merely because the tool is listed.
+    if !args.allow_create {
+        return tool_err(Error::PolicyDenied {
+            site: Site::new(&args.site),
+            action: "create_paused_ad".into(),
+            reason: "explicit_paused_create_required".into(),
+        });
+    }
+    let request = CreatePausedAdRequest {
+        account: args.ad_account,
+        create: args.create,
+    };
+    let key = AccountKey::new(&args.site, &args.account);
+    match client
+        .create_paused_ad(&key, request, Deadline::from_secs(args.deadline.max(1)))
         .await
     {
         Ok(reply) => value_ok(&args.site, reply),

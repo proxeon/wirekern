@@ -30,6 +30,7 @@ stays **1.80**.
 
 - [x] `post` (`PostRequest` + optional idempotency key)
 - [x] `whatsapp_send` (`allow_send: true` + idempotency; configured `--sender` alias only)
+- [x] `ads_create_paused` (`allow_create: true`; always `PAUSED`)
 
 ## Reads
 
@@ -37,6 +38,7 @@ stays **1.80**.
 - [x] `ads_accounts`
 - [x] `ads_list`
 - [x] `ads_inspect`
+- [x] `ads_status`
 - [x] `pages_accounts`
 - [x] `media_list`
 
