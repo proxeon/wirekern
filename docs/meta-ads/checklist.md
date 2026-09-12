@@ -72,13 +72,13 @@ no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
 - [x] Additional image-link CTAs (each has extra Meta value requirements)
 - [x] Video upload + processing/status poll
 - [x] Video creative
-- [ ] Carousel
-- [ ] Catalog / dynamic creative
-- [ ] Lead-form creative
-- [ ] App-install creative
-- [ ] Instagram actor / identity on the creative
-- [ ] Advantage+ creative assembly
-- [ ] Ads in WhatsApp Status (Marketing API v26.0 addition)
+- [x] Carousel
+- [x] Catalog / dynamic creative
+- [x] Lead-form creative
+- [x] App-install creative
+- [x] Instagram actor / identity on the creative
+- [x] Advantage+ creative assembly
+- [x] Ads in WhatsApp Status (Marketing API v26.0 addition)
 
 ## Review and paused-draft launches
 

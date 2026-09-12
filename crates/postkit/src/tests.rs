@@ -471,6 +471,20 @@ impl AdsManager for MockPub {
         })
     }
 
+    async fn create_ad_creative(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &crate::ads::CreateAdCreativeRequest,
+        _deadline: Deadline,
+    ) -> Result<CreatedAdCreative, Error> {
+        Ok(CreatedAdCreative {
+            site: self.site.clone(),
+            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
+            id: "typed-creative-0".into(),
+        })
+    }
+
     async fn preview_ad_creative(
         &self,
         _app: &AppConfig,
@@ -2269,6 +2283,9 @@ async fn client_creative_assets_route_and_refuse_before_vault_access() {
                     geo_link: None,
                     application_id: None,
                     app_link: None,
+                    instagram_user_id: None,
+                    advantage_plus: false,
+                    whatsapp_identity: None,
                 },
             },
             Deadline::from_secs(30),
@@ -2346,6 +2363,9 @@ async fn client_creative_assets_route_and_refuse_before_vault_access() {
                     geo_link: None,
                     application_id: None,
                     app_link: None,
+                    instagram_user_id: None,
+                    advantage_plus: false,
+                    whatsapp_identity: None,
                 },
             },
             Deadline::from_secs(30),
@@ -2889,6 +2909,20 @@ mod draft_tests {
             _app: &AppConfig,
             _creds: &AccountCreds,
             _request: &crate::ads::CreateVideoAdCreativeRequest,
+            _deadline: Deadline,
+        ) -> Result<CreatedAdCreative, Error> {
+            self.write_gate()?;
+            Ok(CreatedAdCreative {
+                site: self.site.clone(),
+                account_id: "act_777".into(),
+                id: format!("3{:03}", self.creatives.fetch_add(1, Ordering::SeqCst)),
+            })
+        }
+        async fn create_ad_creative(
+            &self,
+            _app: &AppConfig,
+            _creds: &AccountCreds,
+            _request: &crate::ads::CreateAdCreativeRequest,
             _deadline: Deadline,
         ) -> Result<CreatedAdCreative, Error> {
             self.write_gate()?;

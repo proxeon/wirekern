@@ -1499,6 +1499,31 @@ impl Client {
         .await
     }
 
+    pub async fn create_ad_creative(
+        &self,
+        key: &AccountKey,
+        request: crate::ads::CreateAdCreativeRequest,
+        deadline: Deadline,
+    ) -> Result<CreatedAdCreative, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy
+            .authorize(&key.site, AdsAction::CreateLinkAdCreative)?;
+        self.require_capability(&key.site, Capability::CreateAdCreative)?;
+        let ads = self.ads_manager(&key.site, Capability::CreateAdCreative)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                ads.create_ad_creative(&app, &creds, &request, deadline)
+                    .await
+            })
+        })
+        .await
+    }
+
     /// Read the platform's rendering of an existing creative. Unlike the
     /// creative/upload methods above this has no policy decision: it is a
     /// GET-only review operation and cannot affect delivery, budget, billing,
@@ -2265,6 +2290,9 @@ mod draft_run {
                                 geo_link: manifest.creative.geo_link.clone(),
                                 application_id: manifest.creative.application_id.clone(),
                                 app_link: manifest.creative.app_link.clone(),
+                                instagram_user_id: None,
+                                advantage_plus: false,
+                                whatsapp_identity: None,
                             },
                         };
                         self.create_link_ad_creative(key, request, deadline)

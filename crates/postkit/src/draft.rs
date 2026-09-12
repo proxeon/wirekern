@@ -234,6 +234,9 @@ impl PausedDraftManifest {
             geo_link: self.creative.geo_link.clone(),
             application_id: self.creative.application_id.clone(),
             app_link: self.creative.app_link.clone(),
+            instagram_user_id: None,
+            advantage_plus: false,
+            whatsapp_identity: None,
         })?;
         self.image_filename()?;
         // Ad

@@ -492,6 +492,21 @@ impl AdsManager for MetaAds {
         .await
     }
 
+    async fn create_ad_creative(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &crate::ads::CreateAdCreativeRequest,
+        deadline: Deadline,
+    ) -> Result<CreatedAdCreative, Error> {
+        let token = access_token(creds)?;
+        let account = account_id(creds, request.account.as_deref())?;
+        create_typed_ad_creative(
+            &self.http, &self.base, &self.site, &account, token, request, deadline,
+        )
+        .await
+    }
+
     async fn preview_ad_creative(
         &self,
         _app: &AppConfig,
@@ -826,11 +841,7 @@ async fn read_ad_video_status(
         .get("status")
         .and_then(|status| status.get("video_status"))
         .and_then(Value::as_str)
-        .or_else(|| {
-            response
-                .get("status")
-                .and_then(Value::as_str)
-        });
+        .or_else(|| response.get("status").and_then(Value::as_str));
     let raw = raw.ok_or_else(|| Error::Platform {
         site: site.clone(),
         code: "missing_video_status".into(),
@@ -842,6 +853,38 @@ async fn read_ad_video_status(
         video_status: crate::ads::AdVideoStatusKind::from_meta(raw),
         raw: Some(raw.to_string()),
     })
+}
+
+fn attach_creative_identity(
+    spec: &mut Value,
+    instagram_user_id: Option<&str>,
+    _advantage_plus: bool,
+    _whatsapp_identity: Option<&crate::ads::WhatsAppStatusIdentity>,
+) {
+    if let Some(id) = instagram_user_id {
+        spec["instagram_user_id"] = serde_json::Value::String(id.to_string());
+    }
+}
+
+fn append_creative_extras(
+    fields: &mut Vec<(&str, String)>,
+    advantage_plus: bool,
+    whatsapp_identity: Option<&crate::ads::WhatsAppStatusIdentity>,
+) {
+    if advantage_plus {
+        fields.push((
+            "degrees_of_freedom_spec",
+            serde_json::json!({
+                "creative_features_spec": {
+                    "standard_enhancements": { "enroll_status": "OPT_IN" }
+                }
+            })
+            .to_string(),
+        ));
+    }
+    if let Some(ident) = whatsapp_identity {
+        fields.push(("wamo_whatsapp_identity_spec", ident.meta_json().to_string()));
+    }
 }
 
 /// Create an unpublished Page-backed image-link creative. CTA `value` is
@@ -857,7 +900,7 @@ async fn create_link_ad_creative(
     deadline: Deadline,
 ) -> Result<CreatedAdCreative, Error> {
     let creative = &request.creative;
-    let object_story_spec = serde_json::json!({
+    let mut spec = serde_json::json!({
         "page_id": creative.page_id,
         "link_data": {
             "image_hash": creative.image_hash,
@@ -869,13 +912,30 @@ async fn create_link_ad_creative(
                 "value": crate::ads::link_cta_value_json(creative),
             },
         },
-    })
-    .to_string();
-    let body = form(&[
-        ("name", creative.name.as_str()),
-        ("object_story_spec", object_story_spec.as_str()),
-        ("access_token", token),
-    ]);
+    });
+    attach_creative_identity(
+        &mut spec,
+        creative.instagram_user_id.as_deref(),
+        creative.advantage_plus,
+        creative.whatsapp_identity.as_ref(),
+    );
+    let object_story_spec = spec.to_string();
+    let mut fields = vec![
+        ("name", creative.name.clone()),
+        ("object_story_spec", object_story_spec),
+        ("access_token", token.to_string()),
+    ];
+    append_creative_extras(
+        &mut fields,
+        creative.advantage_plus,
+        creative.whatsapp_identity.as_ref(),
+    );
+    let body = form(
+        &fields
+            .iter()
+            .map(|(k, v)| (*k, v.as_str()))
+            .collect::<Vec<_>>(),
+    );
     let url = format!("{base}/act_{account}/adcreatives");
     let response = http
         .send(
@@ -920,8 +980,11 @@ async fn create_video_ad_creative(
         geo_link: creative.geo_link.clone(),
         application_id: creative.application_id.clone(),
         app_link: creative.app_link.clone(),
+        instagram_user_id: creative.instagram_user_id.clone(),
+        advantage_plus: creative.advantage_plus,
+        whatsapp_identity: creative.whatsapp_identity.clone(),
     };
-    let object_story_spec = serde_json::json!({
+    let mut spec = serde_json::json!({
         "page_id": creative.page_id,
         "video_data": {
             "video_id": creative.video_id,
@@ -932,13 +995,194 @@ async fn create_video_ad_creative(
                 "value": crate::ads::link_cta_value_json(&link_cta),
             },
         },
+    });
+    attach_creative_identity(
+        &mut spec,
+        creative.instagram_user_id.as_deref(),
+        creative.advantage_plus,
+        creative.whatsapp_identity.as_ref(),
+    );
+    let object_story_spec = spec.to_string();
+    let mut fields = vec![
+        ("name", creative.name.clone()),
+        ("object_story_spec", object_story_spec),
+        ("access_token", token.to_string()),
+    ];
+    append_creative_extras(
+        &mut fields,
+        creative.advantage_plus,
+        creative.whatsapp_identity.as_ref(),
+    );
+    let body = form(
+        &fields
+            .iter()
+            .map(|(k, v)| (*k, v.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    let url = format!("{base}/act_{account}/adcreatives");
+    let response = http
+        .send(
+            http.post(&url)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(body),
+            deadline,
+            site,
+        )
+        .await?;
+    let response = read_json(response, site).await?;
+    let id = value_string(response.get("id")).ok_or_else(|| Error::Platform {
+        site: site.clone(),
+        code: "missing_creative_id".into(),
+        message: "creative create returned no id".into(),
+    })?;
+    Ok(CreatedAdCreative {
+        site: site.clone(),
+        account_id: format!("act_{account}"),
+        id,
     })
-    .to_string();
-    let body = form(&[
-        ("name", creative.name.as_str()),
-        ("object_story_spec", object_story_spec.as_str()),
-        ("access_token", token),
-    ]);
+}
+
+async fn create_typed_ad_creative(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    account: &str,
+    token: &str,
+    request: &crate::ads::CreateAdCreativeRequest,
+    deadline: Deadline,
+) -> Result<CreatedAdCreative, Error> {
+    use crate::ads::AdCreativeKind;
+    let (name, spec, advantage_plus, wa) = match &request.kind {
+        AdCreativeKind::Carousel(c) => {
+            let cards: Vec<_> = c
+                .cards
+                .iter()
+                .map(|card| {
+                    serde_json::json!({
+                        "image_hash": card.image_hash,
+                        "link": card.link,
+                        "name": card.name,
+                    })
+                })
+                .collect();
+            let mut spec = serde_json::json!({
+                "page_id": c.page_id,
+                "link_data": {
+                    "message": c.message,
+                    "link": c.cards.first().map(|card| card.link.as_str()).unwrap_or_default(),
+                    "child_attachments": cards,
+                    "call_to_action": { "type": c.call_to_action.meta_value() },
+                },
+            });
+            attach_creative_identity(
+                &mut spec,
+                c.instagram_user_id.as_deref(),
+                c.advantage_plus,
+                c.whatsapp_identity.as_ref(),
+            );
+            (
+                c.name.clone(),
+                spec,
+                c.advantage_plus,
+                c.whatsapp_identity.clone(),
+            )
+        }
+        AdCreativeKind::Catalog(c) => {
+            let mut spec = serde_json::json!({
+                "page_id": c.page_id,
+                "template_data": {
+                    "product_set_id": c.product_set_id,
+                    "link": c.link,
+                    "message": c.message,
+                    "call_to_action": { "type": c.call_to_action.meta_value() },
+                },
+            });
+            attach_creative_identity(
+                &mut spec,
+                c.instagram_user_id.as_deref(),
+                c.advantage_plus,
+                c.whatsapp_identity.as_ref(),
+            );
+            (
+                c.name.clone(),
+                spec,
+                c.advantage_plus,
+                c.whatsapp_identity.clone(),
+            )
+        }
+        AdCreativeKind::LeadForm(c) => {
+            let mut spec = serde_json::json!({
+                "page_id": c.page_id,
+                "link_data": {
+                    "image_hash": c.image_hash,
+                    "link": c.destination_url,
+                    "message": c.message,
+                    "name": c.headline,
+                    "call_to_action": {
+                        "type": c.call_to_action.meta_value(),
+                        "value": {
+                            "link": c.destination_url,
+                            "lead_gen_form_id": c.lead_gen_form_id,
+                        },
+                    },
+                },
+            });
+            attach_creative_identity(
+                &mut spec,
+                c.instagram_user_id.as_deref(),
+                c.advantage_plus,
+                c.whatsapp_identity.as_ref(),
+            );
+            (
+                c.name.clone(),
+                spec,
+                c.advantage_plus,
+                c.whatsapp_identity.clone(),
+            )
+        }
+        AdCreativeKind::AppInstall(c) => {
+            let mut spec = serde_json::json!({
+                "page_id": c.page_id,
+                "link_data": {
+                    "image_hash": c.image_hash,
+                    "link": c.object_store_url,
+                    "message": c.message,
+                    "call_to_action": {
+                        "type": "INSTALL_MOBILE_APP",
+                        "value": {
+                            "application": c.application_id,
+                            "link": c.object_store_url,
+                        },
+                    },
+                },
+            });
+            attach_creative_identity(
+                &mut spec,
+                c.instagram_user_id.as_deref(),
+                c.advantage_plus,
+                c.whatsapp_identity.as_ref(),
+            );
+            (
+                c.name.clone(),
+                spec,
+                c.advantage_plus,
+                c.whatsapp_identity.clone(),
+            )
+        }
+    };
+    let object_story_spec = spec.to_string();
+    let mut fields = vec![
+        ("name", name),
+        ("object_story_spec", object_story_spec),
+        ("access_token", token.to_string()),
+    ];
+    append_creative_extras(&mut fields, advantage_plus, wa.as_ref());
+    let body = form(
+        &fields
+            .iter()
+            .map(|(k, v)| (*k, v.as_str()))
+            .collect::<Vec<_>>(),
+    );
     let url = format!("{base}/act_{account}/adcreatives");
     let response = http
         .send(
@@ -2243,6 +2487,8 @@ mod tests {
                             publisher_platforms: vec![],
                             facebook_positions: vec![],
                             instagram_positions: vec![],
+                            whatsapp_positions: vec![],
+                            user_age_unknown: None,
                         },
                         start_time: None,
                         end_time: None,
@@ -2344,6 +2590,8 @@ mod tests {
                             publisher_platforms: vec![],
                             facebook_positions: vec![],
                             instagram_positions: vec![],
+                            whatsapp_positions: vec![],
+                            user_age_unknown: None,
                         },
                         start_time: Some("2026-11-11T14:26:09-08:00".into()),
                         end_time: Some("2026-11-21T14:26:09-08:00".into()),
@@ -2390,6 +2638,8 @@ mod tests {
             publisher_platforms: vec![],
             facebook_positions: vec![],
             instagram_positions: vec![],
+            whatsapp_positions: vec![],
+            user_age_unknown: None,
         };
 
         connector
@@ -2490,6 +2740,8 @@ mod tests {
                             publisher_platforms: vec![],
                             facebook_positions: vec![],
                             instagram_positions: vec![],
+                            whatsapp_positions: vec![],
+                            user_age_unknown: None,
                         },
                         start_time: None,
                         end_time: None,
@@ -2564,6 +2816,9 @@ mod tests {
                         geo_link: None,
                         application_id: None,
                         app_link: None,
+                        instagram_user_id: None,
+                        advantage_plus: false,
+                        whatsapp_identity: None,
                     },
                 },
                 Deadline::from_secs(30),
@@ -2658,6 +2913,9 @@ mod tests {
                         geo_link: None,
                         application_id: None,
                         app_link: None,
+                        instagram_user_id: None,
+                        advantage_plus: false,
+                        whatsapp_identity: None,
                     },
                 },
                 Deadline::from_secs(30),

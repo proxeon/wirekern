@@ -364,6 +364,14 @@ enum AdsCmd {
         application_id: Option<String>,
         #[arg(long)]
         app_link: Option<String>,
+        #[arg(long)]
+        instagram_user_id: Option<String>,
+        #[arg(long)]
+        advantage_plus: bool,
+        #[arg(long)]
+        whatsapp_identity_id: Option<String>,
+        #[arg(long)]
+        whatsapp_phone_number: Option<String>,
     },
     /// Create a Page-backed video creative. The video must already be uploaded.
     CreateVideoCreative {
@@ -468,6 +476,11 @@ enum AdsCmd {
         facebook_positions: Vec<String>,
         #[arg(long = "instagram-position")]
         instagram_positions: Vec<String>,
+        #[arg(long = "whatsapp-position")]
+        whatsapp_positions: Vec<String>,
+        /// Required when WhatsApp Status is selected (v26.0 unknown-age default).
+        #[arg(long)]
+        user_age_unknown: Option<bool>,
         /// Page promoted object (`page_id`). XOR with pixel/app/product-set.
         #[arg(long)]
         promoted_page_id: Option<String>,
@@ -1979,6 +1992,10 @@ async fn dispatch(
             geo_link,
             application_id,
             app_link,
+            instagram_user_id,
+            advantage_plus,
+            whatsapp_identity_id,
+            whatsapp_phone_number,
         }) => {
             let request = build_link_ad_creative_request(
                 &site,
@@ -1994,6 +2011,14 @@ async fn dispatch(
                     geo_link,
                     application_id,
                     app_link,
+                    instagram_user_id,
+                    advantage_plus,
+                    whatsapp_identity: whatsapp_identity_id.map(|identity_id| {
+                        postkit::WhatsAppStatusIdentity {
+                            identity_id,
+                            phone_number: whatsapp_phone_number,
+                        }
+                    }),
                 },
             )
             .map_err(|e| fail(&e, json))?;
@@ -2098,6 +2123,8 @@ async fn dispatch(
             publisher_platforms,
             facebook_positions,
             instagram_positions,
+            whatsapp_positions,
+            user_age_unknown,
             promoted_page_id,
             promoted_pixel_id,
             custom_event_type,
@@ -2126,6 +2153,8 @@ async fn dispatch(
                     publisher_platforms,
                     facebook_positions,
                     instagram_positions,
+                    whatsapp_positions,
+                    user_age_unknown,
                     promoted_object: build_promoted_object(
                         &site,
                         promoted_page_id,
@@ -3163,6 +3192,9 @@ mod tests {
                 geo_link: None,
                 application_id: None,
                 app_link: None,
+                instagram_user_id: None,
+                advantage_plus: false,
+                whatsapp_identity: None,
             },
         )
         .unwrap();
@@ -3182,6 +3214,9 @@ mod tests {
                 geo_link: None,
                 application_id: None,
                 app_link: None,
+                instagram_user_id: None,
+                advantage_plus: false,
+                whatsapp_identity: None,
             },
         )
         .unwrap();
@@ -3201,6 +3236,9 @@ mod tests {
                 geo_link: None,
                 application_id: None,
                 app_link: None,
+                instagram_user_id: None,
+                advantage_plus: false,
+                whatsapp_identity: None,
             },
         )
         .unwrap_err();
@@ -3221,6 +3259,9 @@ mod tests {
                 geo_link: None,
                 application_id: None,
                 app_link: None,
+                instagram_user_id: None,
+                advantage_plus: false,
+                whatsapp_identity: None,
             },
         )
         .unwrap_err();
@@ -3416,6 +3457,8 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                whatsapp_positions: vec![],
+                user_age_unknown: None,
                 promoted_object: None,
             },
         )
@@ -3443,6 +3486,8 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                whatsapp_positions: vec![],
+                user_age_unknown: None,
                 promoted_object: None,
             },
         );
@@ -3470,6 +3515,8 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                whatsapp_positions: vec![],
+                user_age_unknown: None,
                 promoted_object: None,
             },
         )
@@ -3504,6 +3551,8 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                whatsapp_positions: vec![],
+                user_age_unknown: None,
                 promoted_object: None,
             },
         );
@@ -3531,6 +3580,8 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                whatsapp_positions: vec![],
+                user_age_unknown: None,
                 promoted_object: None,
             },
         )
@@ -3564,6 +3615,8 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                whatsapp_positions: vec![],
+                user_age_unknown: None,
                 promoted_object: Some(postkit::PromotedObject::Pixel {
                     pixel_id: "789".into(),
                     custom_event_type: postkit::CustomEventType::Purchase,
@@ -3613,6 +3666,8 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                whatsapp_positions: vec![],
+                user_age_unknown: None,
                 promoted_object: Some(postkit::PromotedObject::Pixel {
                     pixel_id: "789".into(),
                     custom_event_type: postkit::CustomEventType::Purchase,
@@ -3664,6 +3719,8 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                whatsapp_positions: vec![],
+                user_age_unknown: None,
                 promoted_object: None,
             },
         );

@@ -617,6 +617,12 @@ pub struct AdTargeting {
     pub facebook_positions: Vec<FacebookPosition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instagram_positions: Vec<InstagramPosition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub whatsapp_positions: Vec<WhatsAppPosition>,
+    /// Explicit when WhatsApp Status is selected so Meta's default `true`
+    /// cannot silently expand to unknown-age users (v26.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_age_unknown: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -632,6 +638,7 @@ pub enum PublisherPlatform {
     Instagram,
     AudienceNetwork,
     Messenger,
+    Whatsapp,
 }
 
 impl PublisherPlatform {
@@ -641,6 +648,7 @@ impl PublisherPlatform {
             Self::Instagram => "instagram",
             Self::AudienceNetwork => "audience_network",
             Self::Messenger => "messenger",
+            Self::Whatsapp => "whatsapp",
         }
     }
 }
@@ -653,6 +661,7 @@ impl FromStr for PublisherPlatform {
             "instagram" => Ok(Self::Instagram),
             "audience_network" => Ok(Self::AudienceNetwork),
             "messenger" => Ok(Self::Messenger),
+            "whatsapp" => Ok(Self::Whatsapp),
             other => Err(format!("unknown_publisher_platform:{other}")),
         }
     }
@@ -718,6 +727,30 @@ impl FromStr for InstagramPosition {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WhatsAppPosition {
+    Status,
+}
+
+impl WhatsAppPosition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+        }
+    }
+}
+
+impl FromStr for WhatsAppPosition {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "status" => Ok(Self::Status),
+            other => Err(format!("unknown_whatsapp_position:{other}")),
+        }
+    }
+}
+
 impl AdTargeting {
     pub fn validate(&self) -> Result<(), String> {
         if self.geo_locations.countries.is_empty() {
@@ -756,6 +789,18 @@ impl AdTargeting {
                 .contains(&PublisherPlatform::Instagram);
         if !self.instagram_positions.is_empty() && !has_instagram {
             return Err("instagram_positions_without_instagram_platform".into());
+        }
+        let has_whatsapp = self
+            .publisher_platforms
+            .contains(&PublisherPlatform::Whatsapp);
+        if !self.whatsapp_positions.is_empty() && !has_whatsapp {
+            return Err("whatsapp_positions_without_whatsapp_platform".into());
+        }
+        if has_whatsapp
+            && self.whatsapp_positions.contains(&WhatsAppPosition::Status)
+            && self.user_age_unknown.is_none()
+        {
+            return Err("whatsapp_status_requires_user_age_unknown".into());
         }
         Ok(())
     }
@@ -1160,6 +1205,12 @@ pub struct VideoAdCreative {
     pub application_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instagram_user_id: Option<String>,
+    #[serde(default)]
+    pub advantage_plus: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whatsapp_identity: Option<WhatsAppStatusIdentity>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1189,7 +1240,176 @@ impl CreateVideoAdCreativeRequest {
             geo_link: self.creative.geo_link.clone(),
             application_id: self.creative.application_id.clone(),
             app_link: self.creative.app_link.clone(),
+            instagram_user_id: self.creative.instagram_user_id.clone(),
+            advantage_plus: self.creative.advantage_plus,
+            whatsapp_identity: self.creative.whatsapp_identity.clone(),
         })?;
+        validate_creative_identity(
+            self.creative.instagram_user_id.as_deref(),
+            self.creative.whatsapp_identity.as_ref(),
+        )?;
+        Ok(())
+    }
+}
+
+/// One carousel card. Meta allows 2–10; 3+ is recommended.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CarouselCard {
+    pub image_hash: String,
+    pub link: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CarouselAdCreative {
+    pub name: String,
+    pub page_id: String,
+    pub message: String,
+    pub call_to_action: LinkCallToAction,
+    pub cards: Vec<CarouselCard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instagram_user_id: Option<String>,
+    #[serde(default)]
+    pub advantage_plus: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whatsapp_identity: Option<WhatsAppStatusIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CatalogAdCreative {
+    pub name: String,
+    pub page_id: String,
+    pub product_set_id: String,
+    pub link: String,
+    pub message: String,
+    pub call_to_action: LinkCallToAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instagram_user_id: Option<String>,
+    #[serde(default)]
+    pub advantage_plus: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whatsapp_identity: Option<WhatsAppStatusIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LeadFormAdCreative {
+    pub name: String,
+    pub page_id: String,
+    pub image_hash: String,
+    pub message: String,
+    pub headline: String,
+    pub destination_url: String,
+    pub lead_gen_form_id: String,
+    pub call_to_action: LinkCallToAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instagram_user_id: Option<String>,
+    #[serde(default)]
+    pub advantage_plus: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whatsapp_identity: Option<WhatsAppStatusIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AppInstallAdCreative {
+    pub name: String,
+    pub page_id: String,
+    pub image_hash: String,
+    pub message: String,
+    pub application_id: String,
+    pub object_store_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instagram_user_id: Option<String>,
+    #[serde(default)]
+    pub advantage_plus: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whatsapp_identity: Option<WhatsAppStatusIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AdCreativeKind {
+    Carousel(CarouselAdCreative),
+    Catalog(CatalogAdCreative),
+    LeadForm(LeadFormAdCreative),
+    AppInstall(AppInstallAdCreative),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CreateAdCreativeRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    pub kind: AdCreativeKind,
+}
+
+impl CreateAdCreativeRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_account(self.account.as_deref())?;
+        match &self.kind {
+            AdCreativeKind::Carousel(c) => {
+                require_name(&c.name)?;
+                require_numeric_id("page_id", &c.page_id)?;
+                require_text("message", &c.message)?;
+                if c.cards.len() < 2 || c.cards.len() > 10 {
+                    return Err("carousel_cards_out_of_range".into());
+                }
+                for (i, card) in c.cards.iter().enumerate() {
+                    require_text("image_hash", &card.image_hash)
+                        .map_err(|_| format!("missing_card_image_hash:{i}"))?;
+                    require_https_url("link", &card.link)?;
+                    require_text("name", &card.name)
+                        .map_err(|_| format!("missing_card_name:{i}"))?;
+                }
+                validate_creative_identity(
+                    c.instagram_user_id.as_deref(),
+                    c.whatsapp_identity.as_ref(),
+                )?;
+            }
+            AdCreativeKind::Catalog(c) => {
+                require_name(&c.name)?;
+                require_numeric_id("page_id", &c.page_id)?;
+                require_numeric_id("product_set_id", &c.product_set_id)?;
+                require_https_url("link", &c.link)?;
+                require_text("message", &c.message)?;
+                validate_creative_identity(
+                    c.instagram_user_id.as_deref(),
+                    c.whatsapp_identity.as_ref(),
+                )?;
+            }
+            AdCreativeKind::LeadForm(c) => {
+                require_name(&c.name)?;
+                require_numeric_id("page_id", &c.page_id)?;
+                require_text("image_hash", &c.image_hash)?;
+                require_text("message", &c.message)?;
+                require_text("headline", &c.headline)?;
+                require_https_url("destination_url", &c.destination_url)?;
+                require_numeric_id("lead_gen_form_id", &c.lead_gen_form_id)?;
+                if !matches!(
+                    c.call_to_action,
+                    LinkCallToAction::SignUp
+                        | LinkCallToAction::ApplyNow
+                        | LinkCallToAction::LearnMore
+                        | LinkCallToAction::Download
+                ) {
+                    return Err("lead_form_cta_unsupported".into());
+                }
+                validate_creative_identity(
+                    c.instagram_user_id.as_deref(),
+                    c.whatsapp_identity.as_ref(),
+                )?;
+            }
+            AdCreativeKind::AppInstall(c) => {
+                require_name(&c.name)?;
+                require_numeric_id("page_id", &c.page_id)?;
+                require_text("image_hash", &c.image_hash)?;
+                require_text("message", &c.message)?;
+                require_numeric_id("application_id", &c.application_id)?;
+                require_https_url("object_store_url", &c.object_store_url)?;
+                validate_creative_identity(
+                    c.instagram_user_id.as_deref(),
+                    c.whatsapp_identity.as_ref(),
+                )?;
+            }
+        }
         Ok(())
     }
 }
@@ -1215,6 +1435,37 @@ pub struct LinkAdCreative {
     pub application_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_link: Option<String>,
+    /// Instagram professional account that the ad posts as. Numeric Graph ID,
+    /// not the deprecated `instagram_actor_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instagram_user_id: Option<String>,
+    /// `degrees_of_freedom_spec.standard_enhancements` OPT_IN.
+    #[serde(default)]
+    pub advantage_plus: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whatsapp_identity: Option<WhatsAppStatusIdentity>,
+}
+
+/// Third-party WhatsApp Status creatives must name the identity (v26.0).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppStatusIdentity {
+    pub identity_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_number: Option<String>,
+}
+
+impl WhatsAppStatusIdentity {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("wamo_whatsapp_identity_id", &self.identity_id)
+    }
+
+    pub fn meta_json(&self) -> serde_json::Value {
+        let mut obj = serde_json::json!({ "wamo_whatsapp_identity_id": self.identity_id });
+        if let Some(phone) = &self.phone_number {
+            obj["whatsapp_phone_number"] = serde_json::Value::String(phone.clone());
+        }
+        obj
+    }
 }
 
 /// Account override plus one image-link creative. Unlike a campaign/ad set/ad
@@ -1237,8 +1488,25 @@ impl CreateLinkAdCreativeRequest {
         require_text("headline", &self.creative.headline)?;
         require_https_url("destination_url", &self.creative.destination_url)?;
         validate_link_cta_values(&self.creative)?;
+        validate_creative_identity(
+            self.creative.instagram_user_id.as_deref(),
+            self.creative.whatsapp_identity.as_ref(),
+        )?;
         Ok(())
     }
+}
+
+pub fn validate_creative_identity(
+    instagram_user_id: Option<&str>,
+    whatsapp_identity: Option<&WhatsAppStatusIdentity>,
+) -> Result<(), String> {
+    if let Some(id) = instagram_user_id {
+        require_numeric_id("instagram_user_id", id)?;
+    }
+    if let Some(ident) = whatsapp_identity {
+        ident.validate()?;
+    }
+    Ok(())
 }
 
 /// Extra CTA value fields must match the type. Meta's call-to-action value
@@ -1919,6 +2187,9 @@ mod tests {
                 geo_link: None,
                 application_id: None,
                 app_link: None,
+                instagram_user_id: None,
+                advantage_plus: false,
+                whatsapp_identity: None,
             },
         };
         assert!(valid_creative.validate().is_ok());
@@ -2021,6 +2292,9 @@ mod tests {
                 geo_link: None,
                 application_id: None,
                 app_link: None,
+                instagram_user_id: None,
+                advantage_plus: false,
+                whatsapp_identity: None,
             },
         };
         assert!(video.validate().is_ok());
@@ -2051,6 +2325,57 @@ mod tests {
     }
 
     #[test]
+    fn extra_creative_formats_and_whatsapp_status_validate() {
+        let card = |n: &str| CarouselCard {
+            image_hash: format!("h{n}"),
+            link: format!("https://example.com/{n}"),
+            name: format!("Card {n}"),
+        };
+        let too_few = CreateAdCreativeRequest {
+            account: None,
+            kind: AdCreativeKind::Carousel(CarouselAdCreative {
+                name: "C".into(),
+                page_id: "1".into(),
+                message: "m".into(),
+                call_to_action: LinkCallToAction::ShopNow,
+                cards: vec![card("1")],
+                instagram_user_id: None,
+                advantage_plus: false,
+                whatsapp_identity: None,
+            }),
+        };
+        assert_eq!(
+            too_few.validate().unwrap_err(),
+            "carousel_cards_out_of_range"
+        );
+        let ok = CreateAdCreativeRequest {
+            account: None,
+            kind: AdCreativeKind::Carousel(CarouselAdCreative {
+                cards: vec![card("1"), card("2")],
+                ..match too_few.kind {
+                    AdCreativeKind::Carousel(c) => c,
+                    _ => unreachable!(),
+                }
+            }),
+        };
+        assert!(ok.validate().is_ok());
+
+        let mut targeting = sample_targeting();
+        targeting.whatsapp_positions = vec![WhatsAppPosition::Status];
+        assert_eq!(
+            targeting.validate().unwrap_err(),
+            "whatsapp_positions_without_whatsapp_platform"
+        );
+        targeting.publisher_platforms = vec![PublisherPlatform::Whatsapp];
+        assert_eq!(
+            targeting.validate().unwrap_err(),
+            "whatsapp_status_requires_user_age_unknown"
+        );
+        targeting.user_age_unknown = Some(false);
+        assert!(targeting.validate().is_ok());
+    }
+
+    #[test]
     fn paused_create_validation_rejects_invalid_shapes() {
         let bad_budget = CreatePausedAdRequest {
             account: Some("123".into()),
@@ -2073,6 +2398,8 @@ mod tests {
                     publisher_platforms: vec![],
                     facebook_positions: vec![],
                     instagram_positions: vec![],
+                    whatsapp_positions: vec![],
+                    user_age_unknown: None,
                 },
                 start_time: None,
                 end_time: None,
@@ -2103,6 +2430,8 @@ mod tests {
                     publisher_platforms: vec![],
                     facebook_positions: vec![],
                     instagram_positions: vec![],
+                    whatsapp_positions: vec![],
+                    user_age_unknown: None,
                 },
                 start_time: None,
                 end_time: None,
@@ -2123,6 +2452,8 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                whatsapp_positions: vec![],
+                user_age_unknown: None,
             }
             .validate()
             .unwrap_err(),
@@ -2140,6 +2471,8 @@ mod tests {
             publisher_platforms: vec![],
             facebook_positions: vec![],
             instagram_positions: vec![],
+            whatsapp_positions: vec![],
+            user_age_unknown: None,
         }
     }
 

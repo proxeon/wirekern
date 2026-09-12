@@ -512,6 +512,9 @@ pub(crate) struct LinkCreativeOptions {
     pub(crate) geo_link: Option<String>,
     pub(crate) application_id: Option<String>,
     pub(crate) app_link: Option<String>,
+    pub(crate) instagram_user_id: Option<String>,
+    pub(crate) advantage_plus: bool,
+    pub(crate) whatsapp_identity: Option<postkit::WhatsAppStatusIdentity>,
 }
 
 pub(crate) fn build_link_ad_creative_request(
@@ -533,6 +536,9 @@ pub(crate) fn build_link_ad_creative_request(
             geo_link: options.geo_link,
             application_id: options.application_id,
             app_link: options.app_link,
+            instagram_user_id: options.instagram_user_id,
+            advantage_plus: options.advantage_plus,
+            whatsapp_identity: options.whatsapp_identity,
         },
     };
     request
@@ -574,6 +580,9 @@ pub(crate) fn build_video_ad_creative_request(
             geo_link: options.geo_link,
             application_id: options.application_id,
             app_link: options.app_link,
+            instagram_user_id: None,
+            advantage_plus: false,
+            whatsapp_identity: None,
         },
     };
     request
@@ -704,6 +713,8 @@ pub(crate) struct PausedAdsetOptions {
     pub(crate) publisher_platforms: Vec<String>,
     pub(crate) facebook_positions: Vec<String>,
     pub(crate) instagram_positions: Vec<String>,
+    pub(crate) whatsapp_positions: Vec<String>,
+    pub(crate) user_age_unknown: Option<bool>,
     pub(crate) promoted_object: Option<postkit::PromotedObject>,
 }
 
@@ -802,6 +813,12 @@ fn build_ad_targeting(options: &PausedAdsetOptions) -> Result<postkit::AdTargeti
         publisher_platforms,
         facebook_positions,
         instagram_positions,
+        whatsapp_positions: options
+            .whatsapp_positions
+            .iter()
+            .map(|p| p.parse())
+            .collect::<Result<Vec<_>, _>>()?,
+        user_age_unknown: options.user_age_unknown,
     })
 }
 

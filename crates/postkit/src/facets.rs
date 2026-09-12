@@ -7,10 +7,11 @@
 //! trait by accident.
 
 use crate::ads::{
-    AdReviewStatus, AdReviewStatusRequest, AdsTokenInspection, CreateLinkAdCreativeRequest,
-    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
-    AdVideoStatus, AdVideoStatusRequest, CreateVideoAdCreativeRequest, MarketingApiAccessTier,
-    UploadAdImageRequest, UploadAdVideoRequest, UploadedAdImage, UploadedAdVideo,
+    AdReviewStatus, AdReviewStatusRequest, AdVideoStatus, AdVideoStatusRequest, AdsTokenInspection,
+    CreateAdCreativeRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
+    CreateVideoAdCreativeRequest, CreatedAd, CreatedAdCreative, CreativePreview,
+    CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest, UploadAdVideoRequest,
+    UploadedAdImage, UploadedAdVideo,
 };
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsJob, InsightsQuery, InsightsReply};
@@ -151,6 +152,14 @@ pub trait AdsManager: Send + Sync {
         app: &AppConfig,
         creds: &AccountCreds,
         request: &CreateVideoAdCreativeRequest,
+        deadline: Deadline,
+    ) -> Result<CreatedAdCreative, Error>;
+
+    async fn create_ad_creative(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        request: &CreateAdCreativeRequest,
         deadline: Deadline,
     ) -> Result<CreatedAdCreative, Error>;
 
