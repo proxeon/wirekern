@@ -627,6 +627,14 @@ async fn create_paused_ad(
                     serde_json::json!({ "roas_average_floor": floor }).to_string(),
                 ));
             }
+            // Ad-set schedule is Meta's delivery window, not a Postkit
+            // calendar. Lifetime budget requires end_time (checked locally).
+            if let Some(start) = &adset.start_time {
+                fields.push(("start_time", start.clone()));
+            }
+            if let Some(end) = &adset.end_time {
+                fields.push(("end_time", end.clone()));
+            }
             ("adsets", crate::ads::AdEntity::Adset, fields)
         }
         PausedAdCreate::Ad(ad) => (
@@ -2061,6 +2069,8 @@ mod tests {
                             facebook_positions: vec![],
                             instagram_positions: vec![],
                         },
+                        start_time: None,
+                        end_time: None,
                     }),
                 },
                 Deadline::from_secs(30),
@@ -2107,6 +2117,7 @@ mod tests {
             when.method(POST)
                 .path("/v26.0/act_123/adsets")
                 .body_contains("lifetime_budget=20000")
+                .body_contains("end_time=2026-11-21T14%3A26%3A09-08%3A00")
                 .body_contains("status=PAUSED");
             then.status(200).json_body(json!({ "id": "200" }));
         });
@@ -2158,6 +2169,8 @@ mod tests {
                             facebook_positions: vec![],
                             instagram_positions: vec![],
                         },
+                        start_time: Some("2026-11-11T14:26:09-08:00".into()),
+                        end_time: Some("2026-11-21T14:26:09-08:00".into()),
                     }),
                 },
                 Deadline::from_secs(30),
@@ -2219,6 +2232,8 @@ mod tests {
                         billing_event: crate::ads::BillingEvent::Impressions,
                         optimization_goal: crate::ads::OptimizationGoal::Reach,
                         targeting: targeting.clone(),
+                        start_time: None,
+                        end_time: None,
                     }),
                 },
                 Deadline::from_secs(30),
@@ -2242,6 +2257,8 @@ mod tests {
                         billing_event: crate::ads::BillingEvent::Impressions,
                         optimization_goal: crate::ads::OptimizationGoal::Reach,
                         targeting,
+                        start_time: None,
+                        end_time: None,
                     }),
                 },
                 Deadline::from_secs(30),

@@ -59,7 +59,7 @@ no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
 - [x] Typed targeting (geo, age, placements) instead of a pass-through JSON object
 - [x] Lifetime budget, campaign-level budget, ad-set budget sharing
 - [x] Other bid strategies (`COST_CAP`, bid cap, min ROAS) — each needs its constraint fields first
-- [ ] Schedule (`start_time` / `end_time`) as typed fields
+- [x] Schedule (`start_time` / `end_time`) as typed fields
 - [ ] Promoted object (pixel, app, Page, catalog) as a typed field
 
 ## Assets, creatives, previews

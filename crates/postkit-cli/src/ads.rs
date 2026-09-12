@@ -506,6 +506,8 @@ pub(crate) fn build_paused_adset_request(
             billing_event,
             optimization_goal,
             targeting,
+            start_time: options.start_time,
+            end_time: options.end_time,
         }),
     };
     request
@@ -526,6 +528,8 @@ pub(crate) struct PausedAdsetOptions {
     pub(crate) bid_strategy: String,
     pub(crate) bid_amount: Option<u64>,
     pub(crate) roas_average_floor: Option<u64>,
+    pub(crate) start_time: Option<String>,
+    pub(crate) end_time: Option<String>,
     pub(crate) billing_event: String,
     pub(crate) optimization_goal: String,
     pub(crate) countries: Vec<String>,

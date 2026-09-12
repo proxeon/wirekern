@@ -2106,6 +2106,8 @@ mod draft_run {
                                 billing_event: manifest.adset.billing_event,
                                 optimization_goal: manifest.adset.optimization_goal,
                                 targeting: manifest.adset.targeting.clone(),
+                                start_time: manifest.adset.start_time.clone(),
+                                end_time: manifest.adset.end_time.clone(),
                             }),
                         };
                         self.create_paused_ad(key, request, deadline)

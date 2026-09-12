@@ -384,6 +384,12 @@ enum AdsCmd {
         /// Required for min-ROAS. Meta scale: 10000 = 1.0.
         #[arg(long)]
         roas_average_floor: Option<u64>,
+        /// RFC3339 start. Required pairing is local: end after start.
+        #[arg(long)]
+        start_time: Option<String>,
+        /// RFC3339 end. Required with `--lifetime-budget`.
+        #[arg(long)]
+        end_time: Option<String>,
         /// impressions | link_clicks
         #[arg(long)]
         billing_event: String,
@@ -1924,6 +1930,8 @@ async fn dispatch(
             bid_strategy,
             bid_amount,
             roas_average_floor,
+            start_time,
+            end_time,
             billing_event,
             optimization_goal,
             countries,
@@ -1944,6 +1952,8 @@ async fn dispatch(
                     bid_strategy,
                     bid_amount,
                     roas_average_floor,
+                    start_time,
+                    end_time,
                     billing_event,
                     optimization_goal,
                     countries,
@@ -3165,6 +3175,8 @@ mod tests {
                 bid_strategy: "lowest_cost_without_cap".into(),
                 bid_amount: None,
                 roas_average_floor: None,
+                start_time: None,
+                end_time: None,
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 countries: vec!["MY".into()],
@@ -3178,6 +3190,32 @@ mod tests {
         .unwrap();
         assert!(matches!(adset.create, PausedAdCreate::Adset(_)));
 
+        let lifetime_open = build_paused_adset_request(
+            "meta_ads",
+            PausedAdsetOptions {
+                ad_account: None,
+                name: "Lifetime set".into(),
+                campaign_id: "100".into(),
+                daily_budget: None,
+                lifetime_budget: Some(20_000),
+                bid_strategy: "lowest_cost_without_cap".into(),
+                bid_amount: None,
+                roas_average_floor: None,
+                start_time: None,
+                end_time: None,
+                billing_event: "IMPRESSIONS".into(),
+                optimization_goal: "REACH".into(),
+                countries: vec!["MY".into()],
+                age_min: None,
+                age_max: None,
+                publisher_platforms: vec![],
+                facebook_positions: vec![],
+                instagram_positions: vec![],
+            },
+        );
+        assert!(
+            matches!(lifetime_open, Err(Error::InvalidQuery { reason, .. }) if reason == "lifetime_budget_requires_end_time")
+        );
         let lifetime = build_paused_adset_request(
             "meta_ads",
             PausedAdsetOptions {
@@ -3189,6 +3227,8 @@ mod tests {
                 bid_strategy: "lowest_cost_without_cap".into(),
                 bid_amount: None,
                 roas_average_floor: None,
+                start_time: Some("2026-11-11T14:26:09-08:00".into()),
+                end_time: Some("2026-11-21T14:26:09-08:00".into()),
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 countries: vec!["MY".into()],
@@ -3220,6 +3260,8 @@ mod tests {
                 bid_strategy: "cost_cap".into(),
                 bid_amount: None,
                 roas_average_floor: None,
+                start_time: None,
+                end_time: None,
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 countries: vec!["MY".into()],
@@ -3244,6 +3286,8 @@ mod tests {
                 bid_strategy: "cost_cap".into(),
                 bid_amount: Some(200),
                 roas_average_floor: None,
+                start_time: None,
+                end_time: None,
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 countries: vec!["MY".into()],
@@ -3274,6 +3318,8 @@ mod tests {
                 bid_strategy: "lowest_cost_with_min_roas".into(),
                 bid_amount: None,
                 roas_average_floor: Some(10_000),
+                start_time: None,
+                end_time: None,
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 countries: vec!["MY".into()],
@@ -3320,6 +3366,8 @@ mod tests {
                 bid_strategy: "lowest_cost_without_cap".into(),
                 bid_amount: None,
                 roas_average_floor: None,
+                start_time: None,
+                end_time: None,
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 countries: vec![],

@@ -142,6 +142,66 @@ impl BidStrategy {
     }
 }
 
+/// Graph datetime: RFC3339, or Meta's documented variants (space instead of
+/// `T`, offset without a colon). Returns a UTC instant so `end` > `start`
+/// can be checked without sending a typo to Marketing API.
+pub fn parse_adset_datetime(field: &str, value: &str) -> Result<time::OffsetDateTime, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("missing_{field}"));
+    }
+    let normalized = normalize_graph_datetime(trimmed);
+    time::OffsetDateTime::parse(&normalized, &time::format_description::well_known::Rfc3339)
+        .map_err(|_| format!("bad_{field}:{value}"))
+}
+
+/// `2025-11-11T14:25:17-0800` → `2025-11-11T14:25:17-08:00`.
+fn normalize_graph_datetime(raw: &str) -> String {
+    let with_t = raw.replacen(' ', "T", 1);
+    let bytes = with_t.as_bytes();
+    let n = bytes.len();
+    if n >= 5 {
+        let sign = bytes[n - 5];
+        if (sign == b'+' || sign == b'-')
+            && bytes[n - 4].is_ascii_digit()
+            && bytes[n - 3].is_ascii_digit()
+            && bytes[n - 2].is_ascii_digit()
+            && bytes[n - 1].is_ascii_digit()
+        {
+            return format!(
+                "{}{}{}:{}",
+                &with_t[..n - 5],
+                sign as char,
+                &with_t[n - 4..n - 2],
+                &with_t[n - 2..]
+            );
+        }
+    }
+    with_t
+}
+
+pub fn validate_adset_schedule(
+    start_time: Option<&str>,
+    end_time: Option<&str>,
+    lifetime_budget: Option<u64>,
+) -> Result<(), String> {
+    if lifetime_budget.is_some() && end_time.is_none() {
+        return Err("lifetime_budget_requires_end_time".into());
+    }
+    let start = start_time
+        .map(|v| parse_adset_datetime("start_time", v))
+        .transpose()?;
+    let end = end_time
+        .map(|v| parse_adset_datetime("end_time", v))
+        .transpose()?;
+    if let (Some(start), Some(end)) = (start, end) {
+        if end <= start {
+            return Err("end_time_not_after_start_time".into());
+        }
+    }
+    Ok(())
+}
+
 /// Cap/floor fields must match the strategy. Meta rejects `bid_amount`
 /// together with `bid_constraints`; we fail the same way locally.
 pub fn validate_bid_constraints(
@@ -633,6 +693,15 @@ pub struct PausedAdset {
     pub billing_event: BillingEvent,
     pub optimization_goal: OptimizationGoal,
     pub targeting: AdTargeting,
+    /// RFC3339 (Meta also accepts a space instead of `T` and `±HHMM` offsets).
+    /// Optional; omitted means Graph starts delivery when the object is later
+    /// activated. Compared locally when `end_time` is also set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<String>,
+    /// Required with `lifetime_budget` (Meta will not accept an open-ended
+    /// lifetime spend). Must be after `start_time` when both are set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<String>,
 }
 
 /// An ad draft references a pre-created Meta creative. Tier B does not try
@@ -806,6 +875,11 @@ impl PausedAdCreate {
                     adset.bid_strategy,
                     adset.bid_amount,
                     adset.roas_average_floor,
+                )?;
+                validate_adset_schedule(
+                    adset.start_time.as_deref(),
+                    adset.end_time.as_deref(),
+                    adset.lifetime_budget,
                 )?;
                 if !billing_event_allowed(adset.optimization_goal, adset.billing_event) {
                     return Err(format!(
@@ -1349,6 +1423,8 @@ mod tests {
                     facebook_positions: vec![],
                     instagram_positions: vec![],
                 },
+                start_time: None,
+                end_time: None,
             }),
         };
         assert_eq!(
@@ -1376,6 +1452,8 @@ mod tests {
                     facebook_positions: vec![],
                     instagram_positions: vec![],
                 },
+                start_time: None,
+                end_time: None,
             }),
         };
         assert_eq!(
@@ -1424,6 +1502,8 @@ mod tests {
             billing_event: BillingEvent::Impressions,
             optimization_goal: OptimizationGoal::Reach,
             targeting: sample_targeting(),
+            start_time: None,
+            end_time: None,
         }
     }
 
@@ -1508,7 +1588,46 @@ mod tests {
                 ..sample_adset()
             }),
         };
-        assert!(lifetime.validate().is_ok());
+        assert_eq!(
+            lifetime.validate().unwrap_err(),
+            "lifetime_budget_requires_end_time"
+        );
+        let lifetime_scheduled = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                daily_budget: None,
+                lifetime_budget: Some(20_000),
+                start_time: Some("2026-11-11T14:26:09-08:00".into()),
+                end_time: Some("2026-11-21T14:26:09-08:00".into()),
+                ..sample_adset()
+            }),
+        };
+        assert!(lifetime_scheduled.validate().is_ok());
+    }
+
+    #[test]
+    fn adset_schedule_is_rfc3339_and_ordered() {
+        assert!(parse_adset_datetime("start_time", "2026-11-11T14:25:17-08:00").is_ok());
+        // Meta curl examples omit the colon in the offset.
+        assert!(parse_adset_datetime("start_time", "2026-11-11T14:25:17-0800").is_ok());
+        assert!(parse_adset_datetime("start_time", "2026-11-11 14:25:17-08:00").is_ok());
+        assert_eq!(
+            parse_adset_datetime("start_time", "next tuesday").unwrap_err(),
+            "bad_start_time:next tuesday"
+        );
+
+        let inverted = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                start_time: Some("2026-11-21T14:26:09-08:00".into()),
+                end_time: Some("2026-11-11T14:26:09-08:00".into()),
+                ..sample_adset()
+            }),
+        };
+        assert_eq!(
+            inverted.validate().unwrap_err(),
+            "end_time_not_after_start_time"
+        );
     }
 
     #[test]

@@ -177,6 +177,8 @@ postkit --deadline 30 ads status meta_ads --entity ad --id <AD_ID> --wait --json
   `lowest_cost_with_bid_cap` / `cost_cap` (need `--bid-amount` in minor units),
   or `lowest_cost_with_min_roas` (needs `--roas-average-floor`; Meta scale
   10000 = 1.0 ROAS). A cap strategy without its constraint fails locally.
+- `--start-time` / `--end-time` are RFC3339 (Meta's `±HHMM` offset is accepted).
+  `--lifetime-budget` requires `--end-time`. When both are set, end must be after start.
 - `--targeting-file` must contain a JSON object. Meta performs the final
   platform-specific targeting validation; postkit refuses malformed local
   data before any HTTP request.

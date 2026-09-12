@@ -103,6 +103,11 @@ pub struct DraftAdset {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifetime_budget: Option<u64>,
     pub bid_strategy: crate::ads::BidStrategy,
+    /// RFC3339. Required with `lifetime_budget`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bid_amount: Option<u64>,
     /// Meta `bid_constraints.roas_average_floor`. 10000 = 1.0 ROAS.
@@ -180,6 +185,11 @@ impl PausedDraftManifest {
             self.adset.bid_strategy,
             self.adset.bid_amount,
             self.adset.roas_average_floor,
+        )?;
+        crate::ads::validate_adset_schedule(
+            self.adset.start_time.as_deref(),
+            self.adset.end_time.as_deref(),
+            self.adset.lifetime_budget,
         )?;
         if !crate::ads::supported_adset_pairing(
             self.campaign.objective,
@@ -954,6 +964,20 @@ mod tests {
             "missing_roas_average_floor"
         );
         manifest.adset.roas_average_floor = Some(10_000);
+        manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn draft_lifetime_budget_requires_end_time() {
+        let mut manifest = example_manifest();
+        manifest.adset.daily_budget = None;
+        manifest.adset.lifetime_budget = Some(20_000);
+        assert_eq!(
+            manifest.validate().unwrap_err(),
+            "lifetime_budget_requires_end_time"
+        );
+        manifest.adset.start_time = Some("2026-11-11T14:26:09-08:00".into());
+        manifest.adset.end_time = Some("2026-11-21T14:26:09-08:00".into());
         manifest.validate().unwrap();
     }
 
