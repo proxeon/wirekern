@@ -493,7 +493,10 @@ impl WhatsAppLedger for FileWhatsAppLedger {
         if at <= prev {
             return Ok(());
         }
-        write_private(&path, &serde_json::to_vec(&serde_json::json!({ "at": at }))?)?;
+        write_private(
+            &path,
+            &serde_json::to_vec(&serde_json::json!({ "at": at }))?,
+        )?;
         Ok(())
     }
 
@@ -766,7 +769,10 @@ mod tests {
             Some(DeliveryStatusKind::Read)
         );
         assert!(customer_window_open(now_secs() - 60, now_secs()));
-        assert!(!customer_window_open(now_secs() - CUSTOMER_WINDOW_SECS, now_secs()));
+        assert!(!customer_window_open(
+            now_secs() - CUSTOMER_WINDOW_SECS,
+            now_secs()
+        ));
     }
 
     #[test]

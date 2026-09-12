@@ -18,9 +18,9 @@ use crate::error::Error;
 #[cfg(feature = "whatsapp-cloud")]
 use crate::facets::WhatsAppSender;
 use crate::facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
-use crate::insights::{
-    AdAccountsReply, InsightsJob, InsightsJobStatus, InsightsJobWait, InsightsQuery, InsightsReply,
-};
+use crate::insights::{AdAccountsReply, InsightsJob, InsightsQuery, InsightsReply};
+#[cfg(feature = "meta-ads")]
+use crate::insights::{InsightsJobStatus, InsightsJobWait};
 use crate::media::{MediaQuery, MediaReply};
 use crate::pages::PagesReply;
 use crate::policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};

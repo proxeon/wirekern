@@ -62,6 +62,8 @@ struct MockPub {
     review_status_reads: AtomicUsize,
     page_reads: AtomicUsize,
     media_reads: AtomicUsize,
+    inspect_daily_budget: Option<String>,
+    inspect_lifetime_budget: Option<String>,
     #[cfg(feature = "whatsapp-cloud")]
     whatsapp_sends: AtomicUsize,
     #[cfg(feature = "whatsapp-cloud")]
@@ -92,6 +94,8 @@ impl MockPub {
             review_status_reads: AtomicUsize::new(0),
             page_reads: AtomicUsize::new(0),
             media_reads: AtomicUsize::new(0),
+            inspect_daily_budget: Some("500".into()),
+            inspect_lifetime_budget: Some("10000".into()),
             #[cfg(feature = "whatsapp-cloud")]
             whatsapp_sends: AtomicUsize::new(0),
             #[cfg(feature = "whatsapp-cloud")]
@@ -171,6 +175,26 @@ impl MockPub {
                 Capability::ReadAdsInventory,
                 Capability::ManageAdsLifecycle,
             ],
+            // Daily and lifetime budgets are mutually exclusive on a real
+            // delivery object. Keep lifecycle fixtures coherent so a test
+            // never has to weaken the confirmation request to match a fake
+            // Graph response.
+            inspect_daily_budget: Some("500".into()),
+            inspect_lifetime_budget: None,
+            ..Self::text(site)
+        }
+    }
+
+    /// A separate coherent lifetime-budget object for confirmation tests.
+    fn ads_lifecycle_with_lifetime_budget(site: &str) -> Self {
+        Self {
+            caps: vec![
+                Capability::ReadAdReviewStatus,
+                Capability::ReadAdsInventory,
+                Capability::ManageAdsLifecycle,
+            ],
+            inspect_daily_budget: None,
+            inspect_lifetime_budget: Some("10000".into()),
             ..Self::text(site)
         }
     }
@@ -567,8 +591,8 @@ impl AdsManager for MockPub {
             configured_status: Some("PAUSED".into()),
             effective_status: Some("PAUSED".into()),
             status: None,
-            daily_budget: Some("500".into()),
-            lifetime_budget: Some("10000".into()),
+            daily_budget: self.inspect_daily_budget.clone(),
+            lifetime_budget: self.inspect_lifetime_budget.clone(),
             bid_strategy: Some("LOWEST_COST_WITHOUT_CAP".into()),
             bid_amount: None,
             roas_average_floor: None,
@@ -2829,6 +2853,27 @@ async fn client_activate_ad_policy_preflight_and_opt_in() {
         .unwrap();
     let allowed = Client::new(registry, vault, apps)
         .with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::Activate)));
+    let (lifetime_client, lifetime_key) =
+        setup(MockPub::ads_lifecycle_with_lifetime_budget("meta_ads"));
+    let lifetime_client =
+        lifetime_client.with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::Activate)));
+    let err = lifetime_client
+        .activate_ad(
+            &lifetime_key,
+            AdsActivateRequest {
+                entity: AdEntity::Adset,
+                id: "456".into(),
+                confirm_id: "456".into(),
+                confirm_daily_budget: None,
+                confirm_lifetime_budget: None,
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidQuery { reason, .. } if reason == "confirm_lifetime_budget_mismatch")
+    );
     let outcome = allowed
         .activate_ad(&key, activate_request(), Deadline::from_secs(30))
         .await
@@ -3052,7 +3097,9 @@ async fn client_typed_edits_require_policy_and_guards() {
         new_lifetime_budget: 11000,
         max_change_ratio: 0.2,
     };
-    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    // Lifetime edits must read a coherent lifetime-budget object, not the
+    // daily-budget fixture used by the neighbouring edit tests.
+    let (client, key) = setup(MockPub::ads_lifecycle_with_lifetime_budget("meta_ads"));
     let allowed =
         client.with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::UpdateBudget)));
     let outcome = allowed

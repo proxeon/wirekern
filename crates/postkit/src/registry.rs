@@ -1,8 +1,8 @@
+use crate::facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 #[cfg(feature = "whatsapp-cloud")]
 use crate::facets::{
     WhatsAppAccount, WhatsAppAssets, WhatsAppFlows, WhatsAppSender, WhatsAppTemplates,
 };
-use crate::facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 use crate::publisher::Publisher;
 use crate::types::{Capability, Site};
 use std::collections::HashMap;

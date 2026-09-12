@@ -46,7 +46,44 @@ struct Cli {
     #[arg(long, global = true, default_value = "default")]
     account: String,
     #[command(subcommand)]
-    command: Commands,
+    // The command grammar has intentionally grown large (Ads and WhatsApp
+    // carry many closed, typed subcommands). Keep the selected variant out
+    // of the top-level CLI value's stack footprint.
+    command: Box<Commands>,
+}
+
+#[cfg(test)]
+impl Cli {
+    /// Rust's test harness gives each worker a much smaller stack than the
+    /// normal `postkit` process. Clap builds a broad command tree while
+    /// parsing, so run parser assertions on an ordinary 8 MiB stack instead
+    /// of making individual tests depend on `RUST_MIN_STACK` in CI.
+    fn try_parse_from<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T> + Send + 'static,
+        T: Into<std::ffi::OsString> + Clone + Send + 'static,
+    {
+        std::thread::Builder::new()
+            .name("postkit-cli-parse-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || <Self as Parser>::try_parse_from(args))
+            .expect("start parser test worker")
+            .join()
+            .expect("parser test worker must not panic")
+    }
+
+    /// `CommandFactory::command` builds the same broad Clap tree as parsing.
+    /// Keep help-text assertions on the same main-process-sized stack as the
+    /// parser assertions above, rather than leaving one CI-only overflow.
+    fn command() -> clap::Command {
+        std::thread::Builder::new()
+            .name("postkit-cli-help-test".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(<Self as clap::CommandFactory>::command)
+            .expect("start help test worker")
+            .join()
+            .expect("help test worker must not panic")
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -1237,7 +1274,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
     let account = cli.account.clone();
     let deadline = Deadline::from_secs(cli.deadline);
 
-    match cli.command {
+    match *cli.command {
         Commands::Apps(AppsCmd::Set {
             site,
             client_id,
@@ -3525,7 +3562,6 @@ async fn dispatch(
 mod tests {
     use super::*;
     use crate::app::*;
-    use clap::CommandFactory;
     use postkit::connectors::instagram::MAX_CAROUSEL_IMAGES;
     use postkit::{
         AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewWait, AdsInventoryItem,
@@ -3667,7 +3703,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Auth {
                 system_user: true,
                 token: Some(ref token),
@@ -3676,17 +3712,17 @@ mod tests {
         ));
         let cli = Cli::try_parse_from(["postkit", "ads", "inspect-token", "meta_ads"]).unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Ads(AdsCmd::InspectToken { site }) if site == "meta_ads"
         ));
         let cli = Cli::try_parse_from(["postkit", "ads", "access-tier", "meta_ads"]).unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Ads(AdsCmd::AccessTier { site }) if site == "meta_ads"
         ));
         let cli = Cli::try_parse_from(["postkit", "ads", "accounts", "meta_ads"]).unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Ads(AdsCmd::Accounts { site }) if site == "meta_ads"
         ));
         let cli = Cli::try_parse_from([
@@ -3701,7 +3737,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Ads(AdsCmd::List { site, entity, ad_account })
                 if site == "meta_ads"
                     && entity == "creative"
@@ -3736,7 +3772,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Ads(AdsCmd::Inspect { site, entity, id })
                 if site == "meta_ads" && entity == "adset" && id == "456"
         ));
@@ -3761,7 +3797,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Ads(AdsCmd::Activate {
                 allow_activate: true,
                 confirm_daily_budget: Some(500),
@@ -3796,7 +3832,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Ads(AdsCmd::Pause { entity, id, .. }) if entity == "ad" && id == "700"
         ));
         let bad_id = build_ads_inspect_request("meta_ads", "ad", "ad-1").unwrap_err();
@@ -3809,7 +3845,7 @@ mod tests {
     fn pages_accounts_command_parses_as_a_separate_read_surface() {
         let cli = Cli::try_parse_from(["postkit", "pages", "accounts", "facebook_pages"]).unwrap();
         assert!(
-            matches!(cli.command, Commands::Pages(PagesCmd::Accounts { site }) if site == "facebook_pages")
+            matches!(*cli.command, Commands::Pages(PagesCmd::Accounts { site }) if site == "facebook_pages")
         );
     }
 
@@ -3832,7 +3868,7 @@ mod tests {
         .unwrap();
         assert!(whatsapp_send_allowed(&allowed.command));
         assert!(matches!(
-            allowed.command,
+            *allowed.command,
             Commands::WhatsApp(WhatsAppCmd::Reply { idempotency, .. }) if idempotency == "reply-1"
         ));
 
@@ -3851,7 +3887,7 @@ mod tests {
         .unwrap();
         assert!(whatsapp_send_allowed(&session.command));
         assert!(matches!(
-            session.command,
+            *session.command,
             Commands::WhatsApp(WhatsAppCmd::Text { .. })
         ));
 
@@ -3899,7 +3935,7 @@ mod tests {
         .unwrap();
         assert!(whatsapp_send_allowed(&structured.command));
         assert!(matches!(
-            structured.command,
+            *structured.command,
             Commands::WhatsApp(WhatsAppCmd::Send { sender: Some(sender), .. }) if sender == "marketing"
         ));
     }
@@ -3962,7 +3998,7 @@ mod tests {
         let cli =
             Cli::try_parse_from(["postkit", "media", "list", "instagram", "--limit", "2"]).unwrap();
         assert!(
-            matches!(cli.command, Commands::Media(MediaCmd::List { site, limit }) if site == "instagram" && limit == 2)
+            matches!(*cli.command, Commands::Media(MediaCmd::List { site, limit }) if site == "instagram" && limit == 2)
         );
     }
 
@@ -3973,7 +4009,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Ads(AdsCmd::Status { site, entity, id, wait })
                 if site == "meta_ads" && entity == "ad" && id == "700" && wait
         ));
@@ -4020,7 +4056,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            preview.command,
+            *preview.command,
             Commands::Ads(AdsCmd::PreviewCreative { site, creative_id, ad_format, output })
                 if site == "meta_ads" && creative_id == "500" && ad_format == "desktop_feed_standard" && output == Path::new("preview.html")
         ));
@@ -4077,7 +4113,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            upload.command,
+            *upload.command,
             Commands::Ads(AdsCmd::UploadImage { site, file, .. })
                 if site == "meta_ads" && file.file_name().and_then(|name| name.to_str()) == Some("hero.png")
         ));
@@ -4234,7 +4270,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Ads(AdsCmd::CreateCampaign { site, ad_account: Some(account), .. })
                 if site == "meta_ads" && account == "act_123"
         ));
@@ -4284,7 +4320,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            adset_cli.command,
+            *adset_cli.command,
             Commands::Ads(AdsCmd::CreateAdset { bid_strategy, .. })
                 if bid_strategy == "lowest_cost_without_cap"
         ));
@@ -4778,14 +4814,14 @@ mod tests {
     fn serve_and_keys_commands_parse() {
         let cli = Cli::try_parse_from(["postkit", "serve", "--bind", "127.0.0.1:9000"]).unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Serve { bind: Some(ref b) } if b == "127.0.0.1:9000"
         ));
         let cli = Cli::try_parse_from(["postkit", "mcp"]).unwrap();
-        assert!(matches!(cli.command, Commands::Mcp));
+        assert!(matches!(*cli.command, Commands::Mcp));
         let cli = Cli::try_parse_from(["postkit", "keys", "create", "--name", "n8n"]).unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Keys(KeysCmd::Create { ref name }) if name == "n8n"
         ));
     }
@@ -4794,7 +4830,7 @@ mod tests {
     fn dry_run_flag_parses() {
         let cli = Cli::try_parse_from(["postkit", "post", "threads", "--text", "hi", "--dry-run"])
             .unwrap();
-        match cli.command {
+        match *cli.command {
             Commands::Post { dry_run, .. } => assert!(dry_run),
             other => panic!("{other:?}"),
         }
@@ -4840,7 +4876,6 @@ mod tests {
 
     #[test]
     fn draft_subcommands_parse_with_required_flags() {
-        use clap::Parser as _;
         let cli = Cli::try_parse_from([
             "postkit",
             "ads",
@@ -4853,7 +4888,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Ads(AdsCmd::CreateDraft { ref site, .. }) if site == "meta_ads"
         ));
         let cli = Cli::try_parse_from([
@@ -4870,7 +4905,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Ads(AdsCmd::AdoptDraftStep { ref step, ref id, .. })
                 if step == "adset" && id == "123"
         ));
@@ -4918,7 +4953,8 @@ mod tests {
         let raw = r#"{"version":1,"ad_account":"act_1",
                 "campaign":{"name":"n","objective":"awareness","special_ad_categories":[]},
                 "adset":{"name":"n","daily_budget":100,"bid_strategy":"lowest_cost_without_cap",
-                    "billing_event":"IMPRESSIONS","optimization_goal":"REACH","targeting":{}},
+                    "billing_event":"IMPRESSIONS","optimization_goal":"REACH",
+                    "targeting":{"geo_locations":{"countries":["MY"]}}},
                 "creative":{"name":"n","image_file":"IMGPATH","page_id":"1","message":"m",
                     "headline":"h","destination_url":"https://e.com/x","call_to_action":"learn_more"},
                 "ad":{"name":"n"}}"#
@@ -4963,7 +4999,6 @@ mod tests {
 
     #[test]
     fn image_flags_parse_and_document_the_split() {
-        use clap::Parser as _;
         let cli = Cli::try_parse_from([
             "postkit",
             "post",
@@ -4977,7 +5012,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            cli.command,
+            *cli.command,
             Commands::Post { ref image, ref alt, .. }
                 if image == &["./hero.png"] && alt == "chart"
         ));
@@ -4990,7 +5025,7 @@ mod tests {
             "https://cdn.test/h.png",
         ])
         .unwrap();
-        assert!(matches!(cli.command, Commands::Post { ref text, .. } if text.is_empty()));
+        assert!(matches!(*cli.command, Commands::Post { ref text, .. } if text.is_empty()));
 
         let carousel = Cli::try_parse_from([
             "postkit",
@@ -5005,7 +5040,7 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(
-            carousel.command,
+            *carousel.command,
             Commands::Post { ref image, .. }
                 if image == &["https://cdn.test/one.jpg", "https://cdn.test/two.jpg"]
         ));
