@@ -702,6 +702,215 @@ pub struct PausedAdset {
     /// lifetime spend). Must be after `start_time` when both are set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_time: Option<String>,
+    /// What the ad set promotes. Required for conversion/app/Page/value
+    /// goals; Meta infers conversion specs from this and ignores extras.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_object: Option<PromotedObject>,
+}
+
+/// Standard pixel/app events we will send as `custom_event_type`. Unlisted
+/// Meta names stay out until they have a reviewed pairing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CustomEventType {
+    Purchase,
+    Lead,
+    CompleteRegistration,
+    AddToCart,
+    InitiatedCheckout,
+    AddPaymentInfo,
+    ContentView,
+    Search,
+    Subscribe,
+    Contact,
+    Other,
+}
+
+impl CustomEventType {
+    pub fn meta_value(self) -> &'static str {
+        match self {
+            Self::Purchase => "PURCHASE",
+            Self::Lead => "LEAD",
+            Self::CompleteRegistration => "COMPLETE_REGISTRATION",
+            Self::AddToCart => "ADD_TO_CART",
+            Self::InitiatedCheckout => "INITIATED_CHECKOUT",
+            Self::AddPaymentInfo => "ADD_PAYMENT_INFO",
+            Self::ContentView => "CONTENT_VIEW",
+            Self::Search => "SEARCH",
+            Self::Subscribe => "SUBSCRIBE",
+            Self::Contact => "CONTACT",
+            Self::Other => "OTHER",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Purchase => "purchase",
+            Self::Lead => "lead",
+            Self::CompleteRegistration => "complete_registration",
+            Self::AddToCart => "add_to_cart",
+            Self::InitiatedCheckout => "initiated_checkout",
+            Self::AddPaymentInfo => "add_payment_info",
+            Self::ContentView => "content_view",
+            Self::Search => "search",
+            Self::Subscribe => "subscribe",
+            Self::Contact => "contact",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl FromStr for CustomEventType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "purchase" | "PURCHASE" => Ok(Self::Purchase),
+            "lead" | "LEAD" => Ok(Self::Lead),
+            "complete_registration" | "COMPLETE_REGISTRATION" => Ok(Self::CompleteRegistration),
+            "add_to_cart" | "ADD_TO_CART" => Ok(Self::AddToCart),
+            "initiate_checkout" | "initiated_checkout" | "INITIATED_CHECKOUT" => {
+                Ok(Self::InitiatedCheckout)
+            }
+            "add_payment_info" | "ADD_PAYMENT_INFO" => Ok(Self::AddPaymentInfo),
+            "content_view" | "CONTENT_VIEW" => Ok(Self::ContentView),
+            "search" | "SEARCH" => Ok(Self::Search),
+            "subscribe" | "SUBSCRIBE" => Ok(Self::Subscribe),
+            "contact" | "CONTACT" => Ok(Self::Contact),
+            "other" | "OTHER" => Ok(Self::Other),
+            other => Err(format!("unknown_custom_event_type:{other}")),
+        }
+    }
+}
+
+/// Closed promoted-object shapes from Meta's Ad Promoted Object reference.
+/// Internally tagged so a manifest cannot mix `page_id` with `pixel_id`.
+/// The connector serializes the Meta-facing object (no `kind` key).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PromotedObject {
+    Page {
+        page_id: String,
+    },
+    Pixel {
+        pixel_id: String,
+        custom_event_type: CustomEventType,
+    },
+    App {
+        application_id: String,
+        object_store_url: String,
+    },
+    ProductSet {
+        product_set_id: String,
+        custom_event_type: CustomEventType,
+    },
+}
+
+impl PromotedObject {
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Self::Page { .. } => "page",
+            Self::Pixel { .. } => "pixel",
+            Self::App { .. } => "app",
+            Self::ProductSet { .. } => "product_set",
+        }
+    }
+
+    /// JSON Meta's `promoted_object` field expects (ids + event, no tag).
+    pub fn meta_json(&self) -> serde_json::Value {
+        match self {
+            Self::Page { page_id } => serde_json::json!({ "page_id": page_id }),
+            Self::Pixel {
+                pixel_id,
+                custom_event_type,
+            } => serde_json::json!({
+                "pixel_id": pixel_id,
+                "custom_event_type": custom_event_type.meta_value(),
+            }),
+            Self::App {
+                application_id,
+                object_store_url,
+            } => serde_json::json!({
+                "application_id": application_id,
+                "object_store_url": object_store_url,
+            }),
+            Self::ProductSet {
+                product_set_id,
+                custom_event_type,
+            } => serde_json::json!({
+                "product_set_id": product_set_id,
+                "custom_event_type": custom_event_type.meta_value(),
+            }),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Page { page_id } => require_numeric_id("page_id", page_id),
+            Self::Pixel { pixel_id, .. } => require_numeric_id("pixel_id", pixel_id),
+            Self::App {
+                application_id,
+                object_store_url,
+            } => {
+                require_numeric_id("application_id", application_id)?;
+                require_https_url("object_store_url", object_store_url)
+            }
+            Self::ProductSet { product_set_id, .. } => {
+                require_numeric_id("product_set_id", product_set_id)
+            }
+        }
+    }
+}
+
+/// Conversion/app/Page/value goals need a promoted object on create.
+pub fn promoted_object_required(goal: OptimizationGoal) -> bool {
+    matches!(
+        goal,
+        OptimizationGoal::OffsiteConversions
+            | OptimizationGoal::AppInstalls
+            | OptimizationGoal::PageLikes
+            | OptimizationGoal::Value
+            | OptimizationGoal::LeadGeneration
+    )
+}
+
+fn promoted_object_matches_goal(goal: OptimizationGoal, object: &PromotedObject) -> bool {
+    matches!(
+        (goal, object),
+        (OptimizationGoal::PageLikes, PromotedObject::Page { .. })
+            | (OptimizationGoal::AppInstalls, PromotedObject::App { .. })
+            | (OptimizationGoal::OffsiteConversions, PromotedObject::Pixel { .. })
+            | (
+                OptimizationGoal::Value,
+                PromotedObject::Pixel { .. } | PromotedObject::ProductSet { .. }
+            )
+            | (
+                OptimizationGoal::LeadGeneration,
+                PromotedObject::Page { .. } | PromotedObject::Pixel { .. }
+            )
+    )
+}
+
+pub fn validate_promoted_object(
+    goal: OptimizationGoal,
+    object: Option<&PromotedObject>,
+) -> Result<(), String> {
+    match object {
+        None if promoted_object_required(goal) => {
+            Err(format!("promoted_object_required:{}", goal.as_str()))
+        }
+        None => Ok(()),
+        Some(object) => {
+            object.validate()?;
+            if promoted_object_required(goal) && !promoted_object_matches_goal(goal, object) {
+                return Err(format!(
+                    "promoted_object_kind_mismatch:{}:{}",
+                    goal.as_str(),
+                    object.kind_str()
+                ));
+            }
+            Ok(())
+        }
+    }
 }
 
 /// An ad draft references a pre-created Meta creative. Tier B does not try
@@ -831,6 +1040,9 @@ fn validate_budget_xor(
 /// policy boundary intentionally.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "entity", content = "spec", rename_all = "snake_case")]
+/// Ad-set payloads carry targeting and schedule; boxing them would change
+/// the public request type for a clippy size lint.
+#[allow(clippy::large_enum_variant)]
 pub enum PausedAdCreate {
     Campaign(PausedCampaign),
     Adset(PausedAdset),
@@ -881,6 +1093,7 @@ impl PausedAdCreate {
                     adset.end_time.as_deref(),
                     adset.lifetime_budget,
                 )?;
+                validate_promoted_object(adset.optimization_goal, adset.promoted_object.as_ref())?;
                 if !billing_event_allowed(adset.optimization_goal, adset.billing_event) {
                     return Err(format!(
                         "unsupported_billing_event:{}:{}",
@@ -1425,6 +1638,7 @@ mod tests {
                 },
                 start_time: None,
                 end_time: None,
+                promoted_object: None,
             }),
         };
         assert_eq!(
@@ -1454,6 +1668,7 @@ mod tests {
                 },
                 start_time: None,
                 end_time: None,
+                promoted_object: None,
             }),
         };
         assert_eq!(
@@ -1504,6 +1719,7 @@ mod tests {
             targeting: sample_targeting(),
             start_time: None,
             end_time: None,
+            promoted_object: None,
         }
     }
 
@@ -1708,5 +1924,82 @@ mod tests {
             both.validate().unwrap_err(),
             "bid_amount_without_cap_strategy"
         );
+    }
+
+    #[test]
+    fn promoted_object_is_required_for_conversion_goals() {
+        let missing = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                optimization_goal: OptimizationGoal::OffsiteConversions,
+                billing_event: BillingEvent::Impressions,
+                ..sample_adset()
+            }),
+        };
+        assert_eq!(
+            missing.validate().unwrap_err(),
+            "promoted_object_required:offsite_conversions"
+        );
+
+        let wrong_kind = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                optimization_goal: OptimizationGoal::OffsiteConversions,
+                promoted_object: Some(PromotedObject::Page {
+                    page_id: "456".into(),
+                }),
+                ..sample_adset()
+            }),
+        };
+        assert_eq!(
+            wrong_kind.validate().unwrap_err(),
+            "promoted_object_kind_mismatch:offsite_conversions:page"
+        );
+
+        let pixel = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                optimization_goal: OptimizationGoal::OffsiteConversions,
+                promoted_object: Some(PromotedObject::Pixel {
+                    pixel_id: "789".into(),
+                    custom_event_type: CustomEventType::Purchase,
+                }),
+                ..sample_adset()
+            }),
+        };
+        assert!(pixel.validate().is_ok());
+        assert_eq!(
+            PromotedObject::Pixel {
+                pixel_id: "789".into(),
+                custom_event_type: CustomEventType::Purchase,
+            }
+            .meta_json(),
+            serde_json::json!({"pixel_id":"789","custom_event_type":"PURCHASE"})
+        );
+
+        let bad_id = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                optimization_goal: OptimizationGoal::PageLikes,
+                promoted_object: Some(PromotedObject::Page {
+                    page_id: "page-x".into(),
+                }),
+                ..sample_adset()
+            }),
+        };
+        assert_eq!(bad_id.validate().unwrap_err(), "bad_page_id:page-x");
+
+        let app = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                optimization_goal: OptimizationGoal::AppInstalls,
+                promoted_object: Some(PromotedObject::App {
+                    application_id: "1".into(),
+                    object_store_url: "https://apps.apple.com/app/id1".into(),
+                }),
+                ..sample_adset()
+            }),
+        };
+        assert!(app.validate().is_ok());
     }
 }

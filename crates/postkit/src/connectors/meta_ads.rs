@@ -635,6 +635,9 @@ async fn create_paused_ad(
             if let Some(end) = &adset.end_time {
                 fields.push(("end_time", end.clone()));
             }
+            if let Some(promoted) = &adset.promoted_object {
+                fields.push(("promoted_object", promoted.meta_json().to_string()));
+            }
             ("adsets", crate::ads::AdEntity::Adset, fields)
         }
         PausedAdCreate::Ad(ad) => (
@@ -2071,6 +2074,7 @@ mod tests {
                         },
                         start_time: None,
                         end_time: None,
+                        promoted_object: None,
                     }),
                 },
                 Deadline::from_secs(30),
@@ -2171,6 +2175,7 @@ mod tests {
                         },
                         start_time: Some("2026-11-11T14:26:09-08:00".into()),
                         end_time: Some("2026-11-21T14:26:09-08:00".into()),
+                        promoted_object: None,
                     }),
                 },
                 Deadline::from_secs(30),
@@ -2234,6 +2239,7 @@ mod tests {
                         targeting: targeting.clone(),
                         start_time: None,
                         end_time: None,
+                        promoted_object: None,
                     }),
                 },
                 Deadline::from_secs(30),
@@ -2259,6 +2265,7 @@ mod tests {
                         targeting,
                         start_time: None,
                         end_time: None,
+                        promoted_object: None,
                     }),
                 },
                 Deadline::from_secs(30),
@@ -2268,6 +2275,60 @@ mod tests {
 
         cap.assert();
         roas.assert();
+    }
+
+    #[tokio::test]
+    async fn promoted_object_is_posted_without_kind_tag() {
+        let server = MockServer::start();
+        let adset = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/adsets")
+                .body_contains("promoted_object=")
+                .body_contains("pixel_id")
+                .body_contains("PURCHASE")
+                .body_contains("status=PAUSED");
+            then.status(200).json_body(json!({ "id": "203" }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        connector
+            .create_paused_ad(
+                &empty_app(),
+                &token_creds("123"),
+                &CreatePausedAdRequest {
+                    account: None,
+                    create: PausedAdCreate::Adset(PausedAdset {
+                        name: "pixel set".into(),
+                        campaign_id: "100".into(),
+                        daily_budget: Some(2500),
+                        lifetime_budget: None,
+                        bid_strategy: crate::ads::BidStrategy::LowestCostWithoutCap,
+                        bid_amount: None,
+                        roas_average_floor: None,
+                        billing_event: crate::ads::BillingEvent::Impressions,
+                        optimization_goal: crate::ads::OptimizationGoal::OffsiteConversions,
+                        targeting: crate::ads::AdTargeting {
+                            geo_locations: crate::ads::GeoLocations {
+                                countries: vec!["MY".into()],
+                            },
+                            age_min: None,
+                            age_max: None,
+                            publisher_platforms: vec![],
+                            facebook_positions: vec![],
+                            instagram_positions: vec![],
+                        },
+                        start_time: None,
+                        end_time: None,
+                        promoted_object: Some(crate::ads::PromotedObject::Pixel {
+                            pixel_id: "789".into(),
+                            custom_event_type: crate::ads::CustomEventType::Purchase,
+                        }),
+                    }),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        adset.assert();
     }
 
     #[tokio::test]

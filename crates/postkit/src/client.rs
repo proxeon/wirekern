@@ -2108,6 +2108,7 @@ mod draft_run {
                                 targeting: manifest.adset.targeting.clone(),
                                 start_time: manifest.adset.start_time.clone(),
                                 end_time: manifest.adset.end_time.clone(),
+                                promoted_object: manifest.adset.promoted_object.clone(),
                             }),
                         };
                         self.create_paused_ad(key, request, deadline)

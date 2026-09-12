@@ -50,6 +50,7 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     Post {
         site: Option<String>,
@@ -258,6 +259,7 @@ enum InsightsJobCmd {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum AdsCmd {
     /// List Meta ad accounts visible to the selected credential.
     Accounts { site: String },
@@ -409,6 +411,22 @@ enum AdsCmd {
         facebook_positions: Vec<String>,
         #[arg(long = "instagram-position")]
         instagram_positions: Vec<String>,
+        /// Page promoted object (`page_id`). XOR with pixel/app/product-set.
+        #[arg(long)]
+        promoted_page_id: Option<String>,
+        /// Pixel promoted object. Requires `--custom-event-type`.
+        #[arg(long)]
+        promoted_pixel_id: Option<String>,
+        #[arg(long)]
+        custom_event_type: Option<String>,
+        /// App promoted object. Requires `--object-store-url`.
+        #[arg(long)]
+        promoted_application_id: Option<String>,
+        #[arg(long)]
+        object_store_url: Option<String>,
+        /// Catalog product-set promoted object. Requires `--custom-event-type`.
+        #[arg(long)]
+        promoted_product_set_id: Option<String>,
     },
     /// Create a Meta ad with status hard-coded to PAUSED.
     CreateAd {
@@ -1940,6 +1958,12 @@ async fn dispatch(
             publisher_platforms,
             facebook_positions,
             instagram_positions,
+            promoted_page_id,
+            promoted_pixel_id,
+            custom_event_type,
+            promoted_application_id,
+            object_store_url,
+            promoted_product_set_id,
         }) => {
             let request = build_paused_adset_request(
                 &site,
@@ -1962,6 +1986,16 @@ async fn dispatch(
                     publisher_platforms,
                     facebook_positions,
                     instagram_positions,
+                    promoted_object: build_promoted_object(
+                        &site,
+                        promoted_page_id,
+                        promoted_pixel_id,
+                        custom_event_type,
+                        promoted_application_id,
+                        object_store_url,
+                        promoted_product_set_id,
+                    )
+                    .map_err(|e| fail(&e, json))?,
                 },
             )
             .map_err(|e| fail(&e, json))?;
@@ -3185,6 +3219,7 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                promoted_object: None,
             },
         )
         .unwrap();
@@ -3211,6 +3246,7 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                promoted_object: None,
             },
         );
         assert!(
@@ -3237,6 +3273,7 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                promoted_object: None,
             },
         )
         .unwrap();
@@ -3270,6 +3307,7 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                promoted_object: None,
             },
         );
         assert!(
@@ -3296,6 +3334,7 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                promoted_object: None,
             },
         )
         .unwrap();
@@ -3328,6 +3367,7 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                promoted_object: None,
             },
         )
         .unwrap();
@@ -3336,6 +3376,54 @@ mod tests {
             PausedAdCreate::Adset(PausedAdset {
                 bid_strategy: postkit::BidStrategy::LowestCostWithMinRoas,
                 roas_average_floor: Some(10_000),
+                ..
+            })
+        ));
+
+        let mixed_promoted = build_promoted_object(
+            "meta_ads",
+            Some("1".into()),
+            Some("2".into()),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            matches!(mixed_promoted, Err(Error::InvalidQuery { reason, .. }) if reason == "promoted_object_kinds_mutually_exclusive")
+        );
+        let pixel = build_paused_adset_request(
+            "meta_ads",
+            PausedAdsetOptions {
+                ad_account: None,
+                name: "pixel".into(),
+                campaign_id: "100".into(),
+                daily_budget: Some(2500),
+                lifetime_budget: None,
+                bid_strategy: "lowest_cost_without_cap".into(),
+                bid_amount: None,
+                roas_average_floor: None,
+                start_time: None,
+                end_time: None,
+                billing_event: "IMPRESSIONS".into(),
+                optimization_goal: "OFFSITE_CONVERSIONS".into(),
+                countries: vec!["MY".into()],
+                age_min: None,
+                age_max: None,
+                publisher_platforms: vec![],
+                facebook_positions: vec![],
+                instagram_positions: vec![],
+                promoted_object: Some(postkit::PromotedObject::Pixel {
+                    pixel_id: "789".into(),
+                    custom_event_type: postkit::CustomEventType::Purchase,
+                }),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            pixel.create,
+            PausedAdCreate::Adset(PausedAdset {
+                promoted_object: Some(postkit::PromotedObject::Pixel { .. }),
                 ..
             })
         ));
@@ -3376,6 +3464,7 @@ mod tests {
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
+                promoted_object: None,
             },
         );
         assert!(

@@ -179,6 +179,11 @@ postkit --deadline 30 ads status meta_ads --entity ad --id <AD_ID> --wait --json
   10000 = 1.0 ROAS). A cap strategy without its constraint fails locally.
 - `--start-time` / `--end-time` are RFC3339 (Meta's `±HHMM` offset is accepted).
   `--lifetime-budget` requires `--end-time`. When both are set, end must be after start.
+- Promoted object is a closed kind: `--promoted-page-id`, `--promoted-pixel-id`
+  plus `--custom-event-type`, `--promoted-application-id` plus `--object-store-url`,
+  or `--promoted-product-set-id` plus `--custom-event-type`. Required for
+  `offsite_conversions`, `app_installs`, `page_likes`, `value`, and
+  `lead_generation`. IDs are numeric; kinds cannot be mixed.
 - `--targeting-file` must contain a JSON object. Meta performs the final
   platform-specific targeting validation; postkit refuses malformed local
   data before any HTTP request.

@@ -116,6 +116,8 @@ pub struct DraftAdset {
     pub billing_event: crate::ads::BillingEvent,
     pub optimization_goal: crate::ads::OptimizationGoal,
     pub targeting: crate::ads::AdTargeting,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_object: Option<crate::ads::PromotedObject>,
 }
 
 /// The image reference is a *CLI-boundary* path: the CLI resolves it to
@@ -190,6 +192,10 @@ impl PausedDraftManifest {
             self.adset.start_time.as_deref(),
             self.adset.end_time.as_deref(),
             self.adset.lifetime_budget,
+        )?;
+        crate::ads::validate_promoted_object(
+            self.adset.optimization_goal,
+            self.adset.promoted_object.as_ref(),
         )?;
         if !crate::ads::supported_adset_pairing(
             self.campaign.objective,
@@ -978,6 +984,22 @@ mod tests {
         );
         manifest.adset.start_time = Some("2026-11-11T14:26:09-08:00".into());
         manifest.adset.end_time = Some("2026-11-21T14:26:09-08:00".into());
+        manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn draft_promoted_object_required_for_conversions() {
+        let mut manifest = example_manifest();
+        manifest.campaign.objective = CampaignObjective::Sales;
+        manifest.adset.optimization_goal = crate::ads::OptimizationGoal::OffsiteConversions;
+        assert_eq!(
+            manifest.validate().unwrap_err(),
+            "promoted_object_required:offsite_conversions"
+        );
+        manifest.adset.promoted_object = Some(crate::ads::PromotedObject::Pixel {
+            pixel_id: "789".into(),
+            custom_event_type: crate::ads::CustomEventType::Purchase,
+        });
         manifest.validate().unwrap();
     }
 

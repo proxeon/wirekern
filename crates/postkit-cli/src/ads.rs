@@ -508,6 +508,7 @@ pub(crate) fn build_paused_adset_request(
             targeting,
             start_time: options.start_time,
             end_time: options.end_time,
+            promoted_object: options.promoted_object,
         }),
     };
     request
@@ -538,6 +539,74 @@ pub(crate) struct PausedAdsetOptions {
     pub(crate) publisher_platforms: Vec<String>,
     pub(crate) facebook_positions: Vec<String>,
     pub(crate) instagram_positions: Vec<String>,
+    pub(crate) promoted_object: Option<postkit::PromotedObject>,
+}
+
+/// Exactly one promoted-object kind, or none. Mixing page/pixel/app/set is a
+/// local error so Meta never sees a half-specified `promoted_object`.
+pub(crate) fn build_promoted_object(
+    site: &str,
+    page_id: Option<String>,
+    pixel_id: Option<String>,
+    custom_event_type: Option<String>,
+    application_id: Option<String>,
+    object_store_url: Option<String>,
+    product_set_id: Option<String>,
+) -> Result<Option<postkit::PromotedObject>, Error> {
+    let kinds = [
+        page_id.is_some(),
+        pixel_id.is_some(),
+        application_id.is_some(),
+        product_set_id.is_some(),
+    ]
+    .into_iter()
+    .filter(|set| *set)
+    .count();
+    if kinds > 1 {
+        return Err(ads_input_error(
+            site,
+            "promoted_object_kinds_mutually_exclusive",
+        ));
+    }
+    if kinds == 0 {
+        if custom_event_type.is_some() || object_store_url.is_some() {
+            return Err(ads_input_error(
+                site,
+                "promoted_object_constraint_without_id",
+            ));
+        }
+        return Ok(None);
+    }
+    let object = if let Some(page_id) = page_id {
+        postkit::PromotedObject::Page { page_id }
+    } else if let Some(pixel_id) = pixel_id {
+        let custom_event_type =
+            custom_event_type.ok_or_else(|| ads_input_error(site, "missing_custom_event_type"))?;
+        let custom_event_type = postkit::CustomEventType::from_str(&custom_event_type)
+            .map_err(|reason| ads_input_error(site, reason))?;
+        postkit::PromotedObject::Pixel {
+            pixel_id,
+            custom_event_type,
+        }
+    } else if let Some(application_id) = application_id {
+        let object_store_url =
+            object_store_url.ok_or_else(|| ads_input_error(site, "missing_object_store_url"))?;
+        postkit::PromotedObject::App {
+            application_id,
+            object_store_url,
+        }
+    } else {
+        let product_set_id = product_set_id.expect("counted as set");
+        let custom_event_type =
+            custom_event_type.ok_or_else(|| ads_input_error(site, "missing_custom_event_type"))?;
+        let custom_event_type = postkit::CustomEventType::from_str(&custom_event_type)
+            .map_err(|reason| ads_input_error(site, reason))?;
+        postkit::PromotedObject::ProductSet {
+            product_set_id,
+            custom_event_type,
+        }
+    };
+    Ok(Some(object))
 }
 
 fn build_ad_targeting(options: &PausedAdsetOptions) -> Result<postkit::AdTargeting, String> {
