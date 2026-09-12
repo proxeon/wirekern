@@ -6,11 +6,11 @@ use postkit::{
     AccountKey, AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest,
     AdReviewWait, AdsActivateRequest, AdsInspectReply, AdsInspectRequest, AdsInventoryItem,
     AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest, AdsLifecycleCheckpoint,
-    AdsLifecycleOutcome, AttributionWindow, BidStrategy, Breakdown, CampaignObjective, Client,
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, Error, InsightRow,
-    InsightsLevel, InsightsQuery, LinkAdCreative, LinkCallToAction, Metric, PausedAd,
-    PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
+    AdsLifecycleOutcome, AdsPauseRequest, AttributionWindow, BidStrategy, Breakdown,
+    CampaignObjective, Client, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
+    CreatedAdCreative, CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply,
+    Error, InsightRow, InsightsLevel, InsightsQuery, LinkAdCreative, LinkCallToAction, Metric,
+    PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
     PublishedMedia, Site, UploadAdImageRequest, UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE,
 };
 use std::fs::OpenOptions;
@@ -892,6 +892,38 @@ fn emit_lifecycle_outcome(outcome: &AdsLifecycleOutcome, json: bool) {
 fn read_lifecycle_checkpoint(path: &Path) -> Option<AdsLifecycleCheckpoint> {
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+pub(crate) fn build_ads_pause_request(
+    site: &str,
+    entity: &str,
+    id: &str,
+) -> Result<AdsPauseRequest, Error> {
+    let entity = AdEntity::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
+    let request = AdsPauseRequest {
+        entity,
+        id: id.into(),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_ads_pause(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsPauseRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.pause_ad(key, request, deadline).await {
+        Ok(outcome) => {
+            emit_lifecycle_outcome(&outcome, json);
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
 }
 
 fn write_lifecycle_checkpoint(

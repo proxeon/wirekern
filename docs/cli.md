@@ -240,6 +240,7 @@ postkit ads accounts meta_ads
 postkit ads list meta_ads --entity campaign|adset|ad|creative [--ad-account act_123]
 postkit ads inspect meta_ads --entity campaign|adset|ad|creative --id <id>
 postkit ads activate meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-activate [--confirm-daily-budget N] [--state path]
+postkit ads pause meta_ads --entity campaign|adset|ad --id <id>
 postkit ads status meta_ads --entity ad --id <id> [--wait]
 postkit ads upload-image meta_ads --file hero.png [--ad-account act_123]
 postkit ads create-link-creative meta_ads --name <name> --page-id <id> --image-hash <hash> --message <copy> --headline <headline> --destination-url https://example.com --call-to-action learn_more [--ad-account act_123]

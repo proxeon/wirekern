@@ -3,10 +3,10 @@ use crate::ads::AdReviewWait;
 use crate::ads::{
     AdReviewStatus, AdReviewStatusRequest, AdsActivateRequest, AdsConfiguredStatus,
     AdsInspectReply, AdsInspectRequest, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
-    AdsLifecycleOutcome, AdsStatusUpdateRequest, AdsTokenInspection, CreateLinkAdCreativeRequest,
-    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
-    MarketingApiAccessTier, UploadAdImageRequest, UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE,
-    SYSTEM_USER_TOKEN_KIND,
+    AdsLifecycleOutcome, AdsPauseRequest, AdsStatusUpdateRequest, AdsTokenInspection,
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest,
+    UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE, PAUSE_RECONCILE_GUIDANCE, SYSTEM_USER_TOKEN_KIND,
 };
 use crate::apps::AppStore;
 use crate::error::Error;
@@ -1632,6 +1632,30 @@ impl Client {
         .await
     }
 
+    /// Emergency `ACTIVE` → `PAUSED`. Allowed by the default policy because
+    /// it cannot start spend. Already-paused is idempotent; archived/deleted
+    /// objects refuse rather than guessing.
+    pub async fn pause_ad(
+        &self,
+        key: &AccountKey,
+        request: AdsPauseRequest,
+        deadline: Deadline,
+    ) -> Result<AdsLifecycleOutcome, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy.authorize(&key.site, AdsAction::Pause)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move { pause_ad_inner(&*ads, &app, &creds, &request, deadline).await })
+        })
+        .await
+    }
+
     /// Read one ad object's configured and effective state once. This is a
     /// GET-only operation, so it bypasses `AdsPolicy`: inspecting a Meta
     /// review cannot activate an object, alter a budget, or affect billing.
@@ -2235,6 +2259,59 @@ fn confirm_activate_budget(
         return Err("confirm_lifetime_budget_not_on_object".into());
     }
     Ok(())
+}
+
+async fn pause_ad_inner(
+    ads: &dyn AdsManager,
+    app: &AppConfig,
+    creds: &AccountCreds,
+    request: &AdsPauseRequest,
+    deadline: Deadline,
+) -> Result<AdsLifecycleOutcome, Error> {
+    let review = ads
+        .ad_review_status(
+            app,
+            creds,
+            &AdReviewStatusRequest {
+                entity: request.entity,
+                id: request.id.clone(),
+            },
+            deadline,
+        )
+        .await?;
+    match review.configured_status.as_str() {
+        "ARCHIVED" | "DELETED" => {
+            return Err(Error::InvalidQuery {
+                site: review.site.clone(),
+                reason: format!("not_pausable:{}", review.configured_status),
+            });
+        }
+        "PAUSED" => return Ok(AdsLifecycleOutcome::Applied { status: review }),
+        _ => {}
+    }
+    match ads
+        .update_ad_status(
+            app,
+            creds,
+            &AdsStatusUpdateRequest {
+                entity: request.entity,
+                id: request.id.clone(),
+                status: AdsConfiguredStatus::Paused,
+            },
+            deadline,
+        )
+        .await
+    {
+        Ok(status) => Ok(AdsLifecycleOutcome::Applied { status }),
+        Err(Error::Network { .. } | Error::DeadlineExceeded { .. }) => {
+            Ok(AdsLifecycleOutcome::ReconciliationRequired {
+                entity: request.entity,
+                id: request.id.clone(),
+                guidance: PAUSE_RECONCILE_GUIDANCE.into(),
+            })
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(feature = "whatsapp-cloud")]

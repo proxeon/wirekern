@@ -100,7 +100,7 @@ no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
 policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 
 - [x] Typed `PAUSED` → `ACTIVE` with explicit confirmation of delivery + budget consequences
-- [ ] Typed `ACTIVE` → `PAUSED` emergency stop
+- [x] Typed `ACTIVE` → `PAUSED` emergency stop
 - [x] Refuse activate when configured status is not paused or review is unresolved
 - [x] Write-ahead / no blind retry on ambiguous activation
 - [ ] Archive
@@ -124,6 +124,7 @@ policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 | Inventory list | [x] | [x] | [x] `ads_list` | [ ] |
 | Object inspect | [x] | [x] | [x] `ads_inspect` | [ ] |
 | Activate | policy deny default | [x] `--allow-activate` | [ ] | [ ] |
+| Pause | [x] default allow | [x] | [ ] | [ ] |
 
 - [x] Not routable via generic `post` (`publish_unsupported`)
 - [x] MCP omits creates (no unattended spend over a tool call)

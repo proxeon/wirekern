@@ -1,7 +1,7 @@
 use crate::ads::{
     AdEntity, AdPreviewFormat, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest,
-    AdsActivateRequest, AdsInspectReply, AdsInspectRequest, AdsInventoryItem,
-    AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest, AdsLifecycleOutcome,
+    AdsActivateRequest, AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind,
+    AdsInventoryReply, AdsInventoryRequest, AdsLifecycleOutcome, AdsPauseRequest,
     AdsStatusUpdateRequest, AdsTargetingReadback, CampaignObjective, CreateLinkAdCreativeRequest,
     CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
     PausedAdCreate, PausedCampaign, UploadAdImageRequest, UploadedAdImage,
@@ -2798,6 +2798,46 @@ async fn client_activate_ad_policy_preflight_and_opt_in() {
         .await
         .unwrap_err();
     assert!(matches!(err, Error::InvalidQuery { reason, .. } if reason == "review_unresolved"));
+}
+
+/// Pause is the emergency valve: default policy allows it, already-paused
+/// is idempotent, and a missing capability still fails closed.
+#[tokio::test]
+async fn client_pause_ad_is_allowed_and_idempotent_when_already_paused() {
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let outcome = client
+        .pause_ad(
+            &key,
+            AdsPauseRequest {
+                entity: AdEntity::Adset,
+                id: "456".into(),
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    match outcome {
+        AdsLifecycleOutcome::Applied { status } => {
+            assert_eq!(status.configured_status, "PAUSED");
+        }
+        other => panic!("expected applied, got {other:?}"),
+    }
+
+    let (no_cap, key) = setup(MockPub::text("meta_ads"));
+    let err = no_cap
+        .pause_ad(
+            &key,
+            AdsPauseRequest {
+                entity: AdEntity::Ad,
+                id: "1".into(),
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ManageAdsLifecycle)
+    );
 }
 
 /// A poller is useful only if it stops on the platform's final state. The

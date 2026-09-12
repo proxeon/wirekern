@@ -339,6 +339,22 @@ pub enum AdsLifecycleOutcome {
 pub const ACTIVATE_RECONCILE_GUIDANCE: &str =
     "Activation POST left without a confirmed Graph reply. Read ads status for this id; do not retry activate.";
 
+/// Emergency stop. No budget confirmation: pausing cannot start spend.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsPauseRequest {
+    pub entity: AdEntity,
+    pub id: String,
+}
+
+impl AdsPauseRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("ad_entity_id", &self.id)
+    }
+}
+
+pub const PAUSE_RECONCILE_GUIDANCE: &str =
+    "Pause POST left without a confirmed Graph reply. Read ads status for this id; do not retry blindly.";
+
 /// Meta's outcome-based campaign objectives. Keeping this closed prevents a
 /// misspelled command-line objective from becoming an opaque Graph error
 /// after a write has already been attempted.

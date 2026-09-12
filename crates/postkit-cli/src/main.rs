@@ -308,6 +308,15 @@ enum AdsCmd {
         #[arg(long)]
         state: Option<PathBuf>,
     },
+    /// Emergency ACTIVE → PAUSED. Allowed by default; cannot start spend.
+    Pause {
+        site: String,
+        /// campaign | adset | ad.
+        #[arg(long)]
+        entity: String,
+        #[arg(long)]
+        id: String,
+    },
     /// Async Insights Ad Report Run: status, result, or cancel. Jobs expire
     /// in ~30 days and are not stored in the vault.
     #[command(name = "insights-job", subcommand)]
@@ -1994,6 +2003,18 @@ async fn dispatch(
             )
             .await
         }
+        Commands::Ads(AdsCmd::Pause { site, entity, id }) => {
+            let request =
+                build_ads_pause_request(&site, &entity, &id).map_err(|e| fail(&e, json))?;
+            one_ads_pause(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
         Commands::Ads(AdsCmd::Status {
             site,
             entity,
@@ -3075,6 +3096,14 @@ mod tests {
         let activate =
             build_ads_activate_request("meta_ads", "adset", "456", "456", Some(500), None).unwrap();
         assert_eq!(activate.entity, AdEntity::Adset);
+        let cli = Cli::try_parse_from([
+            "postkit", "ads", "pause", "meta_ads", "--entity", "ad", "--id", "700",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ads(AdsCmd::Pause { entity, id, .. }) if entity == "ad" && id == "700"
+        ));
         let bad_id = build_ads_inspect_request("meta_ads", "ad", "ad-1").unwrap_err();
         assert!(
             matches!(bad_id, Error::InvalidQuery { reason, .. } if reason == "bad_ads_inspect_id:ad-1")
