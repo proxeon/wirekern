@@ -239,15 +239,15 @@ Read-only spend/performance metrics (the `read.metrics` capability). Daily rows 
 postkit ads accounts meta_ads
 postkit ads list meta_ads --entity campaign|adset|ad|creative [--ad-account act_123]
 postkit ads inspect meta_ads --entity campaign|adset|ad|creative --id <id>
-postkit ads activate meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-activate [--confirm-daily-budget N] [--state path]
+postkit ads activate meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-activate --state path [--confirm-daily-budget N]
 postkit ads pause meta_ads --entity campaign|adset|ad --id <id>
 postkit ads archive meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-archive
 postkit ads delete meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-delete --confirm-delete
-postkit ads duplicate meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-duplicate
+postkit ads duplicate meta_ads --entity campaign|adset|ad --id <id> --confirm-id <id> --allow-duplicate [--confirm-daily-budget N]
 postkit ads update-budget meta_ads --entity campaign|adset --id <id> --confirm-id <id> --current-daily-budget N --new-daily-budget N --allow-budget-edit
 postkit ads update-bid meta_ads --entity campaign|adset --id <id> --confirm-id <id> --bid-strategy lowest_cost_without_cap --allow-bid-edit
 postkit ads update-schedule meta_ads --id <adset-id> --confirm-id <id> --start-time RFC3339 --end-time RFC3339 --allow-schedule-edit
-postkit ads update-placement meta_ads --id <adset-id> --confirm-id <id> --publisher-platform facebook --allow-placement-edit
+postkit ads update-placement meta_ads --id <adset-id> --confirm-id <id> --publisher-platform facebook [--facebook-position feed] --allow-placement-edit
 postkit ads update-targeting meta_ads --id <adset-id> --confirm-id <id> --targeting-file targeting.json --allow-targeting-edit
 postkit ads swap-creative meta_ads --id <ad-id> --confirm-id <id> --creative-id <id> --allow-creative-swap
 postkit ads status meta_ads --entity ad --id <id> [--wait]

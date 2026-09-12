@@ -2949,6 +2949,8 @@ async fn client_delete_and_duplicate_are_denied_until_opt_in() {
         entity: AdEntity::Campaign,
         id: "100".into(),
         confirm_id: "100".into(),
+        confirm_daily_budget: Some(500),
+        confirm_lifetime_budget: None,
     };
     let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
     let denied = client
@@ -2989,11 +2991,16 @@ async fn client_typed_edits_require_policy_and_guards() {
     let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
     let allowed =
         client.with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::UpdateBudget)));
-    let inspect = allowed
+    let outcome = allowed
         .update_ad_budget(&key, request, Deadline::from_secs(30))
         .await
         .unwrap();
-    assert_eq!(inspect.daily_budget.as_deref(), Some("500"));
+    match outcome {
+        crate::ads::AdsEditOutcome::Applied { inspect, .. } => {
+            assert_eq!(inspect.daily_budget.as_deref(), Some("500"));
+        }
+        other => panic!("expected applied, got {other:?}"),
+    }
 
     let too_big = crate::ads::AdsBudgetUpdateRequest {
         entity: AdEntity::Adset,
@@ -3016,11 +3023,26 @@ async fn client_typed_edits_require_policy_and_guards() {
     let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
     let allowed =
         client.with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::SwapCreative)));
-    let inspect = allowed
+    let outcome = allowed
         .swap_ad_creative(&key, swap, Deadline::from_secs(30))
         .await
         .unwrap();
-    assert_eq!(inspect.id, "456");
+    match outcome {
+        crate::ads::AdsEditOutcome::Applied { inspect, .. } => {
+            assert_eq!(inspect.id, "456");
+        }
+        other => panic!("expected applied, got {other:?}"),
+    }
+
+    let ad_budget = crate::ads::AdsBudgetUpdateRequest {
+        entity: AdEntity::Ad,
+        id: "456".into(),
+        confirm_id: "456".into(),
+        current_daily_budget: 500,
+        new_daily_budget: 550,
+        max_change_ratio: 0.2,
+    };
+    assert_eq!(ad_budget.validate().unwrap_err(), "budget_not_on_object");
 }
 
 /// A poller is useful only if it stops on the platform's final state. The

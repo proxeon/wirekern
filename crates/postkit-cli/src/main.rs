@@ -304,9 +304,9 @@ enum AdsCmd {
         confirm_daily_budget: Option<u64>,
         #[arg(long)]
         confirm_lifetime_budget: Option<u64>,
-        /// Write-ahead marker. A leftover in_flight is reconciliation, not a retry.
+        /// Required write-ahead marker. A leftover in_flight is reconciliation, not a retry.
         #[arg(long)]
-        state: Option<PathBuf>,
+        state: PathBuf,
     },
     /// Emergency ACTIVE → PAUSED. Allowed by default; cannot start spend.
     Pause {
@@ -355,6 +355,10 @@ enum AdsCmd {
         confirm_id: String,
         #[arg(long)]
         allow_duplicate: bool,
+        #[arg(long)]
+        confirm_daily_budget: Option<u64>,
+        #[arg(long)]
+        confirm_lifetime_budget: Option<u64>,
     },
     UpdateBudget {
         site: String,
@@ -413,6 +417,12 @@ enum AdsCmd {
         allow_placement_edit: bool,
         #[arg(long)]
         publisher_platform: Vec<String>,
+        #[arg(long)]
+        facebook_position: Vec<String>,
+        #[arg(long)]
+        instagram_position: Vec<String>,
+        #[arg(long)]
+        whatsapp_position: Vec<String>,
     },
     UpdateTargeting {
         site: String,
@@ -2169,7 +2179,7 @@ async fn dispatch(
                 &client,
                 &AccountKey::new(&site, &account),
                 request,
-                state.as_deref(),
+                &state,
                 deadline,
                 json,
             )
@@ -2231,9 +2241,18 @@ async fn dispatch(
             id,
             confirm_id,
             allow_duplicate: _,
+            confirm_daily_budget,
+            confirm_lifetime_budget,
         }) => {
-            let request = build_ads_duplicate_request(&site, &entity, &id, &confirm_id)
-                .map_err(|e| fail(&e, json))?;
+            let request = build_ads_duplicate_request(
+                &site,
+                &entity,
+                &id,
+                &confirm_id,
+                confirm_daily_budget,
+                confirm_lifetime_budget,
+            )
+            .map_err(|e| fail(&e, json))?;
             one_ads_duplicate(
                 &client,
                 &AccountKey::new(&site, &account),
@@ -2327,10 +2346,20 @@ async fn dispatch(
             confirm_id,
             allow_placement_edit: _,
             publisher_platform,
+            facebook_position,
+            instagram_position,
+            whatsapp_position,
         }) => {
-            let request =
-                build_ads_placement_update_request(&site, &id, &confirm_id, publisher_platform)
-                    .map_err(|e| fail(&e, json))?;
+            let request = build_ads_placement_update_request(
+                &site,
+                &id,
+                &confirm_id,
+                publisher_platform,
+                facebook_position,
+                instagram_position,
+                whatsapp_position,
+            )
+            .map_err(|e| fail(&e, json))?;
             one_ads_placement_update(
                 &client,
                 &AccountKey::new(&site, &account),
@@ -3445,6 +3474,8 @@ mod tests {
             "--allow-activate",
             "--confirm-daily-budget",
             "500",
+            "--state",
+            "activate.state.json",
         ])
         .unwrap();
         assert!(matches!(

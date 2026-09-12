@@ -351,6 +351,27 @@ pub enum AdsLifecycleOutcome {
 pub const ACTIVATE_RECONCILE_GUIDANCE: &str =
     "Activation POST left without a confirmed Graph reply. Read ads status for this id; do not retry activate.";
 
+pub const EDIT_RECONCILE_GUIDANCE: &str =
+    "Ad object POST left without a confirmed Graph reply. Inspect this id; do not retry the same edit blindly.";
+
+/// Typed edit outcome. Network/deadline after the POST left is
+/// `reconciliation_required` (exit 0), same as activate.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
+#[serde(tag = "edit", rename_all = "snake_case")]
+pub enum AdsEditOutcome {
+    Applied {
+        inspect: Box<AdsInspectReply>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        targeting_diff: Option<AdsTargetingDiff>,
+    },
+    ReconciliationRequired {
+        entity: AdEntity,
+        id: String,
+        guidance: String,
+    },
+}
+
 /// Emergency stop. No budget confirmation: pausing cannot start spend.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AdsPauseRequest {
@@ -418,21 +439,27 @@ pub const DELETE_RECONCILE_GUIDANCE: &str =
     "Delete POST left without a confirmed Graph reply. Read ads status for this id; do not retry blindly.";
 
 /// Copy with Meta `status_option=PAUSED` hard-coded. Never inherits ACTIVE.
+/// Budget echo is required when the source has a daily/lifetime budget —
+/// the copy is paused but still inherits spend shape.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AdsDuplicateRequest {
     pub entity: AdEntity,
     pub id: String,
     pub confirm_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_daily_budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_lifetime_budget: Option<u64>,
 }
 
 impl AdsDuplicateRequest {
     pub fn validate(&self) -> Result<(), String> {
-        require_numeric_id("ad_entity_id", &self.id)?;
-        require_numeric_id("confirm_id", &self.confirm_id)?;
-        if self.confirm_id != self.id {
-            return Err("confirm_id_mismatch".into());
+        confirm_ids(&self.id, &self.confirm_id)?;
+        match (self.confirm_daily_budget, self.confirm_lifetime_budget) {
+            (Some(0), _) | (_, Some(0)) => Err("budget_must_be_positive".into()),
+            (Some(_), Some(_)) => Err("daily_and_lifetime_budget_mutually_exclusive".into()),
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -470,6 +497,10 @@ impl AdsBudgetUpdateRequest {
         require_numeric_id("confirm_id", &self.confirm_id)?;
         if self.confirm_id != self.id {
             return Err("confirm_id_mismatch".into());
+        }
+        // Daily budget lives on campaign/ad set. An ad has none.
+        if self.entity == AdEntity::Ad {
+            return Err("budget_not_on_object".into());
         }
         if self.current_daily_budget == 0 || self.new_daily_budget == 0 {
             return Err("budget_must_be_positive".into());

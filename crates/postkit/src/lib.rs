@@ -69,8 +69,8 @@ pub use ads::{
     AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdReviewWait, AdTargeting, AdVideoStatus,
     AdVideoStatusKind, AdVideoStatusRequest, AdVideoWait, AdsActivateRequest, AdsArchiveRequest,
     AdsBidUpdateRequest, AdsBudgetUpdateRequest, AdsConfiguredStatus, AdsCreativeSwapRequest,
-    AdsDeleteRequest, AdsDuplicateReply, AdsDuplicateRequest, AdsInspectReply, AdsInspectRequest,
-    AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
+    AdsDeleteRequest, AdsDuplicateReply, AdsDuplicateRequest, AdsEditOutcome, AdsInspectReply,
+    AdsInspectRequest, AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
     AdsLifecycleCheckpoint, AdsLifecycleOutcome, AdsPauseRequest, AdsPlacementUpdateRequest,
     AdsScheduleUpdateRequest, AdsStatusUpdateRequest, AdsTargetingDiff, AdsTargetingReadback,
     AdsTargetingUpdateRequest, AdsTokenInspection, AdsTokenKind, AppInstallAdCreative, BidStrategy,
@@ -83,8 +83,8 @@ pub use ads::{
     PausedCampaign, PromotedObject, PublisherPlatform, UploadAdImageRequest, UploadAdVideoRequest,
     UploadedAdImage, UploadedAdVideo, VideoAdCreative, WhatsAppPosition, WhatsAppStatusIdentity,
     ACTIVATE_RECONCILE_GUIDANCE, ARCHIVE_RECONCILE_GUIDANCE, DEFAULT_BUDGET_MAX_CHANGE_RATIO,
-    DELETE_RECONCILE_GUIDANCE, MARKETING_API_ACCESS_TIER_DASHBOARD, PAUSE_RECONCILE_GUIDANCE,
-    SYSTEM_USER_TOKEN_KIND,
+    DELETE_RECONCILE_GUIDANCE, EDIT_RECONCILE_GUIDANCE, MARKETING_API_ACCESS_TIER_DASHBOARD,
+    PAUSE_RECONCILE_GUIDANCE, SYSTEM_USER_TOKEN_KIND,
 };
 pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
 pub use bundle::bundled_registry;

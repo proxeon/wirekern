@@ -55,11 +55,12 @@ Capability: `manage.ads_lifecycle`. Distinct from `create.paused_ads`.
 4. GET inspect: `--confirm-daily-budget` / `--confirm-lifetime-budget`
    must equal Graph's current minor units when present. Ads with no own
    budget skip the echo.
-5. Write-ahead `--state` file `in_flight=true` **before** POST. A leftover
-   marker is `reconciliation_required` (exit 0) and **no retry**.
+5. Write-ahead `--state` file is **required**. `in_flight=true` before POST.
+   A leftover marker is `reconciliation_required` (exit 0) and **no retry**.
 6. POST. Network/deadline after the POST left → `reconciliation_required`,
    never a second POST. Graph `Platform` errors mean the write did not
-   apply.
+   apply. `ARCHIVED` stays refused (`not_paused:ARCHIVED`); Postkit does
+   not restore archived objects to ACTIVE.
 
 CLI:
 
@@ -92,7 +93,9 @@ Requires `--confirm-delete` (literal) plus `--confirm-id`.
 
 `POST /{id}/copies` with `status_option=PAUSED` hard-coded. Deep copy is
 off (`deep_copy` default false). Returned `copied_*_id` is a paused draft,
-not a delivery claim.
+not a delivery claim. When the source has a daily or lifetime budget, the
+operator must echo it (`--confirm-daily-budget` / `--confirm-lifetime-budget`)
+because the copy still inherits spend shape.
 
 ## 9. Daily-budget edit
 

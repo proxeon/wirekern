@@ -6,16 +6,16 @@ use postkit::{
     AccountKey, AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest,
     AdReviewWait, AdTargeting, AdsActivateRequest, AdsArchiveRequest, AdsBidUpdateRequest,
     AdsBudgetUpdateRequest, AdsCreativeSwapRequest, AdsDeleteRequest, AdsDuplicateRequest,
-    AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind, AdsInventoryReply,
-    AdsInventoryRequest, AdsLifecycleCheckpoint, AdsLifecycleOutcome, AdsPauseRequest,
-    AdsPlacementUpdateRequest, AdsScheduleUpdateRequest, AdsTargetingUpdateRequest,
-    AttributionWindow, BidStrategy, Breakdown, CampaignObjective, Client,
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, Error, InsightRow,
-    InsightsLevel, InsightsQuery, LinkAdCreative, LinkCallToAction, Metric, PausedAd,
-    PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
-    PublishedMedia, PublisherPlatform, Site, UploadAdImageRequest, UploadedAdImage,
-    ACTIVATE_RECONCILE_GUIDANCE,
+    AdsEditOutcome, AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind,
+    AdsInventoryReply, AdsInventoryRequest, AdsLifecycleCheckpoint, AdsLifecycleOutcome,
+    AdsPauseRequest, AdsPlacementUpdateRequest, AdsScheduleUpdateRequest,
+    AdsTargetingUpdateRequest, AttributionWindow, BidStrategy, Breakdown, CampaignObjective,
+    Client, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, Error,
+    FacebookPosition, InsightRow, InsightsLevel, InsightsQuery, InstagramPosition, LinkAdCreative,
+    LinkCallToAction, Metric, PausedAd, PausedAdCreate, PausedAdset, PausedCampaign,
+    PausedDraftManifest, PausedDraftResult, PublishedMedia, PublisherPlatform, Site,
+    UploadAdImageRequest, UploadedAdImage, WhatsAppPosition, ACTIVATE_RECONCILE_GUIDANCE,
 };
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -819,11 +819,12 @@ pub(crate) async fn one_ads_activate(
     client: &Client,
     key: &AccountKey,
     request: AdsActivateRequest,
-    state: Option<&Path>,
+    state: &Path,
     deadline: Deadline,
     json: bool,
 ) -> Result<(), i32> {
-    if let Some(path) = state {
+    {
+        let path = state;
         if let Some(existing) = read_lifecycle_checkpoint(path) {
             if existing.in_flight && existing.id == request.id && existing.action == "activate" {
                 emit_lifecycle_outcome(
@@ -851,33 +852,29 @@ pub(crate) async fn one_ads_activate(
     }
     match client.activate_ad(key, request.clone(), deadline).await {
         Ok(outcome) => {
-            if let Some(path) = state {
-                match &outcome {
-                    AdsLifecycleOutcome::Applied { .. } => {
-                        let _ = write_lifecycle_checkpoint(
-                            path,
-                            &AdsLifecycleCheckpoint {
-                                action: "activate".into(),
-                                entity: request.entity,
-                                id: request.id.clone(),
-                                in_flight: false,
-                            },
-                        );
-                    }
-                    AdsLifecycleOutcome::ReconciliationRequired { .. } => {}
+            match &outcome {
+                AdsLifecycleOutcome::Applied { .. } => {
+                    let _ = write_lifecycle_checkpoint(
+                        state,
+                        &AdsLifecycleCheckpoint {
+                            action: "activate".into(),
+                            entity: request.entity,
+                            id: request.id.clone(),
+                            in_flight: false,
+                        },
+                    );
                 }
+                AdsLifecycleOutcome::ReconciliationRequired { .. } => {}
             }
             emit_lifecycle_outcome(&outcome, json);
             Ok(())
         }
         Err(error) => {
-            if let Some(path) = state {
-                if matches!(
-                    error,
-                    Error::PolicyDenied { .. } | Error::InvalidQuery { .. }
-                ) {
-                    let _ = std::fs::remove_file(path);
-                }
+            if matches!(
+                error,
+                Error::PolicyDenied { .. } | Error::InvalidQuery { .. }
+            ) {
+                let _ = std::fs::remove_file(state);
             }
             Err(fail(&error, json))
         }
@@ -988,12 +985,16 @@ pub(crate) fn build_ads_duplicate_request(
     entity: &str,
     id: &str,
     confirm_id: &str,
+    confirm_daily_budget: Option<u64>,
+    confirm_lifetime_budget: Option<u64>,
 ) -> Result<AdsDuplicateRequest, Error> {
     let entity = AdEntity::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
     let request = AdsDuplicateRequest {
         entity,
         id: id.into(),
         confirm_id: confirm_id.into(),
+        confirm_daily_budget,
+        confirm_lifetime_budget,
     };
     request
         .validate()
@@ -1033,7 +1034,7 @@ pub(crate) async fn one_ads_budget_update(
     json: bool,
 ) -> Result<(), i32> {
     match client.update_ad_budget(key, request, deadline).await {
-        Ok(reply) => emit_inspect_edit(reply, json),
+        Ok(outcome) => emit_edit_outcome(&outcome, json),
         Err(error) => Err(fail(&error, json)),
     }
 }
@@ -1072,7 +1073,7 @@ pub(crate) async fn one_ads_bid_update(
     json: bool,
 ) -> Result<(), i32> {
     match client.update_ad_bid(key, request, deadline).await {
-        Ok(reply) => emit_inspect_edit(reply, json),
+        Ok(outcome) => emit_edit_outcome(&outcome, json),
         Err(error) => Err(fail(&error, json)),
     }
 }
@@ -1105,7 +1106,7 @@ pub(crate) async fn one_ads_schedule_update(
     json: bool,
 ) -> Result<(), i32> {
     match client.update_ad_schedule(key, request, deadline).await {
-        Ok(reply) => emit_inspect_edit(reply, json),
+        Ok(outcome) => emit_edit_outcome(&outcome, json),
         Err(error) => Err(fail(&error, json)),
     }
 }
@@ -1115,6 +1116,9 @@ pub(crate) fn build_ads_placement_update_request(
     id: &str,
     confirm_id: &str,
     publisher_platform: Vec<String>,
+    facebook_position: Vec<String>,
+    instagram_position: Vec<String>,
+    whatsapp_position: Vec<String>,
 ) -> Result<AdsPlacementUpdateRequest, Error> {
     let mut platforms = Vec::new();
     for value in publisher_platform {
@@ -1122,14 +1126,32 @@ pub(crate) fn build_ads_placement_update_request(
             PublisherPlatform::from_str(&value).map_err(|reason| ads_input_error(site, reason))?,
         );
     }
+    let mut facebook_positions = Vec::new();
+    for value in facebook_position {
+        facebook_positions.push(
+            FacebookPosition::from_str(&value).map_err(|reason| ads_input_error(site, reason))?,
+        );
+    }
+    let mut instagram_positions = Vec::new();
+    for value in instagram_position {
+        instagram_positions.push(
+            InstagramPosition::from_str(&value).map_err(|reason| ads_input_error(site, reason))?,
+        );
+    }
+    let mut whatsapp_positions = Vec::new();
+    for value in whatsapp_position {
+        whatsapp_positions.push(
+            WhatsAppPosition::from_str(&value).map_err(|reason| ads_input_error(site, reason))?,
+        );
+    }
     let request = AdsPlacementUpdateRequest {
         entity: AdEntity::Adset,
         id: id.into(),
         confirm_id: confirm_id.into(),
         publisher_platforms: platforms,
-        facebook_positions: vec![],
-        instagram_positions: vec![],
-        whatsapp_positions: vec![],
+        facebook_positions,
+        instagram_positions,
+        whatsapp_positions,
     };
     request
         .validate()
@@ -1145,7 +1167,7 @@ pub(crate) async fn one_ads_placement_update(
     json: bool,
 ) -> Result<(), i32> {
     match client.update_ad_placement(key, request, deadline).await {
-        Ok(reply) => emit_inspect_edit(reply, json),
+        Ok(outcome) => emit_edit_outcome(&outcome, json),
         Err(error) => Err(fail(&error, json)),
     }
 }
@@ -1180,19 +1202,7 @@ pub(crate) async fn one_ads_targeting_update(
     json: bool,
 ) -> Result<(), i32> {
     match client.update_ad_targeting(key, request, deadline).await {
-        Ok((reply, diff)) => {
-            if json {
-                emit_raw(&serde_json::json!({ "inspect": reply, "diff": diff }));
-            } else {
-                human_line(inspect_line(&reply));
-                human_line(format!(
-                    "targeting_diff before_countries={} after_countries={}",
-                    diff.before.countries.join(","),
-                    diff.after.countries.join(",")
-                ));
-            }
-            Ok(())
-        }
+        Ok(outcome) => emit_edit_outcome(&outcome, json),
         Err(error) => Err(fail(&error, json)),
     }
 }
@@ -1222,16 +1232,42 @@ pub(crate) async fn one_ads_creative_swap(
     json: bool,
 ) -> Result<(), i32> {
     match client.swap_ad_creative(key, request, deadline).await {
-        Ok(reply) => emit_inspect_edit(reply, json),
+        Ok(outcome) => emit_edit_outcome(&outcome, json),
         Err(error) => Err(fail(&error, json)),
     }
 }
 
-fn emit_inspect_edit(reply: postkit::AdsInspectReply, json: bool) -> Result<(), i32> {
+fn emit_edit_outcome(outcome: &AdsEditOutcome, json: bool) -> Result<(), i32> {
     if json {
-        emit_raw(&serde_json::to_value(&reply).expect("json"));
-    } else {
-        human_line(inspect_line(&reply));
+        emit_raw(&serde_json::to_value(outcome).expect("json"));
+        return Ok(());
+    }
+    match outcome {
+        AdsEditOutcome::Applied {
+            inspect,
+            targeting_diff,
+        } => {
+            human_line(inspect_line(inspect));
+            if let Some(diff) = targeting_diff {
+                human_line(format!(
+                    "targeting_diff before_countries={} after_countries={}",
+                    diff.before.countries.join(","),
+                    diff.after.countries.join(",")
+                ));
+            }
+        }
+        AdsEditOutcome::ReconciliationRequired {
+            entity,
+            id,
+            guidance,
+        } => {
+            human_line(format!(
+                "{} {} reconciliation_required {}",
+                entity.as_str(),
+                id,
+                guidance
+            ));
+        }
     }
     Ok(())
 }
