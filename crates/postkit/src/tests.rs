@@ -571,6 +571,7 @@ impl AdsManager for MockPub {
             lifetime_budget: None,
             bid_strategy: Some("LOWEST_COST_WITHOUT_CAP".into()),
             bid_amount: None,
+            roas_average_floor: None,
             targeting: Some(AdsTargetingReadback {
                 countries: vec!["MY".into()],
                 ..AdsTargetingReadback::default()
@@ -578,6 +579,10 @@ impl AdsManager for MockPub {
             page_id: Some("111".into()),
             destination: Some("https://example.com".into()),
             destination_type: Some("WEBSITE".into()),
+            call_to_action_type: None,
+            product_set_id: None,
+            instagram_user_id: None,
+            whatsapp_identity_id: None,
             campaign_id: Some("100".into()),
             adset_id: None,
             creative_id: None,

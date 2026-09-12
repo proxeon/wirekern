@@ -217,6 +217,9 @@ pub struct AdsInspectReply {
     pub bid_strategy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bid_amount: Option<String>,
+    /// Min-ROAS floor from `bid_constraints.roas_average_floor` (10000 = 1.0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roas_average_floor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub targeting: Option<AdsTargetingReadback>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -225,6 +228,15 @@ pub struct AdsInspectReply {
     pub destination: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_to_action_type: Option<String>,
+    /// Catalog / Advantage+ catalog ads: top-level creative `product_set_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product_set_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instagram_user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub whatsapp_identity_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub campaign_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

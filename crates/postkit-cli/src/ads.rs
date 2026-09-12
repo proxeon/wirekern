@@ -744,11 +744,26 @@ pub(crate) fn inspect_line(reply: &AdsInspectReply) -> String {
     if let Some(amount) = reply.bid_amount.as_deref() {
         line.push_str(&format!(" bid_amount={amount}"));
     }
+    if let Some(floor) = reply.roas_average_floor.as_deref() {
+        line.push_str(&format!(" roas_average_floor={floor}"));
+    }
     if let Some(page) = reply.page_id.as_deref() {
         line.push_str(&format!(" page={page}"));
     }
     if let Some(destination) = reply.destination.as_deref() {
         line.push_str(&format!(" destination={destination}"));
+    }
+    if let Some(cta) = reply.call_to_action_type.as_deref() {
+        line.push_str(&format!(" cta={cta}"));
+    }
+    if let Some(product_set) = reply.product_set_id.as_deref() {
+        line.push_str(&format!(" product_set={product_set}"));
+    }
+    if let Some(ig) = reply.instagram_user_id.as_deref() {
+        line.push_str(&format!(" instagram_user={ig}"));
+    }
+    if let Some(wamo) = reply.whatsapp_identity_id.as_deref() {
+        line.push_str(&format!(" whatsapp_identity={wamo}"));
     }
     if let Some(destination_type) = reply.destination_type.as_deref() {
         line.push_str(&format!(" destination_type={destination_type}"));

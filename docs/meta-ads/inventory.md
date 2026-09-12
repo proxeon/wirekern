@@ -66,6 +66,12 @@ publisher_platforms, facebook/instagram/whatsapp positions,
 `user_age_unknown`. Placement values stay strings so an unknown Meta
 position cannot fail the whole read.
 
+Also mapped on inspect: `bid_constraints.roas_average_floor`, creative
+`product_set_id` (catalog destination when there is no URL),
+`call_to_action_type`, `instagram_user_id`, `wamo_whatsapp_identity_spec`.
+CTA destination prefers `value.link`, then `geo_link`, `page`,
+`app_destination` (WhatsApp Message).
+
 CLI: `ads inspect --entity … --id …` (no `--ad-account`; IDs are globally
 addressable). MCP `ads_inspect`. Still GET-only, still outside `AdsPolicy`.
 

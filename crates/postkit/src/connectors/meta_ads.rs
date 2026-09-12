@@ -1748,13 +1748,13 @@ fn inspect_fields(kind: AdsInventoryKind) -> &'static str {
             "id,name,configured_status,effective_status,daily_budget,lifetime_budget,bid_strategy,objective"
         }
         AdsInventoryKind::Adset => {
-            "id,name,campaign_id,configured_status,effective_status,daily_budget,lifetime_budget,bid_strategy,bid_amount,targeting,promoted_object,destination_type"
+            "id,name,campaign_id,configured_status,effective_status,daily_budget,lifetime_budget,bid_strategy,bid_amount,bid_constraints,targeting,promoted_object,destination_type"
         }
         AdsInventoryKind::Ad => {
-            "id,name,adset_id,campaign_id,configured_status,effective_status,targeting,creative{id,name,object_story_spec,actor_id,object_url,link_url,call_to_action_type}"
+            "id,name,adset_id,campaign_id,configured_status,effective_status,targeting,creative{id,name,object_story_spec,actor_id,object_url,link_url,call_to_action_type,product_set_id,instagram_user_id,wamo_whatsapp_identity_spec}"
         }
         AdsInventoryKind::Creative => {
-            "id,name,status,object_story_spec,actor_id,object_url,link_url,call_to_action_type,product_set_id"
+            "id,name,status,object_story_spec,actor_id,object_url,link_url,call_to_action_type,product_set_id,instagram_user_id,wamo_whatsapp_identity_spec"
         }
     }
 }
@@ -1768,6 +1768,10 @@ fn inspect_reply_from(
     let story = value
         .get("object_story_spec")
         .or_else(|| creative.and_then(|creative| creative.get("object_story_spec")));
+    let product_set_id = nonempty_value_string(value.get("product_set_id")).or_else(|| {
+        nonempty_value_string(creative.and_then(|creative| creative.get("product_set_id")))
+    });
+    let destination = destination_from(value, story).or_else(|| product_set_id.clone());
     Ok(AdsInspectReply {
         site: site.clone(),
         kind: request.kind,
@@ -1780,10 +1784,43 @@ fn inspect_reply_from(
         lifetime_budget: nonempty_value_string(value.get("lifetime_budget")),
         bid_strategy: nonempty_value_string(value.get("bid_strategy")),
         bid_amount: nonempty_value_string(value.get("bid_amount")),
+        roas_average_floor: nonempty_value_string(
+            value
+                .get("bid_constraints")
+                .and_then(|constraints| constraints.get("roas_average_floor")),
+        ),
         targeting: targeting_readback(value.get("targeting")),
         page_id: page_id_from(value, story),
-        destination: destination_from(value, story),
+        destination,
         destination_type: nonempty_value_string(value.get("destination_type")),
+        call_to_action_type: nonempty_value_string(value.get("call_to_action_type"))
+            .or_else(|| {
+                nonempty_value_string(
+                    creative.and_then(|creative| creative.get("call_to_action_type")),
+                )
+            })
+            .or_else(|| {
+                nonempty_value_string(
+                    story
+                        .and_then(|story| story.get("link_data"))
+                        .or_else(|| story.and_then(|story| story.get("video_data")))
+                        .or_else(|| story.and_then(|story| story.get("template_data")))
+                        .and_then(|data| data.get("call_to_action"))
+                        .and_then(|cta| cta.get("type")),
+                )
+            }),
+        product_set_id,
+        instagram_user_id: nonempty_value_string(value.get("instagram_user_id"))
+            .or_else(|| {
+                nonempty_value_string(story.and_then(|story| story.get("instagram_user_id")))
+            })
+            .or_else(|| {
+                nonempty_value_string(
+                    creative.and_then(|creative| creative.get("instagram_user_id")),
+                )
+            }),
+        whatsapp_identity_id: whatsapp_identity_id(value)
+            .or_else(|| whatsapp_identity_id(creative.unwrap_or(&Value::Null))),
         campaign_id: nonempty_value_string(value.get("campaign_id")),
         adset_id: nonempty_value_string(value.get("adset_id")),
         creative_id: nonempty_value_string(
@@ -1793,6 +1830,14 @@ fn inspect_reply_from(
         ),
         objective: nonempty_value_string(value.get("objective")),
     })
+}
+
+fn whatsapp_identity_id(value: &Value) -> Option<String> {
+    nonempty_value_string(
+        value
+            .get("wamo_whatsapp_identity_spec")
+            .and_then(|spec| spec.get("wamo_whatsapp_identity_id")),
+    )
 }
 
 fn page_id_from(value: &Value, story: Option<&Value>) -> Option<String> {
@@ -1850,12 +1895,14 @@ fn story_destination(story: Option<&Value>) -> Option<String> {
         if let Some(link) = nonempty_value_string(data.get("link")) {
             return Some(link);
         }
-        if let Some(link) = nonempty_value_string(
-            data.get("call_to_action")
-                .and_then(|cta| cta.get("value"))
-                .and_then(|value| value.get("link")),
-        ) {
-            return Some(link);
+        let cta_value = data.get("call_to_action").and_then(|cta| cta.get("value"));
+        // Website CTAs store `value.link`. Page CTAs store `value.page`.
+        // WhatsApp Message stores `value.app_destination`. Get Directions
+        // stores `value.geo_link` (or HTTPS/fbgeo in `link`).
+        for key in ["link", "geo_link", "page", "app_destination"] {
+            if let Some(dest) = nonempty_value_string(cta_value.and_then(|value| value.get(key))) {
+                return Some(dest);
+            }
         }
     }
     None
@@ -3038,9 +3085,7 @@ mod tests {
             ),
             (
                 r#"{"error":{"code":100,"message":"Invalid parameter","error_user_title":"Budget too low","error_user_msg":"Increase the daily budget."}}"#,
-                |err| {
-                    matches!(err, Error::Platform { code, message, .. } if code == "100" && message == "Budget too low: Increase the daily budget.")
-                },
+                |err| matches!(err, Error::Platform { code, message, .. } if code == "100" && message == "Budget too low: Increase the daily budget."),
             ),
         ];
         for (body, check) in cases {
@@ -3921,7 +3966,7 @@ mod tests {
                 .path("/v26.0/456")
                 .query_param(
                     "fields",
-                    "id,name,campaign_id,configured_status,effective_status,daily_budget,lifetime_budget,bid_strategy,bid_amount,targeting,promoted_object,destination_type",
+                    "id,name,campaign_id,configured_status,effective_status,daily_budget,lifetime_budget,bid_strategy,bid_amount,bid_constraints,targeting,promoted_object,destination_type",
                 );
             then.status(200).json_body(json!({
                 "id": "456",
@@ -3974,7 +4019,7 @@ mod tests {
                 .path("/v26.0/789")
                 .query_param(
                     "fields",
-                    "id,name,status,object_story_spec,actor_id,object_url,link_url,call_to_action_type,product_set_id",
+                    "id,name,status,object_story_spec,actor_id,object_url,link_url,call_to_action_type,product_set_id,instagram_user_id,wamo_whatsapp_identity_spec",
                 );
             then.status(200).json_body(json!({
                 "id": "789",
@@ -4008,6 +4053,173 @@ mod tests {
             Some("https://example.com/offer")
         );
         assert!(creative_reply.daily_budget.is_none());
+        assert_eq!(
+            creative_reply.call_to_action_type.as_deref(),
+            Some("LEARN_MORE")
+        );
+    }
+
+    #[tokio::test]
+    async fn ads_inspect_maps_catalog_min_roas_identity_and_non_link_destinations() {
+        let server = MockServer::start();
+        let adset = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/456");
+            then.status(200).json_body(json!({
+                "id": "456",
+                "bid_strategy": "LOWEST_COST_WITH_MIN_ROAS",
+                "bid_constraints": { "roas_average_floor": 15000 }
+            }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let reply = connector
+            .inspect_ads_object(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsInspectRequest {
+                    kind: AdsInventoryKind::Adset,
+                    id: "456".into(),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        adset.assert();
+        assert_eq!(reply.roas_average_floor.as_deref(), Some("15000"));
+
+        let catalog = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/800");
+            then.status(200).json_body(json!({
+                "id": "800",
+                "status": "ACTIVE",
+                "product_set_id": "555",
+                "instagram_user_id": "222",
+                "wamo_whatsapp_identity_spec": { "wamo_whatsapp_identity_id": "333" },
+                "object_story_spec": {
+                    "page_id": "111",
+                    "template_data": { "name": "Catalog" }
+                }
+            }));
+        });
+        let catalog_reply = connector
+            .inspect_ads_object(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsInspectRequest {
+                    kind: AdsInventoryKind::Creative,
+                    id: "800".into(),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        catalog.assert();
+        assert_eq!(catalog_reply.product_set_id.as_deref(), Some("555"));
+        assert_eq!(catalog_reply.destination.as_deref(), Some("555"));
+        assert_eq!(catalog_reply.instagram_user_id.as_deref(), Some("222"));
+        assert_eq!(catalog_reply.whatsapp_identity_id.as_deref(), Some("333"));
+
+        let whatsapp = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/801");
+            then.status(200).json_body(json!({
+                "id": "801",
+                "call_to_action_type": "WHATSAPP_MESSAGE",
+                "object_story_spec": {
+                    "page_id": "111",
+                    "link_data": {
+                        "call_to_action": {
+                            "type": "WHATSAPP_MESSAGE",
+                            "value": { "app_destination": "whatsapp" }
+                        }
+                    }
+                }
+            }));
+        });
+        let whatsapp_reply = connector
+            .inspect_ads_object(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsInspectRequest {
+                    kind: AdsInventoryKind::Creative,
+                    id: "801".into(),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        whatsapp.assert();
+        assert_eq!(whatsapp_reply.destination.as_deref(), Some("whatsapp"));
+        assert_eq!(
+            whatsapp_reply.call_to_action_type.as_deref(),
+            Some("WHATSAPP_MESSAGE")
+        );
+
+        let page_cta = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/802");
+            then.status(200).json_body(json!({
+                "id": "802",
+                "call_to_action_type": "LIKE_PAGE",
+                "object_story_spec": {
+                    "video_data": {
+                        "call_to_action": {
+                            "type": "LIKE_PAGE",
+                            "value": { "page": "111" }
+                        }
+                    }
+                }
+            }));
+        });
+        let page_reply = connector
+            .inspect_ads_object(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsInspectRequest {
+                    kind: AdsInventoryKind::Creative,
+                    id: "802".into(),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        page_cta.assert();
+        assert_eq!(page_reply.destination.as_deref(), Some("111"));
+    }
+
+    #[tokio::test]
+    async fn ads_inventory_creatives_do_not_send_effective_status() {
+        let server = MockServer::start();
+        let forbidden = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/act_123/adcreatives")
+                .query_param_exists("effective_status");
+            then.status(400).json_body(json!({
+                "error": { "code": 100, "message": "effective_status is not a parameter" }
+            }));
+        });
+        let ok = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/act_123/adcreatives")
+                .query_param("fields", "id,name,status,object_type")
+                .query_param("limit", "25");
+            then.status(200).json_body(json!({
+                "data": [{ "id": "8", "name": "Hero", "status": "ACTIVE" }]
+            }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let reply = connector
+            .list_ads_inventory(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsInventoryRequest {
+                    account: None,
+                    kind: AdsInventoryKind::Creative,
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        ok.assert();
+        assert_eq!(forbidden.hits(), 0);
+        assert_eq!(reply.items[0].id, "8");
     }
 
     #[tokio::test]
