@@ -2758,20 +2758,41 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
         .and_then(|e| e.get("code"))
         .and_then(|c| c.as_i64())
         .unwrap_or(0);
-    // Meta's generic `message` is often only "Invalid parameter". When the
-    // API includes its operator-facing `error_user_msg`, prefer that safely
-    // structured detail so callers can correct billing, Page, or creative
-    // configuration without repeating the request through a raw HTTP client.
-    let message = err
+    let subcode = err
+        .and_then(|e| e.get("error_subcode"))
+        .and_then(|c| c.as_i64())
+        .unwrap_or(0);
+    // Meta's generic `message` is often only "Invalid parameter". Prefer
+    // `error_user_msg`, and when `error_user_title` is present prepend it
+    // so the dialog title can change operator guidance.
+    let user_msg = err
         .and_then(|e| e.get("error_user_msg"))
         .and_then(|m| m.as_str())
-        .filter(|message| !message.trim().is_empty())
-        .or_else(|| err.and_then(|e| e.get("message")).and_then(|m| m.as_str()))
-        .or_else(|| v.get("error_message").and_then(|m| m.as_str()))
-        .unwrap_or(body);
+        .filter(|message| !message.trim().is_empty());
+    let user_title = err
+        .and_then(|e| e.get("error_user_title"))
+        .and_then(|m| m.as_str())
+        .filter(|title| !title.trim().is_empty());
+    let message = match (user_title, user_msg) {
+        (Some(title), Some(msg)) => format!("{title}: {msg}"),
+        (None, Some(msg)) => msg.to_string(),
+        (Some(title), None) => title.to_string(),
+        (None, None) => err
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .or_else(|| v.get("error_message").and_then(|m| m.as_str()))
+            .unwrap_or(body)
+            .to_string(),
+    };
     let lower = message.to_ascii_lowercase();
+    // 80004 is the Marketing API ads-management rate limit; 341 is Graph's
+    // application-limit / throttling code. Both are retryable waits, not
+    // validation failures.
     let (auth_hit, rate_hit) = if code != 0 {
-        (code == 190, matches!(code, 4 | 17 | 32 | 613))
+        (
+            matches!(code, 190 | 102),
+            matches!(code, 4 | 17 | 32 | 341 | 613 | 80004),
+        )
     } else {
         (
             lower.contains("validating access token")
@@ -2783,9 +2804,18 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
         )
     };
     if auth_hit {
+        // Checkpoint / install / unconfirmed cannot be cleared by
+        // `fb_exchange_token`. Only treat expired/invalid-token subcodes
+        // (and a bare 190/102) as refreshable `token_expired`.
+        let reason = match subcode {
+            458 => "app_not_installed",
+            459 => "user_checkpointed",
+            464 => "unconfirmed_user",
+            _ => "token_expired",
+        };
         return Error::Auth {
             site,
-            reason: "token_expired".into(),
+            reason: reason.into(),
         };
     }
     if rate_hit {
@@ -2925,7 +2955,7 @@ mod tests {
             r#"{"error":{"code":190,"message":"Error validating access token"}}"#,
         );
         assert!(matches!(err, Error::Auth { reason, .. } if reason == "token_expired"));
-        for code in [4, 17, 32, 613] {
+        for code in [4, 17, 32, 341, 613, 80004] {
             let body = format!(r#"{{"error":{{"code":{code},"message":"x"}}}}"#);
             assert!(matches!(
                 map_graph_error(400, &body),
@@ -2957,6 +2987,66 @@ mod tests {
             r#"{"error":{"code":100,"message":"Invalid parameter","error_user_msg":"   "}}"#,
         );
         assert!(matches!(err, Error::Platform { message, .. } if message == "Invalid parameter"));
+
+        let err = map_graph_error(
+            400,
+            r#"{"error":{"code":100,"message":"Invalid parameter","error_user_title":"Payment needed","error_user_msg":"Add a valid payment method."}}"#,
+        );
+        assert!(
+            matches!(err, Error::Platform { message, .. } if message == "Payment needed: Add a valid payment method.")
+        );
+    }
+
+    #[test]
+    fn marketing_error_shapes_that_change_retry_or_guidance() {
+        // One fixture per Marketing/Graph shape that changes Postkit's
+        // retry decision or operator text. Codes from Meta's error
+        // reference and Graph error-handling tables (v26.0).
+        #[allow(clippy::type_complexity)]
+        let cases: &[(&str, fn(&Error) -> bool)] = &[
+            (
+                r#"{"error":{"code":80004,"message":"There have been too many calls to this ad-account"}}"#,
+                |err| matches!(err, Error::RateLimited { .. }),
+            ),
+            (
+                r#"{"error":{"code":341,"message":"Application limit reached"}}"#,
+                |err| matches!(err, Error::RateLimited { .. }),
+            ),
+            (
+                r#"{"error":{"code":102,"message":"API session"}}"#,
+                |err| matches!(err, Error::Auth { reason, .. } if reason == "token_expired"),
+            ),
+            (
+                r#"{"error":{"code":190,"error_subcode":463,"message":"Error validating access token"}}"#,
+                |err| matches!(err, Error::Auth { reason, .. } if reason == "token_expired"),
+            ),
+            (
+                r#"{"error":{"code":190,"error_subcode":467,"message":"Invalid OAuth 2.0 Access Token"}}"#,
+                |err| matches!(err, Error::Auth { reason, .. } if reason == "token_expired"),
+            ),
+            (
+                r#"{"error":{"code":190,"error_subcode":459,"message":"Error validating access token","error_user_title":"Confirm your identity"}}"#,
+                |err| matches!(err, Error::Auth { reason, .. } if reason == "user_checkpointed"),
+            ),
+            (
+                r#"{"error":{"code":190,"error_subcode":458,"message":"Error validating access token"}}"#,
+                |err| matches!(err, Error::Auth { reason, .. } if reason == "app_not_installed"),
+            ),
+            (
+                r#"{"error":{"code":190,"error_subcode":464,"message":"Error validating access token"}}"#,
+                |err| matches!(err, Error::Auth { reason, .. } if reason == "unconfirmed_user"),
+            ),
+            (
+                r#"{"error":{"code":100,"message":"Invalid parameter","error_user_title":"Budget too low","error_user_msg":"Increase the daily budget."}}"#,
+                |err| {
+                    matches!(err, Error::Platform { code, message, .. } if code == "100" && message == "Budget too low: Increase the daily budget.")
+                },
+            ),
+        ];
+        for (body, check) in cases {
+            let err = map_graph_error(400, body);
+            assert!(check(&err), "shape {body} classified as {err:?}");
+        }
     }
 
     #[tokio::test]

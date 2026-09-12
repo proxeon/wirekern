@@ -139,7 +139,7 @@ policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 - [x] Rate-limit → `rate_limited` (exit 4); no blind retry of creates
 - [x] Meta `error_user_msg` preserved when present; tokens redacted
 - [x] `error_user_title` / Marketing subcodes used when they change guidance
-- [ ] Dedicated regression fixture per Marketing error shape that changes retry/guidance (partial today)
+- [x] Dedicated regression fixture per Marketing error shape that changes retry/guidance (partial today)
 
 ## Not this kernel
 
