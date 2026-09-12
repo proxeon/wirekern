@@ -317,6 +317,45 @@ enum AdsCmd {
         #[arg(long)]
         id: String,
     },
+    /// Archive a campaign, ad set, or ad. Default policy denies.
+    Archive {
+        site: String,
+        #[arg(long)]
+        entity: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        confirm_id: String,
+        #[arg(long)]
+        allow_archive: bool,
+    },
+    /// Delete a campaign, ad set, or ad. Irreversible to live.
+    Delete {
+        site: String,
+        #[arg(long)]
+        entity: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        confirm_id: String,
+        #[arg(long)]
+        allow_delete: bool,
+        /// Must be passed. Confirms the operator intends destruction.
+        #[arg(long)]
+        confirm_delete: bool,
+    },
+    /// Copy as PAUSED. Never inherits ACTIVE.
+    Duplicate {
+        site: String,
+        #[arg(long)]
+        entity: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        confirm_id: String,
+        #[arg(long)]
+        allow_duplicate: bool,
+    },
     /// Async Insights Ad Report Run: status, result, or cancel. Jobs expire
     /// in ~30 days and are not stored in the vault.
     #[command(name = "insights-job", subcommand)]
@@ -1208,6 +1247,23 @@ fn apply_ads_lifecycle_policy(client: Client, command: &Commands) -> Client {
         }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
             postkit::AdsAction::Activate,
         ))),
+        Commands::Ads(AdsCmd::Archive {
+            allow_archive: true,
+            ..
+        }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
+            postkit::AdsAction::Archive,
+        ))),
+        Commands::Ads(AdsCmd::Delete {
+            allow_delete: true, ..
+        }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
+            postkit::AdsAction::Delete,
+        ))),
+        Commands::Ads(AdsCmd::Duplicate {
+            allow_duplicate: true,
+            ..
+        }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
+            postkit::AdsAction::Duplicate,
+        ))),
         _ => client,
     }
 }
@@ -2007,6 +2063,62 @@ async fn dispatch(
             let request =
                 build_ads_pause_request(&site, &entity, &id).map_err(|e| fail(&e, json))?;
             one_ads_pause(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::Archive {
+            site,
+            entity,
+            id,
+            confirm_id,
+            allow_archive: _,
+        }) => {
+            let request = build_ads_archive_request(&site, &entity, &id, &confirm_id)
+                .map_err(|e| fail(&e, json))?;
+            one_ads_archive(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::Delete {
+            site,
+            entity,
+            id,
+            confirm_id,
+            allow_delete: _,
+            confirm_delete,
+        }) => {
+            let request =
+                build_ads_delete_request(&site, &entity, &id, &confirm_id, confirm_delete)
+                    .map_err(|e| fail(&e, json))?;
+            one_ads_delete(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::Duplicate {
+            site,
+            entity,
+            id,
+            confirm_id,
+            allow_duplicate: _,
+        }) => {
+            let request = build_ads_duplicate_request(&site, &entity, &id, &confirm_id)
+                .map_err(|e| fail(&e, json))?;
+            one_ads_duplicate(
                 &client,
                 &AccountKey::new(&site, &account),
                 request,

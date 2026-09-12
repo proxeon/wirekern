@@ -1,12 +1,14 @@
 #[cfg(feature = "meta-ads")]
 use crate::ads::AdReviewWait;
 use crate::ads::{
-    AdReviewStatus, AdReviewStatusRequest, AdsActivateRequest, AdsConfiguredStatus,
-    AdsInspectReply, AdsInspectRequest, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
+    AdReviewStatus, AdReviewStatusRequest, AdsActivateRequest, AdsArchiveRequest,
+    AdsConfiguredStatus, AdsDeleteRequest, AdsDuplicateReply, AdsDuplicateRequest, AdsInspectReply,
+    AdsInspectRequest, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
     AdsLifecycleOutcome, AdsPauseRequest, AdsStatusUpdateRequest, AdsTokenInspection,
     CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
     CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest,
-    UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE, PAUSE_RECONCILE_GUIDANCE, SYSTEM_USER_TOKEN_KIND,
+    UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE, ARCHIVE_RECONCILE_GUIDANCE,
+    DELETE_RECONCILE_GUIDANCE, PAUSE_RECONCILE_GUIDANCE, SYSTEM_USER_TOKEN_KIND,
 };
 use crate::apps::AppStore;
 use crate::error::Error;
@@ -1656,6 +1658,102 @@ impl Client {
         .await
     }
 
+    /// Archive a known object. Default policy denies; `--confirm-id` must
+    /// match. Deleted objects cannot be archived.
+    pub async fn archive_ad(
+        &self,
+        key: &AccountKey,
+        request: AdsArchiveRequest,
+        deadline: Deadline,
+    ) -> Result<AdsLifecycleOutcome, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy.authorize(&key.site, AdsAction::Archive)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                confirmed_status_inner(
+                    &*ads,
+                    &app,
+                    &creds,
+                    request.entity,
+                    &request.id,
+                    AdsConfiguredStatus::Archived,
+                    &["DELETED"],
+                    ARCHIVE_RECONCILE_GUIDANCE,
+                    deadline,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
+    /// Delete a known object. Irreversible to live. Default policy denies.
+    pub async fn delete_ad(
+        &self,
+        key: &AccountKey,
+        request: AdsDeleteRequest,
+        deadline: Deadline,
+    ) -> Result<AdsLifecycleOutcome, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy.authorize(&key.site, AdsAction::Delete)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                confirmed_status_inner(
+                    &*ads,
+                    &app,
+                    &creds,
+                    request.entity,
+                    &request.id,
+                    AdsConfiguredStatus::Deleted,
+                    &[],
+                    DELETE_RECONCILE_GUIDANCE,
+                    deadline,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
+    /// Copy an object as PAUSED. Default policy denies. Never inherits ACTIVE.
+    pub async fn duplicate_ad(
+        &self,
+        key: &AccountKey,
+        request: AdsDuplicateRequest,
+        deadline: Deadline,
+    ) -> Result<AdsDuplicateReply, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy.authorize(&key.site, AdsAction::Duplicate)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                ads.duplicate_ad_object(&app, &creds, &request, deadline)
+                    .await
+            })
+        })
+        .await
+    }
+
     /// Read one ad object's configured and effective state once. This is a
     /// GET-only operation, so it bypasses `AdsPolicy`: inspecting a Meta
     /// review cannot activate an object, alter a budget, or affect billing.
@@ -2308,6 +2406,69 @@ async fn pause_ad_inner(
                 entity: request.entity,
                 id: request.id.clone(),
                 guidance: PAUSE_RECONCILE_GUIDANCE.into(),
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn confirmed_status_inner(
+    ads: &dyn AdsManager,
+    app: &AppConfig,
+    creds: &AccountCreds,
+    entity: crate::ads::AdEntity,
+    id: &str,
+    status: AdsConfiguredStatus,
+    refuse: &[&str],
+    guidance: &str,
+    deadline: Deadline,
+) -> Result<AdsLifecycleOutcome, Error> {
+    let review = ads
+        .ad_review_status(
+            app,
+            creds,
+            &AdReviewStatusRequest {
+                entity,
+                id: id.into(),
+            },
+            deadline,
+        )
+        .await?;
+    if refuse
+        .iter()
+        .any(|value| review.configured_status.eq_ignore_ascii_case(value))
+    {
+        return Err(Error::InvalidQuery {
+            site: review.site.clone(),
+            reason: format!("not_{}:{}", status.as_str(), review.configured_status),
+        });
+    }
+    if review
+        .configured_status
+        .eq_ignore_ascii_case(status.meta_value())
+    {
+        return Ok(AdsLifecycleOutcome::Applied { status: review });
+    }
+    match ads
+        .update_ad_status(
+            app,
+            creds,
+            &AdsStatusUpdateRequest {
+                entity,
+                id: id.into(),
+                status,
+            },
+            deadline,
+        )
+        .await
+    {
+        Ok(status) => Ok(AdsLifecycleOutcome::Applied { status }),
+        Err(Error::Network { .. } | Error::DeadlineExceeded { .. }) => {
+            Ok(AdsLifecycleOutcome::ReconciliationRequired {
+                entity,
+                id: id.into(),
+                guidance: guidance.into(),
             })
         }
         Err(error) => Err(error),

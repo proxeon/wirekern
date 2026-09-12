@@ -1,7 +1,7 @@
 use crate::ads::{
     AdEntity, AdPreviewFormat, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest,
-    AdsActivateRequest, AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind,
-    AdsInventoryReply, AdsInventoryRequest, AdsLifecycleOutcome, AdsPauseRequest,
+    AdsActivateRequest, AdsArchiveRequest, AdsInspectReply, AdsInspectRequest, AdsInventoryItem,
+    AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest, AdsLifecycleOutcome, AdsPauseRequest,
     AdsStatusUpdateRequest, AdsTargetingReadback, CampaignObjective, CreateLinkAdCreativeRequest,
     CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
     PausedAdCreate, PausedCampaign, UploadAdImageRequest, UploadedAdImage,
@@ -600,6 +600,22 @@ impl AdsManager for MockPub {
             configured_status: request.status.meta_value().into(),
             effective_status: request.status.meta_value().into(),
             issues: vec![],
+        })
+    }
+
+    async fn duplicate_ad_object(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &crate::ads::AdsDuplicateRequest,
+        _deadline: Deadline,
+    ) -> Result<crate::ads::AdsDuplicateReply, Error> {
+        Ok(crate::ads::AdsDuplicateReply {
+            site: self.site.clone(),
+            entity: request.entity,
+            source_id: request.id.clone(),
+            copied_id: "999".into(),
+            status: "PAUSED".into(),
         })
     }
 
@@ -2838,6 +2854,79 @@ async fn client_pause_ad_is_allowed_and_idempotent_when_already_paused() {
     assert!(
         matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ManageAdsLifecycle)
     );
+}
+
+#[tokio::test]
+async fn client_archive_ad_is_denied_by_default_and_opt_in() {
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let request = AdsArchiveRequest {
+        entity: AdEntity::Adset,
+        id: "456".into(),
+        confirm_id: "456".into(),
+    };
+    let denied = client
+        .archive_ad(&key, request.clone(), Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(denied, Error::PolicyDenied { action, reason, .. } if action == "archive" && reason == "paused_only")
+    );
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let allowed = client.with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::Archive)));
+    let outcome = allowed
+        .archive_ad(&key, request, Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert!(matches!(outcome, AdsLifecycleOutcome::Applied { .. }));
+}
+
+#[tokio::test]
+async fn client_delete_and_duplicate_are_denied_until_opt_in() {
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let delete = crate::ads::AdsDeleteRequest {
+        entity: AdEntity::Ad,
+        id: "456".into(),
+        confirm_id: "456".into(),
+        confirm_delete: true,
+    };
+    let denied = client
+        .delete_ad(&key, delete.clone(), Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(denied, Error::PolicyDenied { action, reason, .. } if action == "delete" && reason == "paused_only")
+    );
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let allowed = client.with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::Delete)));
+    assert!(matches!(
+        allowed
+            .delete_ad(&key, delete, Deadline::from_secs(30))
+            .await
+            .unwrap(),
+        AdsLifecycleOutcome::Applied { .. }
+    ));
+
+    let dup = crate::ads::AdsDuplicateRequest {
+        entity: AdEntity::Campaign,
+        id: "100".into(),
+        confirm_id: "100".into(),
+    };
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let denied = client
+        .duplicate_ad(&key, dup.clone(), Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(denied, Error::PolicyDenied { action, reason, .. } if action == "duplicate" && reason == "paused_only")
+    );
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let allowed = client.with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::Duplicate)));
+    let copied = allowed
+        .duplicate_ad(&key, dup, Deadline::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(copied.copied_id, "999");
+    assert_eq!(copied.status, "PAUSED");
 }
 
 /// A poller is useful only if it stops on the platform's final state. The

@@ -103,9 +103,9 @@ policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 - [x] Typed `ACTIVE` → `PAUSED` emergency stop
 - [x] Refuse activate when configured status is not paused or review is unresolved
 - [x] Write-ahead / no blind retry on ambiguous activation
-- [ ] Archive
-- [ ] Delete (destructive; separate proposal)
-- [ ] Duplicate (can inherit delivery/budget; separate proposal)
+- [x] Archive
+- [x] Delete (destructive; separate proposal)
+- [x] Duplicate (can inherit delivery/budget; separate proposal)
 - [ ] Typed daily-budget edit (currency, current/new minor units, max-change guard)
 - [ ] Typed bid-strategy edit
 - [ ] Typed schedule edit

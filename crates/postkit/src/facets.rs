@@ -7,12 +7,12 @@
 //! trait by accident.
 
 use crate::ads::{
-    AdReviewStatus, AdReviewStatusRequest, AdVideoStatus, AdVideoStatusRequest, AdsInspectReply,
-    AdsInspectRequest, AdsInventoryReply, AdsInventoryRequest, AdsStatusUpdateRequest,
-    AdsTokenInspection, CreateAdCreativeRequest, CreateLinkAdCreativeRequest,
-    CreatePausedAdRequest, CreateVideoAdCreativeRequest, CreatedAd, CreatedAdCreative,
-    CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest,
-    UploadAdVideoRequest, UploadedAdImage, UploadedAdVideo,
+    AdReviewStatus, AdReviewStatusRequest, AdVideoStatus, AdVideoStatusRequest, AdsDuplicateReply,
+    AdsDuplicateRequest, AdsInspectReply, AdsInspectRequest, AdsInventoryReply,
+    AdsInventoryRequest, AdsStatusUpdateRequest, AdsTokenInspection, CreateAdCreativeRequest,
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreateVideoAdCreativeRequest, CreatedAd,
+    CreatedAdCreative, CreativePreview, CreativePreviewRequest, MarketingApiAccessTier,
+    UploadAdImageRequest, UploadAdVideoRequest, UploadedAdImage, UploadedAdVideo,
 };
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsJob, InsightsQuery, InsightsReply};
@@ -219,6 +219,20 @@ pub trait AdsManager: Send + Sync {
         _request: &AdsStatusUpdateRequest,
         _deadline: Deadline,
     ) -> Result<AdReviewStatus, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ManageAdsLifecycle,
+        })
+    }
+
+    /// POST `/{id}/copies` with `status_option=PAUSED`. Default refuses.
+    async fn duplicate_ad_object(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _request: &AdsDuplicateRequest,
+        _deadline: Deadline,
+    ) -> Result<AdsDuplicateReply, Error> {
         Err(Error::UnsupportedCapability {
             site: Site::new(""),
             need: Capability::ManageAdsLifecycle,

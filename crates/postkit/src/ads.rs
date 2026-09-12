@@ -355,6 +355,84 @@ impl AdsPauseRequest {
 pub const PAUSE_RECONCILE_GUIDANCE: &str =
     "Pause POST left without a confirmed Graph reply. Read ads status for this id; do not retry blindly.";
 
+/// Archive requires `--confirm-id` so a copied allow flag cannot aim at
+/// another object. Default policy denies archive.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsArchiveRequest {
+    pub entity: AdEntity,
+    pub id: String,
+    pub confirm_id: String,
+}
+
+impl AdsArchiveRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("ad_entity_id", &self.id)?;
+        require_numeric_id("confirm_id", &self.confirm_id)?;
+        if self.confirm_id != self.id {
+            return Err("confirm_id_mismatch".into());
+        }
+        Ok(())
+    }
+}
+
+pub const ARCHIVE_RECONCILE_GUIDANCE: &str =
+    "Archive POST left without a confirmed Graph reply. Read ads status for this id; do not retry blindly.";
+
+/// Delete is irreversible to live. `confirm_delete` must be true in addition
+/// to matching `--confirm-id`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsDeleteRequest {
+    pub entity: AdEntity,
+    pub id: String,
+    pub confirm_id: String,
+    pub confirm_delete: bool,
+}
+
+impl AdsDeleteRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("ad_entity_id", &self.id)?;
+        require_numeric_id("confirm_id", &self.confirm_id)?;
+        if self.confirm_id != self.id {
+            return Err("confirm_id_mismatch".into());
+        }
+        if !self.confirm_delete {
+            return Err("confirm_delete_required".into());
+        }
+        Ok(())
+    }
+}
+
+pub const DELETE_RECONCILE_GUIDANCE: &str =
+    "Delete POST left without a confirmed Graph reply. Read ads status for this id; do not retry blindly.";
+
+/// Copy with Meta `status_option=PAUSED` hard-coded. Never inherits ACTIVE.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsDuplicateRequest {
+    pub entity: AdEntity,
+    pub id: String,
+    pub confirm_id: String,
+}
+
+impl AdsDuplicateRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("ad_entity_id", &self.id)?;
+        require_numeric_id("confirm_id", &self.confirm_id)?;
+        if self.confirm_id != self.id {
+            return Err("confirm_id_mismatch".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsDuplicateReply {
+    pub site: Site,
+    pub entity: AdEntity,
+    pub source_id: String,
+    pub copied_id: String,
+    pub status: String,
+}
+
 /// Meta's outcome-based campaign objectives. Keeping this closed prevents a
 /// misspelled command-line objective from becoming an opaque Graph error
 /// after a write has already been attempted.

@@ -4,13 +4,14 @@ use crate::app::fail;
 use crate::output::{emit_ok, emit_raw, human_line};
 use postkit::{
     AccountKey, AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest,
-    AdReviewWait, AdsActivateRequest, AdsInspectReply, AdsInspectRequest, AdsInventoryItem,
-    AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest, AdsLifecycleCheckpoint,
-    AdsLifecycleOutcome, AdsPauseRequest, AttributionWindow, BidStrategy, Breakdown,
-    CampaignObjective, Client, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
-    CreatedAdCreative, CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply,
-    Error, InsightRow, InsightsLevel, InsightsQuery, LinkAdCreative, LinkCallToAction, Metric,
-    PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
+    AdReviewWait, AdsActivateRequest, AdsArchiveRequest, AdsDeleteRequest, AdsDuplicateRequest,
+    AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind, AdsInventoryReply,
+    AdsInventoryRequest, AdsLifecycleCheckpoint, AdsLifecycleOutcome, AdsPauseRequest,
+    AttributionWindow, BidStrategy, Breakdown, CampaignObjective, Client,
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, Error, InsightRow,
+    InsightsLevel, InsightsQuery, LinkAdCreative, LinkCallToAction, Metric, PausedAd,
+    PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
     PublishedMedia, Site, UploadAdImageRequest, UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE,
 };
 use std::fs::OpenOptions;
@@ -908,6 +909,120 @@ pub(crate) fn build_ads_pause_request(
         .validate()
         .map_err(|reason| ads_input_error(site, reason))?;
     Ok(request)
+}
+
+pub(crate) fn build_ads_archive_request(
+    site: &str,
+    entity: &str,
+    id: &str,
+    confirm_id: &str,
+) -> Result<AdsArchiveRequest, Error> {
+    let entity = AdEntity::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
+    let request = AdsArchiveRequest {
+        entity,
+        id: id.into(),
+        confirm_id: confirm_id.into(),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) fn build_ads_delete_request(
+    site: &str,
+    entity: &str,
+    id: &str,
+    confirm_id: &str,
+    confirm_delete: bool,
+) -> Result<AdsDeleteRequest, Error> {
+    let entity = AdEntity::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
+    let request = AdsDeleteRequest {
+        entity,
+        id: id.into(),
+        confirm_id: confirm_id.into(),
+        confirm_delete,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_ads_delete(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsDeleteRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.delete_ad(key, request, deadline).await {
+        Ok(outcome) => {
+            emit_lifecycle_outcome(&outcome, json);
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+pub(crate) fn build_ads_duplicate_request(
+    site: &str,
+    entity: &str,
+    id: &str,
+    confirm_id: &str,
+) -> Result<AdsDuplicateRequest, Error> {
+    let entity = AdEntity::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
+    let request = AdsDuplicateRequest {
+        entity,
+        id: id.into(),
+        confirm_id: confirm_id.into(),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_ads_duplicate(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsDuplicateRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.duplicate_ad(key, request, deadline).await {
+        Ok(reply) => {
+            if json {
+                emit_raw(&serde_json::to_value(&reply).expect("json"));
+            } else {
+                human_line(format!(
+                    "{} {} copied={} status={}",
+                    reply.entity.as_str(),
+                    reply.source_id,
+                    reply.copied_id,
+                    reply.status
+                ));
+            }
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+pub(crate) async fn one_ads_archive(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsArchiveRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.archive_ad(key, request, deadline).await {
+        Ok(outcome) => {
+            emit_lifecycle_outcome(&outcome, json);
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
 }
 
 pub(crate) async fn one_ads_pause(

@@ -7,10 +7,10 @@
 //! `fb_exchange_token` grant (~60 days).
 
 use crate::ads::{
-    AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdsInspectReply, AdsInspectRequest,
-    AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
-    AdsStatusUpdateRequest, AdsTargetingReadback, AdsTokenInspection, AdsTokenKind,
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdsDuplicateReply, AdsDuplicateRequest,
+    AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind, AdsInventoryReply,
+    AdsInventoryRequest, AdsStatusUpdateRequest, AdsTargetingReadback, AdsTokenInspection,
+    AdsTokenKind, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
     CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, MarketingApiAccessTierKind,
     PausedAdCreate, UploadAdImageRequest, UploadedAdImage, MARKETING_API_ACCESS_TIER_DASHBOARD,
     SYSTEM_USER_TOKEN_KIND,
@@ -646,6 +646,17 @@ impl AdsManager for MetaAds {
     ) -> Result<AdReviewStatus, Error> {
         let token = access_token(creds)?;
         update_ad_status(&self.http, &self.base, &self.site, token, request, deadline).await
+    }
+
+    async fn duplicate_ad_object(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &AdsDuplicateRequest,
+        deadline: Deadline,
+    ) -> Result<AdsDuplicateReply, Error> {
+        let token = access_token(creds)?;
+        duplicate_ad_object(&self.http, &self.base, &self.site, token, request, deadline).await
     }
 }
 
@@ -1490,6 +1501,46 @@ async fn update_ad_status(
         deadline,
     )
     .await
+}
+
+/// Copy with Meta's documented default `status_option=PAUSED`. Postkit
+/// never sends ACTIVE or INHERITED_FROM_SOURCE.
+async fn duplicate_ad_object(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    token: &str,
+    request: &AdsDuplicateRequest,
+    deadline: Deadline,
+) -> Result<AdsDuplicateReply, Error> {
+    let body = form(&[("status_option", "PAUSED"), ("access_token", token)]);
+    let url = format!("{base}/{}/copies", request.id);
+    let response = http
+        .send(
+            http.post(&url)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(body),
+            deadline,
+            site,
+        )
+        .await?;
+    let response = read_json(response, site).await?;
+    let copied_id = nonempty_value_string(response.get("copied_campaign_id"))
+        .or_else(|| nonempty_value_string(response.get("copied_adset_id")))
+        .or_else(|| nonempty_value_string(response.get("copied_ad_id")))
+        .or_else(|| nonempty_value_string(response.get("copied_adgroup_id")))
+        .ok_or_else(|| Error::Platform {
+            site: site.clone(),
+            code: "missing_copied_id".into(),
+            message: "ad copy returned no copied id".into(),
+        })?;
+    Ok(AdsDuplicateReply {
+        site: site.clone(),
+        entity: request.entity,
+        source_id: request.id.clone(),
+        copied_id,
+        status: "PAUSED".into(),
+    })
 }
 
 fn inventory_list_fields(kind: AdsInventoryKind) -> &'static str {
