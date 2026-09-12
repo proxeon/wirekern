@@ -1,6 +1,6 @@
 # meta_ads runbook
 
-Spend/performance insights plus paused-first management through the Meta Marketing API (Graph `v26.0`, pinned). Scope: `ads_read,ads_management`. Tier B can upload an account image, create a Page image-link creative, preview that creative locally, and create campaigns, ad sets, and ads; every delivery object form hard-codes `status=PAUSED`. There is no activation, budget-update, or delete command; policy refuses those future spend-shaped actions by default.
+Spend/performance insights plus paused-first management through the Meta Marketing API (Graph `v26.0`, pinned). Scope: `ads_read,ads_management`. Creates still hard-code `status=PAUSED`. CLI can activate, pause, archive, delete, duplicate, and edit budget/bid/schedule/placement/targeting/creative; default `PausedOnlyAdsPolicy` **denies** every spend-starting action until an explicit `--allow-*` flag. HTTP ads routes are GET-only (`pk_live_` is not a spend key). MCP paused creates require `allow_create: true`.
 
 Deferred lifecycle, editing, creative, and reporting work is tracked in the
 [Meta Ads roadmap](./roadmap.md). Shipped vs missing board:

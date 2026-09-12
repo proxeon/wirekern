@@ -6,11 +6,13 @@ that every Marketing API feature should be copied into Postkit.
 
 ## Shipped boundary
 
-Postkit currently reads metrics and ad accounts; uploads image assets; creates
-one Page-backed image-link creative; creates campaign, ad set, and ad objects
-with `status=PAUSED`; previews creatives; reads review state; and resumes a
-checkpointed paused-draft launch. It exposes no command that can deliver an
-ad, change a budget, or change billing.
+Postkit reads metrics and ad accounts; uploads image and video assets; creates
+typed paused campaigns, ad sets, ads, and several creative formats; previews
+creatives; lists and inspects objects; and can activate, pause, archive,
+delete, duplicate, and apply typed edits **from the CLI**. Default
+`PausedOnlyAdsPolicy` still denies every spend-starting action before the
+vault. `--allow-activate` (and matching `--allow-*` flags) opt in one action.
+HTTP and MCP do not activate or edit budget.
 
 `PausedOnlyAdsPolicy` is the boundary. Future work must preserve a clear
 approval point before credentials or HTTP, rather than treating a new CLI flag

@@ -49,7 +49,7 @@ no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
 - [x] Campaign: typed objectives `awareness` | `traffic` | `engagement` | `leads` | `app_promotion` | `sales` → `OUTCOME_*`
 - [x] Campaign: `special_ad_categories` (explicit; blank = none)
 - [x] Ad set: `daily_budget` in account minor units (positive integer)
-- [x] Ad set: bid strategy `lowest_cost_without_cap` only
+- [x] Ad set: bid strategy `lowest_cost_without_cap` (default) plus `COST_CAP`, bid cap, min ROAS with their constraint fields
 - [x] Ad set: `billing_event` + `optimization_goal` (required strings; pairing checked on manifests)
 - [x] Ad set: targeting from a reviewed JSON object file
 - [x] Ad: name + `adset_id` + `creative_id` (no creative/Page/tracking defaults)
@@ -58,7 +58,7 @@ no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
 - [x] Closed enums for `billing_event` / `optimization_goal` on the primitive CLI (manifest already pairs awareness-family)
 - [x] Typed targeting (geo, age, placements) instead of a pass-through JSON object
 - [x] Lifetime budget, campaign-level budget, ad-set budget sharing
-- [x] Other bid strategies (`COST_CAP`, bid cap, min ROAS) — each needs its constraint fields first
+- [x] Other bid strategies (`COST_CAP`, bid cap, min ROAS) with constraint fields (`bid_amount` / `roas_average_floor`)
 - [x] Schedule (`start_time` / `end_time`) as typed fields
 - [x] Promoted object (pixel, app, Page, catalog) as a typed field
 
@@ -66,7 +66,7 @@ no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
 
 - [x] Multipart image upload → account image hash (path never in errors)
 - [x] Page-backed image-link creative (`object_story_spec`); HTTPS destination required
-- [x] CTA `learn_more` only
+- [x] CTA `learn_more` first; additional image-link types have extra Meta `value` requirements
 - [x] Preview `desktop_feed_standard` | `mobile_feed_standard` to a **new** local HTML file
 - [x] Policy gate `UploadAdImage` / `CreateLinkAdCreative` (assets cannot spend alone)
 - [x] Additional image-link CTAs (each has extra Meta value requirements)
@@ -94,10 +94,13 @@ no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
 - [x] List/inventory: campaigns, ad sets, ads, creatives for a selected account (capped pages, stable order)
 - [x] Readback of budget, bid, targeting, Page, destination on a known object (needed before any activate)
 
-## Lifecycle and edits (not shipped; policy stubs exist)
+## Lifecycle and edits
 
-`AdsAction::Activate` and `AdsAction::UpdateBudget` exist and the default
-policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
+CLI verbs exist. Default `PausedOnlyAdsPolicy` still **denies** activate,
+archive, delete, duplicate, and edits (`paused_only`) before the vault.
+`--allow-activate` (and the matching `--allow-*` flags) opt in **one**
+`AdsAction` only. HTTP and MCP stay off this surface (`pk_live_` is not a
+spend key).
 
 - [x] Typed `PAUSED` → `ACTIVE` with explicit confirmation of delivery + budget consequences
 - [x] Typed `ACTIVE` → `PAUSED` emergency stop
@@ -129,9 +132,9 @@ policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 | Typed edits (budget/bid/schedule/placement/targeting/creative) | policy deny | [x] | [ ] | [ ] |
 
 - [x] Not routable via generic `post` (`publish_unsupported`)
-- [x] MCP omits creates (no unattended spend over a tool call)
+- [x] MCP omits activate / budget / archive / delete (no unattended spend over a tool call)
 - [x] HTTP ads reads (only if a named non-exec caller needs them; `pk_live_` is not a spend key)
-- [x] MCP paused creates (only with a confirmation field as strict as `--allow-send`)
+- [x] MCP paused creates (`ads_create_paused` with `allow_create: true`, as strict as `--allow-send`)
 
 ## Reliability already in the kernel
 
@@ -160,12 +163,10 @@ dead APIs, or custody violations.
 
 ## Suggested kernel order
 
-1. Inventory reads (list campaigns / ad sets / ads for one `act_`, capped)
-2. Tier C: confirmed activate + emergency pause (default policy still deny)
-3. One edit family: daily budget only, with confirmation + max-change guard
-4. Close targeting / billing / optimization on the primitive CLI (typed, not raw JSON/strings)
-5. One new creative format (second CTA **or** video, not both)
-6. Reporting breadth after delivery objects can be listed and paused/activated on purpose
+Shipped on `main`: inventory + inspect, confirmed activate / emergency pause,
+daily-budget and other typed edits, extra creatives, HTTP ads reads, MCP
+paused creates. Remaining inspect/edit/CLI fidelity lives in
+[plans/003-gap/001-meta-ads-gaps.md](../../plans/003-gap/001-meta-ads-gaps.md).
 
 No row starts just because Meta exposes the endpoint. It starts when policy,
 typed payload, timeout/idempotency, tests, and a live paused/low-budget
