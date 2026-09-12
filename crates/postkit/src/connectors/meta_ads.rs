@@ -593,7 +593,7 @@ async fn create_paused_ad(
                 ("optimization_goal", adset.optimization_goal.meta_value().into()),
                 (
                     "targeting",
-                    serde_json::to_string(&adset.targeting).expect("Value serializes"),
+                    serde_json::to_string(&adset.targeting).expect("AdTargeting serializes"),
                 ),
             ],
         ),
@@ -2013,7 +2013,16 @@ mod tests {
                         bid_strategy: crate::ads::BidStrategy::LowestCostWithoutCap,
                         billing_event: crate::ads::BillingEvent::Impressions,
                         optimization_goal: crate::ads::OptimizationGoal::Reach,
-                        targeting: json!({ "geo_locations": { "countries": ["MY"] } }),
+                        targeting: crate::ads::AdTargeting {
+                            geo_locations: crate::ads::GeoLocations {
+                                countries: vec!["MY".into()],
+                            },
+                            age_min: None,
+                            age_max: None,
+                            publisher_platforms: vec![],
+                            facebook_positions: vec![],
+                            instagram_positions: vec![],
+                        },
                     }),
                 },
                 Deadline::from_secs(30),

@@ -93,9 +93,7 @@ pub struct DraftAdset {
     pub bid_strategy: crate::ads::BidStrategy,
     pub billing_event: crate::ads::BillingEvent,
     pub optimization_goal: crate::ads::OptimizationGoal,
-    /// Raw Meta targeting spec. Only its object-ness is checked locally;
-    /// platform-specific rules belong to the connector's remote validation.
-    pub targeting: serde_json::Value,
+    pub targeting: crate::ads::AdTargeting,
 }
 
 /// The image reference is a *CLI-boundary* path: the CLI resolves it to
@@ -157,9 +155,7 @@ impl PausedDraftManifest {
                 self.adset.billing_event.as_str()
             ));
         }
-        if !self.adset.targeting.is_object() {
-            return Err("targeting_must_be_object".into());
-        }
+        self.adset.targeting.validate()?;
         // Creative
         require_name(&self.creative.name)?;
         require_numeric_id("page_id", &self.creative.page_id)?;

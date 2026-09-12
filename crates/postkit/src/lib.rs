@@ -64,6 +64,7 @@ pub mod connectors;
 
 pub use ads::{
     AdEntity, AdPreviewFormat, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdReviewWait,
+    AdTargeting, FacebookPosition, GeoLocations, InstagramPosition, PublisherPlatform,
     AdsTokenInspection, AdsTokenKind, BidStrategy, BillingEvent, CampaignObjective,
     CreateLinkAdCreativeRequest,
     CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,

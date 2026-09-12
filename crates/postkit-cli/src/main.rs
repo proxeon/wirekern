@@ -370,9 +370,19 @@ enum AdsCmd {
         /// reach | brand_awareness | link_clicks | landing_page_views | …
         #[arg(long)]
         optimization_goal: String,
-        /// JSON object with the Meta targeting specification.
+        /// Repeatable ISO 3166-1 alpha-2 country (MY, US, …).
+        #[arg(long = "country", required = true)]
+        countries: Vec<String>,
         #[arg(long)]
-        targeting_file: PathBuf,
+        age_min: Option<u8>,
+        #[arg(long)]
+        age_max: Option<u8>,
+        #[arg(long = "publisher-platform")]
+        publisher_platforms: Vec<String>,
+        #[arg(long = "facebook-position")]
+        facebook_positions: Vec<String>,
+        #[arg(long = "instagram-position")]
+        instagram_positions: Vec<String>,
     },
     /// Create a Meta ad with status hard-coded to PAUSED.
     CreateAd {
@@ -1885,21 +1895,13 @@ async fn dispatch(
             bid_strategy,
             billing_event,
             optimization_goal,
-            targeting_file,
+            countries,
+            age_min,
+            age_max,
+            publisher_platforms,
+            facebook_positions,
+            instagram_positions,
         }) => {
-            // A file avoids shell-escaping a nested targeting object and
-            // makes the exact audience specification reviewable before any
-            // write. Do not put the file path in an error: CI paths and home
-            // directories add no actionable operator information.
-            let targeting = std::fs::read_to_string(targeting_file).map_err(|_| {
-                fail(
-                    &Error::InvalidQuery {
-                        site: Site::new(&site),
-                        reason: "targeting_file_unreadable".into(),
-                    },
-                    json,
-                )
-            })?;
             let request = build_paused_adset_request(
                 &site,
                 PausedAdsetOptions {
@@ -1910,7 +1912,12 @@ async fn dispatch(
                     bid_strategy,
                     billing_event,
                     optimization_goal,
-                    targeting,
+                    countries,
+                    age_min,
+                    age_max,
+                    publisher_platforms,
+                    facebook_positions,
+                    instagram_positions,
                 },
             )
             .map_err(|e| fail(&e, json))?;
@@ -3025,8 +3032,8 @@ mod tests {
             "IMPRESSIONS",
             "--optimization-goal",
             "REACH",
-            "--targeting-file",
-            "targeting.json",
+            "--country",
+            "MY",
         ]);
         assert!(missing_bid_strategy.is_err());
 
@@ -3047,8 +3054,8 @@ mod tests {
             "IMPRESSIONS",
             "--optimization-goal",
             "REACH",
-            "--targeting-file",
-            "targeting.json",
+            "--country",
+            "MY",
         ])
         .unwrap();
         assert!(matches!(
@@ -3081,7 +3088,12 @@ mod tests {
                 bid_strategy: "lowest_cost_without_cap".into(),
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
-                targeting: r#"{"geo_locations":{"countries":["MY"]}}"#.into(),
+                countries: vec!["MY".into()],
+                age_min: None,
+                age_max: None,
+                publisher_platforms: vec![],
+                facebook_positions: vec![],
+                instagram_positions: vec![],
             },
         )
         .unwrap();
@@ -3097,40 +3109,43 @@ mod tests {
                 bid_strategy: "cost_cap".into(),
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
-                targeting: "{}".into(),
+                countries: vec!["MY".into()],
+                age_min: None,
+                age_max: None,
+                publisher_platforms: vec![],
+                facebook_positions: vec![],
+                instagram_positions: vec![],
             },
         );
         assert!(
             matches!(bad_bid_strategy, Err(Error::InvalidQuery { reason, .. }) if reason == "unknown_bid_strategy:cost_cap")
         );
 
-        for (objective, targeting, reason) in [
-            ("clicks", "{}", "unknown_objective:clicks"),
-            ("sales", "[]", "targeting_must_be_object"),
-            ("sales", "not json", "bad_targeting_json"),
-        ] {
-            let result = if objective == "clicks" {
-                build_paused_campaign_request("meta_ads", None, "x", objective, "")
-            } else {
-                build_paused_adset_request(
-                    "meta_ads",
-                    PausedAdsetOptions {
-                        ad_account: None,
-                        name: "x".into(),
-                        campaign_id: "100".into(),
-                        daily_budget: 1,
-                        bid_strategy: "lowest_cost_without_cap".into(),
-                        billing_event: "IMPRESSIONS".into(),
-                        optimization_goal: "REACH".into(),
-                        targeting: targeting.into(),
-                    },
-                )
-            };
-            assert!(
-                matches!(result, Err(Error::InvalidQuery { reason: actual, .. }) if actual == reason),
-                "{objective}/{targeting} should be {reason}"
-            );
-        }
+        let clicks = build_paused_campaign_request("meta_ads", None, "x", "clicks", "");
+        assert!(
+            matches!(clicks, Err(Error::InvalidQuery { reason, .. }) if reason == "unknown_objective:clicks")
+        );
+        let no_country = build_paused_adset_request(
+            "meta_ads",
+            PausedAdsetOptions {
+                ad_account: None,
+                name: "x".into(),
+                campaign_id: "100".into(),
+                daily_budget: 1,
+                bid_strategy: "lowest_cost_without_cap".into(),
+                billing_event: "IMPRESSIONS".into(),
+                optimization_goal: "REACH".into(),
+                countries: vec![],
+                age_min: None,
+                age_max: None,
+                publisher_platforms: vec![],
+                facebook_positions: vec![],
+                instagram_positions: vec![],
+            },
+        );
+        assert!(
+            matches!(no_country, Err(Error::InvalidQuery { reason, .. }) if reason == "targeting_missing_country")
+        );
     }
 
     #[test]

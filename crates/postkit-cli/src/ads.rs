@@ -481,8 +481,7 @@ pub(crate) fn build_paused_adset_request(
         .map_err(|reason| ads_input_error(site, reason))?;
     let optimization_goal = postkit::OptimizationGoal::from_str(&options.optimization_goal)
         .map_err(|reason| ads_input_error(site, reason))?;
-    let targeting = serde_json::from_str(&options.targeting)
-        .map_err(|_| ads_input_error(site, "bad_targeting_json"))?;
+    let targeting = build_ad_targeting(&options).map_err(|reason| ads_input_error(site, reason))?;
     let request = CreatePausedAdRequest {
         account: options.ad_account,
         create: PausedAdCreate::Adset(PausedAdset {
@@ -512,7 +511,43 @@ pub(crate) struct PausedAdsetOptions {
     pub(crate) bid_strategy: String,
     pub(crate) billing_event: String,
     pub(crate) optimization_goal: String,
-    pub(crate) targeting: String,
+    pub(crate) countries: Vec<String>,
+    pub(crate) age_min: Option<u8>,
+    pub(crate) age_max: Option<u8>,
+    pub(crate) publisher_platforms: Vec<String>,
+    pub(crate) facebook_positions: Vec<String>,
+    pub(crate) instagram_positions: Vec<String>,
+}
+
+fn build_ad_targeting(options: &PausedAdsetOptions) -> Result<postkit::AdTargeting, String> {
+    let countries = options
+        .countries
+        .iter()
+        .map(|c| c.trim().to_ascii_uppercase())
+        .collect();
+    let publisher_platforms = options
+        .publisher_platforms
+        .iter()
+        .map(|p| p.parse())
+        .collect::<Result<Vec<_>, _>>()?;
+    let facebook_positions = options
+        .facebook_positions
+        .iter()
+        .map(|p| p.parse())
+        .collect::<Result<Vec<_>, _>>()?;
+    let instagram_positions = options
+        .instagram_positions
+        .iter()
+        .map(|p| p.parse())
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(postkit::AdTargeting {
+        geo_locations: postkit::GeoLocations { countries },
+        age_min: options.age_min,
+        age_max: options.age_max,
+        publisher_platforms,
+        facebook_positions,
+        instagram_positions,
+    })
 }
 
 pub(crate) fn build_paused_ad_request(

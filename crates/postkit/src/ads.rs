@@ -6,7 +6,6 @@
 
 use crate::types::Site;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::str::FromStr;
 
 /// The three entities a Tier B request can create. `Adset` follows Meta's
@@ -353,6 +352,168 @@ pub struct PausedCampaign {
     pub special_ad_categories: Vec<String>,
 }
 
+/// ISO 3166-1 alpha-2 countries plus optional age and placement lists.
+/// Unknown keys are refused so this is not a Graph targeting hatch.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdTargeting {
+    pub geo_locations: GeoLocations,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_min: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_max: Option<u8>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub publisher_platforms: Vec<PublisherPlatform>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facebook_positions: Vec<FacebookPosition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instagram_positions: Vec<InstagramPosition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeoLocations {
+    pub countries: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublisherPlatform {
+    Facebook,
+    Instagram,
+    AudienceNetwork,
+    Messenger,
+}
+
+impl PublisherPlatform {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Facebook => "facebook",
+            Self::Instagram => "instagram",
+            Self::AudienceNetwork => "audience_network",
+            Self::Messenger => "messenger",
+        }
+    }
+}
+
+impl FromStr for PublisherPlatform {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "facebook" => Ok(Self::Facebook),
+            "instagram" => Ok(Self::Instagram),
+            "audience_network" => Ok(Self::AudienceNetwork),
+            "messenger" => Ok(Self::Messenger),
+            other => Err(format!("unknown_publisher_platform:{other}")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FacebookPosition {
+    Feed,
+    Story,
+    Reels,
+}
+
+impl FacebookPosition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Feed => "feed",
+            Self::Story => "story",
+            Self::Reels => "reels",
+        }
+    }
+}
+
+impl FromStr for FacebookPosition {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "feed" => Ok(Self::Feed),
+            "story" => Ok(Self::Story),
+            "reels" => Ok(Self::Reels),
+            other => Err(format!("unknown_facebook_position:{other}")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstagramPosition {
+    Stream,
+    Story,
+    Reels,
+}
+
+impl InstagramPosition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stream => "stream",
+            Self::Story => "story",
+            Self::Reels => "reels",
+        }
+    }
+}
+
+impl FromStr for InstagramPosition {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "stream" => Ok(Self::Stream),
+            "story" => Ok(Self::Story),
+            "reels" => Ok(Self::Reels),
+            other => Err(format!("unknown_instagram_position:{other}")),
+        }
+    }
+}
+
+impl AdTargeting {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.geo_locations.countries.is_empty() {
+            return Err("targeting_missing_country".into());
+        }
+        for country in &self.geo_locations.countries {
+            if country.len() != 2
+                || !country.chars().all(|c| c.is_ascii_uppercase())
+            {
+                return Err(format!("bad_country_code:{country}"));
+            }
+        }
+        if let Some(min) = self.age_min {
+            if !(13..=65).contains(&min) {
+                return Err(format!("age_min_out_of_range:{min}"));
+            }
+        }
+        if let Some(max) = self.age_max {
+            if !(13..=65).contains(&max) {
+                return Err(format!("age_max_out_of_range:{max}"));
+            }
+        }
+        if let (Some(min), Some(max)) = (self.age_min, self.age_max) {
+            if min > max {
+                return Err("age_min_after_age_max".into());
+            }
+        }
+        let has_facebook = self.publisher_platforms.is_empty()
+            || self
+                .publisher_platforms
+                .contains(&PublisherPlatform::Facebook);
+        if !self.facebook_positions.is_empty() && !has_facebook {
+            return Err("facebook_positions_without_facebook_platform".into());
+        }
+        let has_instagram = self.publisher_platforms.is_empty()
+            || self
+                .publisher_platforms
+                .contains(&PublisherPlatform::Instagram);
+        if !self.instagram_positions.is_empty() && !has_instagram {
+            return Err("instagram_positions_without_instagram_platform".into());
+        }
+        Ok(())
+    }
+}
+
 /// An ad-set draft. `daily_budget` is the ad account's minor currency unit
 /// (for ILS, agorot), matching Meta's integer Marketing API field exactly.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -363,7 +524,7 @@ pub struct PausedAdset {
     pub bid_strategy: BidStrategy,
     pub billing_event: BillingEvent,
     pub optimization_goal: OptimizationGoal,
-    pub targeting: Value,
+    pub targeting: AdTargeting,
 }
 
 /// An ad draft references a pre-created Meta creative. Tier B does not try
@@ -518,9 +679,7 @@ impl PausedAdCreate {
                         adset.billing_event.as_str()
                     ));
                 }
-                if !adset.targeting.is_object() {
-                    return Err("targeting_must_be_object".into());
-                }
+                adset.targeting.validate()?;
             }
             Self::Ad(ad) => {
                 require_name(&ad.name)?;
@@ -817,7 +976,6 @@ fn require_https_url(field: &str, value: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn objective_is_closed_and_maps_to_meta_outcomes() {
@@ -1029,7 +1187,16 @@ mod tests {
                 bid_strategy: BidStrategy::LowestCostWithoutCap,
                 billing_event: BillingEvent::Impressions,
                 optimization_goal: OptimizationGoal::Reach,
-                targeting: json!({}),
+                targeting: AdTargeting {
+                    geo_locations: GeoLocations {
+                        countries: vec!["MY".into()],
+                    },
+                    age_min: None,
+                    age_max: None,
+                    publisher_platforms: vec![],
+                    facebook_positions: vec![],
+                    instagram_positions: vec![],
+                },
             }),
         };
         assert_eq!(
@@ -1046,12 +1213,34 @@ mod tests {
                 bid_strategy: BidStrategy::LowestCostWithoutCap,
                 billing_event: BillingEvent::Impressions,
                 optimization_goal: OptimizationGoal::Reach,
-                targeting: json!([]),
+                targeting: AdTargeting {
+                    geo_locations: GeoLocations { countries: vec![] },
+                    age_min: None,
+                    age_max: None,
+                    publisher_platforms: vec![],
+                    facebook_positions: vec![],
+                    instagram_positions: vec![],
+                },
             }),
         };
         assert_eq!(
             bad_targeting.validate().unwrap_err(),
-            "targeting_must_be_object"
+            "targeting_missing_country"
+        );
+        assert_eq!(
+            AdTargeting {
+                geo_locations: GeoLocations {
+                    countries: vec!["my".into()],
+                },
+                age_min: None,
+                age_max: None,
+                publisher_platforms: vec![],
+                facebook_positions: vec![],
+                instagram_positions: vec![],
+            }
+            .validate()
+            .unwrap_err(),
+            "bad_country_code:my"
         );
     }
 }
