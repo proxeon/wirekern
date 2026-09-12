@@ -856,6 +856,12 @@ fn meta_field(m: Metric) -> Option<&'static str> {
         Metric::Cpm => Some("cpm"),
         Metric::Purchases => None,
         Metric::PurchaseValue | Metric::Roas => None,
+        Metric::Frequency => Some("frequency"),
+        Metric::UniqueClicks => Some("unique_clicks"),
+        Metric::InlineLinkClicks => Some("inline_link_clicks"),
+        Metric::InlineLinkClickCtr => Some("inline_link_click_ctr"),
+        Metric::QualityRanking => Some("quality_ranking"),
+        Metric::VideoThruplay => Some("video_thruplay_watched_actions"),
     }
 }
 
@@ -930,6 +936,24 @@ fn purchase_value_of(item: &Value) -> Option<Value> {
 
 /// ROAS is a per-row derived value, not a Meta field. Null protects callers
 /// from treating absent attribution data or a zero denominator as a real 0x.
+fn video_thruplay_of(item: &Value) -> Value {
+    let mut total: u64 = 0;
+    if let Some(actions) = item
+        .get("video_thruplay_watched_actions")
+        .and_then(|a| a.as_array())
+    {
+        for action in actions {
+            total += action
+                .get("value")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .or_else(|| action.get("value").and_then(|v| v.as_u64()))
+                .unwrap_or(0);
+        }
+    }
+    Value::from(total)
+}
+
 fn roas_of(item: &Value) -> Option<Value> {
     let spend = number(item.get("spend").unwrap_or(&Value::Null))?.as_f64()?;
     if spend == 0.0 {
@@ -992,6 +1016,12 @@ fn row_from(item: &Value, query: &InsightsQuery) -> InsightRow {
             Metric::Purchases => purchases_of(item),
             Metric::PurchaseValue => purchase_value_of(item).unwrap_or(Value::Null),
             Metric::Roas => roas_of(item).unwrap_or(Value::Null),
+            Metric::VideoThruplay => video_thruplay_of(item),
+            Metric::QualityRanking => item
+                .get("quality_ranking")
+                .and_then(|v| v.as_str())
+                .map(Value::from)
+                .unwrap_or(Value::Null),
             _ => number(item.get(m.as_str()).unwrap_or(&Value::Null)).unwrap_or(Value::Null),
         };
         metrics.insert(m.as_str().into(), value);
@@ -1558,7 +1588,7 @@ mod tests {
         PausedAd, PausedAdset, PausedCampaign, UploadAdImageRequest,
     };
     use crate::facets::AdsManager;
-    use crate::insights::{AttributionWindow, InsightsLevel};
+    use crate::insights::{AttributionWindow, InsightsLevel, InsightsQuery, Metric};
     use httpmock::prelude::*;
     use serde_json::json;
 
@@ -2640,6 +2670,51 @@ mod tests {
         assert!(
             matches!(err, Error::InvalidPost { reason, .. } if reason == "publish_unsupported")
         );
+    }
+
+    #[test]
+    fn extra_metrics_map_graph_fields_and_definitions() {
+        assert_eq!(meta_field(Metric::Frequency), Some("frequency"));
+        assert_eq!(
+            meta_field(Metric::VideoThruplay),
+            Some("video_thruplay_watched_actions")
+        );
+        assert_eq!(meta_field(Metric::QualityRanking), Some("quality_ranking"));
+        let row = row_from(
+            &json!({
+                "campaign_id": "1",
+                "date_start": "2026-06-01",
+                "frequency": "1.4",
+                "unique_clicks": "9",
+                "inline_link_clicks": "4",
+                "inline_link_click_ctr": "0.02",
+                "quality_ranking": "ABOVE_AVERAGE",
+                "video_thruplay_watched_actions": [{ "action_type": "video_view", "value": "3" }]
+            }),
+            &InsightsQuery {
+                level: InsightsLevel::Campaign,
+                metrics: vec![
+                    Metric::Frequency,
+                    Metric::UniqueClicks,
+                    Metric::InlineLinkClicks,
+                    Metric::InlineLinkClickCtr,
+                    Metric::QualityRanking,
+                    Metric::VideoThruplay,
+                ],
+                range: crate::insights::DateRange {
+                    from: "2026-06-01".into(),
+                    to: "2026-06-01".into(),
+                },
+                attribution: AttributionWindow::OneDayClick,
+                account: None,
+                entity_ids: vec![],
+                breakdowns: vec![],
+            },
+        );
+        assert_eq!(row.metrics["frequency"], json!(1.4));
+        assert_eq!(row.metrics["unique_clicks"], json!(9));
+        assert_eq!(row.metrics["quality_ranking"], json!("ABOVE_AVERAGE"));
+        assert_eq!(row.metrics["video_thruplay"], json!(3));
     }
 
     #[test]

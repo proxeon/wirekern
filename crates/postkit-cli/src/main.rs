@@ -113,8 +113,13 @@ enum Commands {
         /// account | campaign | adset | ad.
         #[arg(long, default_value = "account")]
         level: String,
-        /// Comma-separated: spend,impressions,clicks,reach,ctr,cpc,cpm,purchases,purchase_value,roas.
-        #[arg(long, default_value = "spend,impressions,clicks,purchases")]
+        /// Comma-separated typed metrics. Each is defined in docs/meta-ads;
+        /// spend is windowed delivery spend, not an invoice.
+        #[arg(
+            long,
+            default_value = "spend,impressions,clicks,purchases",
+            help = "Comma-separated: spend,impressions,clicks,reach,ctr,cpc,cpm,purchases,purchase_value,roas,frequency,unique_clicks,inline_link_clicks,inline_link_click_ctr,quality_ranking,video_thruplay"
+        )]
         metrics: String,
         /// 7d_click_1d_view | 1d_click | 1d_view. Explicit — ROAS answers
         /// change with the window, so there is no default.
@@ -3014,6 +3019,8 @@ mod tests {
             .expect("metrics help")
             .to_string();
         assert!(help.contains("purchase_value,roas"));
+        assert!(help.contains("frequency,unique_clicks"));
+        assert!(help.contains("quality_ranking,video_thruplay"));
     }
 
     #[test]

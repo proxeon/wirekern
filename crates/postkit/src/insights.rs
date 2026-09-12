@@ -75,6 +75,18 @@ pub enum Metric {
     Purchases,
     PurchaseValue,
     Roas,
+    /// Estimated average impressions per person reached. Not spend.
+    Frequency,
+    /// Estimated unique people who clicked. Not a billing event.
+    UniqueClicks,
+    /// Clicks on the ad's destination link.
+    InlineLinkClicks,
+    /// Destination-link clicks / impressions.
+    InlineLinkClickCtr,
+    /// Meta delivery diagnostic (`ABOVE_AVERAGE` / …). Not a cost.
+    QualityRanking,
+    /// ThruPlay count from Meta's video action array. Not spend.
+    VideoThruplay,
 }
 
 impl Metric {
@@ -90,6 +102,44 @@ impl Metric {
             Self::Purchases => "purchases",
             Self::PurchaseValue => "purchase_value",
             Self::Roas => "roas",
+            Self::Frequency => "frequency",
+            Self::UniqueClicks => "unique_clicks",
+            Self::InlineLinkClicks => "inline_link_clicks",
+            Self::InlineLinkClickCtr => "inline_link_click_ctr",
+            Self::QualityRanking => "quality_ranking",
+            Self::VideoThruplay => "video_thruplay",
+        }
+    }
+
+    /// Operator-facing definition so a metric cannot be misread as an invoice.
+    pub fn definition(self) -> &'static str {
+        match self {
+            Self::Spend => {
+                "Ad-delivery spend in the ad account currency for the window. Not an invoice or account balance."
+            }
+            Self::Impressions => "Times the ad was served. Estimated. Not spend.",
+            Self::Clicks => "All clicks on the ad. Not a billing event.",
+            Self::Reach => "Estimated unique people who saw the ad. Not spend.",
+            Self::Ctr => "Clicks / impressions. A rate, not a cost.",
+            Self::Cpc => "Spend / clicks in account currency. A ratio, not a billing total.",
+            Self::Cpm => "Spend per 1,000 impressions. A ratio, not a billing total.",
+            Self::Purchases => {
+                "Counted purchase actions (pixel/API). Attribution-window dependent. Not an invoice."
+            }
+            Self::PurchaseValue => {
+                "Sum of purchase action values in account currency. Attribution-window dependent. Not an invoice."
+            }
+            Self::Roas => "Purchase value / spend for the requested attribution window. Null if spend is 0.",
+            Self::Frequency => "Estimated average impressions per person reached. Not spend.",
+            Self::UniqueClicks => "Estimated unique people who clicked. Not a billing event.",
+            Self::InlineLinkClicks => "Clicks on the ad's destination link.",
+            Self::InlineLinkClickCtr => "Destination-link clicks / impressions. A rate, not a cost.",
+            Self::QualityRanking => {
+                "Meta delivery diagnostic (ABOVE_AVERAGE / AVERAGE / BELOW_AVERAGE / …). Not a cost."
+            }
+            Self::VideoThruplay => {
+                "ThruPlay actions (video played to 15s or completion). Count, not spend."
+            }
         }
     }
 }
@@ -109,6 +159,12 @@ impl FromStr for Metric {
             "purchases" => Ok(Self::Purchases),
             "purchase_value" => Ok(Self::PurchaseValue),
             "roas" => Ok(Self::Roas),
+            "frequency" => Ok(Self::Frequency),
+            "unique_clicks" => Ok(Self::UniqueClicks),
+            "inline_link_clicks" => Ok(Self::InlineLinkClicks),
+            "inline_link_click_ctr" => Ok(Self::InlineLinkClickCtr),
+            "quality_ranking" => Ok(Self::QualityRanking),
+            "video_thruplay" => Ok(Self::VideoThruplay),
             other => Err(format!("unknown_metric:{other}")),
         }
     }
@@ -356,9 +412,18 @@ mod tests {
             "purchases",
             "purchase_value",
             "roas",
+            "frequency",
+            "unique_clicks",
+            "inline_link_clicks",
+            "inline_link_click_ctr",
+            "quality_ranking",
+            "video_thruplay",
         ] {
             assert_eq!(Metric::from_str(s).unwrap().as_str(), s);
         }
+        assert!(Metric::Spend.definition().contains("Not an invoice"));
+        assert!(Metric::Frequency.definition().contains("Not spend"));
+        assert!(Metric::QualityRanking.definition().contains("Not a cost"));
         assert_eq!(
             InsightsLevel::from_str("nope").unwrap_err(),
             "unknown_level:nope"
