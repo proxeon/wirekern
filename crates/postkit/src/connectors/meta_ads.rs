@@ -615,6 +615,9 @@ async fn create_paused_ad(
             if let Some(lifetime) = adset.lifetime_budget {
                 fields.push(("lifetime_budget", lifetime.to_string()));
             }
+            // Cap strategies: Meta `bid_amount` in account minor units.
+            // Min-ROAS: `bid_constraints.roas_average_floor` (10000 = 1.0);
+            // Meta forbids combining this with `bid_amount`.
             if let Some(amount) = adset.bid_amount {
                 fields.push(("bid_amount", amount.to_string()));
             }
@@ -2164,6 +2167,90 @@ mod tests {
 
         campaign.assert();
         adset.assert();
+    }
+
+    #[tokio::test]
+    async fn cap_and_min_roas_constraints_are_posted() {
+        let server = MockServer::start();
+        let cap = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/adsets")
+                .body_contains("bid_strategy=COST_CAP")
+                .body_contains("bid_amount=200")
+                .body_contains("status=PAUSED");
+            then.status(200).json_body(json!({ "id": "201" }));
+        });
+        let roas = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/adsets")
+                .body_contains("bid_strategy=LOWEST_COST_WITH_MIN_ROAS")
+                .body_contains("roas_average_floor")
+                .body_contains("10000")
+                .body_contains("status=PAUSED");
+            then.status(200).json_body(json!({ "id": "202" }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let creds = token_creds("123");
+        let targeting = crate::ads::AdTargeting {
+            geo_locations: crate::ads::GeoLocations {
+                countries: vec!["MY".into()],
+            },
+            age_min: None,
+            age_max: None,
+            publisher_platforms: vec![],
+            facebook_positions: vec![],
+            instagram_positions: vec![],
+        };
+
+        connector
+            .create_paused_ad(
+                &empty_app(),
+                &creds,
+                &CreatePausedAdRequest {
+                    account: None,
+                    create: PausedAdCreate::Adset(PausedAdset {
+                        name: "cap".into(),
+                        campaign_id: "100".into(),
+                        daily_budget: Some(2500),
+                        lifetime_budget: None,
+                        bid_strategy: crate::ads::BidStrategy::CostCap,
+                        bid_amount: Some(200),
+                        roas_average_floor: None,
+                        billing_event: crate::ads::BillingEvent::Impressions,
+                        optimization_goal: crate::ads::OptimizationGoal::Reach,
+                        targeting: targeting.clone(),
+                    }),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        connector
+            .create_paused_ad(
+                &empty_app(),
+                &creds,
+                &CreatePausedAdRequest {
+                    account: None,
+                    create: PausedAdCreate::Adset(PausedAdset {
+                        name: "roas".into(),
+                        campaign_id: "100".into(),
+                        daily_budget: Some(2500),
+                        lifetime_budget: None,
+                        bid_strategy: crate::ads::BidStrategy::LowestCostWithMinRoas,
+                        bid_amount: None,
+                        roas_average_floor: Some(10_000),
+                        billing_event: crate::ads::BillingEvent::Impressions,
+                        optimization_goal: crate::ads::OptimizationGoal::Reach,
+                        targeting,
+                    }),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        cap.assert();
+        roas.assert();
     }
 
     #[tokio::test]

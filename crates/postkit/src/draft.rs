@@ -103,6 +103,11 @@ pub struct DraftAdset {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifetime_budget: Option<u64>,
     pub bid_strategy: crate::ads::BidStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid_amount: Option<u64>,
+    /// Meta `bid_constraints.roas_average_floor`. 10000 = 1.0 ROAS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roas_average_floor: Option<u64>,
     pub billing_event: crate::ads::BillingEvent,
     pub optimization_goal: crate::ads::OptimizationGoal,
     pub targeting: crate::ads::AdTargeting,
@@ -171,6 +176,11 @@ impl PausedDraftManifest {
             (false, false) => return Err("missing_budget".into()),
             (true, false) | (false, true) => {}
         }
+        crate::ads::validate_bid_constraints(
+            self.adset.bid_strategy,
+            self.adset.bid_amount,
+            self.adset.roas_average_floor,
+        )?;
         if !crate::ads::supported_adset_pairing(
             self.campaign.objective,
             self.adset.optimization_goal,
@@ -926,6 +936,24 @@ mod tests {
         assert_eq!(manifest.validate().unwrap_err(), "missing_budget");
 
         manifest.adset.lifetime_budget = Some(20_000);
+        manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn draft_bid_constraints_match_strategy() {
+        let mut manifest = example_manifest();
+        manifest.adset.bid_strategy = crate::ads::BidStrategy::CostCap;
+        assert_eq!(manifest.validate().unwrap_err(), "missing_bid_amount");
+        manifest.adset.bid_amount = Some(200);
+        manifest.validate().unwrap();
+
+        manifest.adset.bid_amount = None;
+        manifest.adset.bid_strategy = crate::ads::BidStrategy::LowestCostWithMinRoas;
+        assert_eq!(
+            manifest.validate().unwrap_err(),
+            "missing_roas_average_floor"
+        );
+        manifest.adset.roas_average_floor = Some(10_000);
         manifest.validate().unwrap();
     }
 

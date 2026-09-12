@@ -373,10 +373,17 @@ enum AdsCmd {
         /// Lifetime budget in minor units. XOR with `--daily-budget`.
         #[arg(long)]
         lifetime_budget: Option<u64>,
-        /// `lowest_cost_without_cap`; required so Meta cannot inherit a
-        /// bid-cap or ROAS strategy whose constraint is absent.
+        /// `lowest_cost_without_cap` | `lowest_cost_with_bid_cap` | `cost_cap`
+        /// | `lowest_cost_with_min_roas`. Cap/floor strategies need their
+        /// constraint flags below.
         #[arg(long)]
         bid_strategy: String,
+        /// Required for bid-cap and cost-cap. Minor units.
+        #[arg(long)]
+        bid_amount: Option<u64>,
+        /// Required for min-ROAS. Meta scale: 10000 = 1.0.
+        #[arg(long)]
+        roas_average_floor: Option<u64>,
         /// impressions | link_clicks
         #[arg(long)]
         billing_event: String,
@@ -1915,6 +1922,8 @@ async fn dispatch(
             daily_budget,
             lifetime_budget,
             bid_strategy,
+            bid_amount,
+            roas_average_floor,
             billing_event,
             optimization_goal,
             countries,
@@ -1933,6 +1942,8 @@ async fn dispatch(
                     daily_budget,
                     lifetime_budget,
                     bid_strategy,
+                    bid_amount,
+                    roas_average_floor,
                     billing_event,
                     optimization_goal,
                     countries,
@@ -3152,6 +3163,8 @@ mod tests {
                 daily_budget: Some(2500),
                 lifetime_budget: None,
                 bid_strategy: "lowest_cost_without_cap".into(),
+                bid_amount: None,
+                roas_average_floor: None,
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 countries: vec!["MY".into()],
@@ -3174,6 +3187,8 @@ mod tests {
                 daily_budget: None,
                 lifetime_budget: Some(20_000),
                 bid_strategy: "lowest_cost_without_cap".into(),
+                bid_amount: None,
+                roas_average_floor: None,
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 countries: vec!["MY".into()],
@@ -3203,6 +3218,8 @@ mod tests {
                 daily_budget: Some(1),
                 lifetime_budget: None,
                 bid_strategy: "cost_cap".into(),
+                bid_amount: None,
+                roas_average_floor: None,
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 countries: vec!["MY".into()],
@@ -3216,6 +3233,66 @@ mod tests {
         assert!(
             matches!(bad_bid_strategy, Err(Error::InvalidQuery { reason, .. }) if reason == "missing_bid_amount")
         );
+        let cost_cap = build_paused_adset_request(
+            "meta_ads",
+            PausedAdsetOptions {
+                ad_account: None,
+                name: "cap".into(),
+                campaign_id: "100".into(),
+                daily_budget: Some(2500),
+                lifetime_budget: None,
+                bid_strategy: "cost_cap".into(),
+                bid_amount: Some(200),
+                roas_average_floor: None,
+                billing_event: "IMPRESSIONS".into(),
+                optimization_goal: "REACH".into(),
+                countries: vec!["MY".into()],
+                age_min: None,
+                age_max: None,
+                publisher_platforms: vec![],
+                facebook_positions: vec![],
+                instagram_positions: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            cost_cap.create,
+            PausedAdCreate::Adset(PausedAdset {
+                bid_strategy: postkit::BidStrategy::CostCap,
+                bid_amount: Some(200),
+                ..
+            })
+        ));
+        let min_roas = build_paused_adset_request(
+            "meta_ads",
+            PausedAdsetOptions {
+                ad_account: None,
+                name: "roas".into(),
+                campaign_id: "100".into(),
+                daily_budget: Some(2500),
+                lifetime_budget: None,
+                bid_strategy: "lowest_cost_with_min_roas".into(),
+                bid_amount: None,
+                roas_average_floor: Some(10_000),
+                billing_event: "IMPRESSIONS".into(),
+                optimization_goal: "REACH".into(),
+                countries: vec!["MY".into()],
+                age_min: None,
+                age_max: None,
+                publisher_platforms: vec![],
+                facebook_positions: vec![],
+                instagram_positions: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            min_roas.create,
+            PausedAdCreate::Adset(PausedAdset {
+                bid_strategy: postkit::BidStrategy::LowestCostWithMinRoas,
+                roas_average_floor: Some(10_000),
+                ..
+            })
+        ));
 
         let clicks = build_paused_campaign_request(
             "meta_ads",
@@ -3241,6 +3318,8 @@ mod tests {
                 daily_budget: Some(1),
                 lifetime_budget: None,
                 bid_strategy: "lowest_cost_without_cap".into(),
+                bid_amount: None,
+                roas_average_floor: None,
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
                 countries: vec![],

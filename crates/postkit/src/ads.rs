@@ -96,10 +96,15 @@ impl FromStr for CampaignObjective {
     }
 }
 
-/// The one bid strategy Tier B can safely express without a bid cap or a
-/// ROAS-floor constraint. Other Meta strategies need additional money-shaped
-/// inputs, so accepting their names before modelling those inputs would turn
-/// a local validation error into an opaque platform rejection.
+/// Auction bid strategies Meta documents on the ad set (`v26.0`). Each cap
+/// or floor strategy carries its own constraint field: sending the name
+/// without that field is a local error, not a Graph code 100.
+///
+/// `LOWEST_COST_WITHOUT_CAP` — no extra field; spend is bounded by budget.
+/// `LOWEST_COST_WITH_BID_CAP` / `COST_CAP` — require `bid_amount` > 0
+/// (minor units; per 1000 impressions when billing is IMPRESSIONS).
+/// `LOWEST_COST_WITH_MIN_ROAS` — requires `roas_average_floor` on
+/// `bid_constraints` (integer, 10000 = 1.0 ROAS).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BidStrategy {
@@ -135,6 +140,32 @@ impl BidStrategy {
     pub fn requires_roas_floor(self) -> bool {
         matches!(self, Self::LowestCostWithMinRoas)
     }
+}
+
+/// Cap/floor fields must match the strategy. Meta rejects `bid_amount`
+/// together with `bid_constraints`; we fail the same way locally.
+pub fn validate_bid_constraints(
+    strategy: BidStrategy,
+    bid_amount: Option<u64>,
+    roas_average_floor: Option<u64>,
+) -> Result<(), String> {
+    if strategy.requires_bid_amount() {
+        match bid_amount {
+            Some(amount) if amount > 0 => {}
+            _ => return Err("missing_bid_amount".into()),
+        }
+    } else if bid_amount.is_some() {
+        return Err("bid_amount_without_cap_strategy".into());
+    }
+    if strategy.requires_roas_floor() {
+        match roas_average_floor {
+            Some(floor) if floor > 0 => {}
+            _ => return Err("missing_roas_average_floor".into()),
+        }
+    } else if roas_average_floor.is_some() {
+        return Err("roas_floor_without_min_roas_strategy".into());
+    }
+    Ok(())
 }
 
 impl FromStr for BidStrategy {
@@ -590,9 +621,13 @@ pub struct PausedAdset {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifetime_budget: Option<u64>,
     pub bid_strategy: BidStrategy,
+    /// Required for `LOWEST_COST_WITH_BID_CAP` and `COST_CAP`. Refused on
+    /// `LOWEST_COST_WITHOUT_CAP` so a leftover cap cannot hitch a ride.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bid_amount: Option<u64>,
     /// Meta `bid_constraints.roas_average_floor`. 10000 = 1.0 ROAS.
+    /// Required for `LOWEST_COST_WITH_MIN_ROAS`; refused on every other
+    /// strategy (`bid_amount` and this field are mutually exclusive at Meta).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roas_average_floor: Option<u64>,
     pub billing_event: BillingEvent,
@@ -767,22 +802,11 @@ impl PausedAdCreate {
                 require_name(&adset.name)?;
                 require_numeric_id("campaign_id", &adset.campaign_id)?;
                 validate_budget_xor(adset.daily_budget, adset.lifetime_budget, true)?;
-                if adset.bid_strategy.requires_bid_amount() {
-                    match adset.bid_amount {
-                        Some(amount) if amount > 0 => {}
-                        _ => return Err("missing_bid_amount".into()),
-                    }
-                } else if adset.bid_amount.is_some() {
-                    return Err("bid_amount_without_cap_strategy".into());
-                }
-                if adset.bid_strategy.requires_roas_floor() {
-                    match adset.roas_average_floor {
-                        Some(floor) if floor > 0 => {}
-                        _ => return Err("missing_roas_average_floor".into()),
-                    }
-                } else if adset.roas_average_floor.is_some() {
-                    return Err("roas_floor_without_min_roas_strategy".into());
-                }
+                validate_bid_constraints(
+                    adset.bid_strategy,
+                    adset.bid_amount,
+                    adset.roas_average_floor,
+                )?;
                 if !billing_event_allowed(adset.optimization_goal, adset.billing_event) {
                     return Err(format!(
                         "unsupported_billing_event:{}:{}",
@@ -1140,8 +1164,24 @@ mod tests {
             "LOWEST_COST_WITHOUT_CAP"
         );
         assert_eq!(
-            BidStrategy::from_str("cost_cap").unwrap_err(),
-            "unknown_bid_strategy:cost_cap"
+            BidStrategy::from_str("cost_cap").unwrap().meta_value(),
+            "COST_CAP"
+        );
+        assert_eq!(
+            BidStrategy::from_str("lowest_cost_with_bid_cap")
+                .unwrap()
+                .meta_value(),
+            "LOWEST_COST_WITH_BID_CAP"
+        );
+        assert_eq!(
+            BidStrategy::from_str("lowest_cost_with_min_roas")
+                .unwrap()
+                .meta_value(),
+            "LOWEST_COST_WITH_MIN_ROAS"
+        );
+        assert_eq!(
+            BidStrategy::from_str("target_cost").unwrap_err(),
+            "unknown_bid_strategy:target_cost"
         );
     }
 
@@ -1469,5 +1509,85 @@ mod tests {
             }),
         };
         assert!(lifetime.validate().is_ok());
+    }
+
+    #[test]
+    fn bid_strategies_require_their_constraint_fields() {
+        let missing_cap = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                bid_strategy: BidStrategy::CostCap,
+                ..sample_adset()
+            }),
+        };
+        assert_eq!(missing_cap.validate().unwrap_err(), "missing_bid_amount");
+
+        let cap = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                bid_strategy: BidStrategy::CostCap,
+                bid_amount: Some(200),
+                ..sample_adset()
+            }),
+        };
+        assert!(cap.validate().is_ok());
+
+        let bid_cap = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                bid_strategy: BidStrategy::LowestCostWithBidCap,
+                bid_amount: Some(300),
+                ..sample_adset()
+            }),
+        };
+        assert!(bid_cap.validate().is_ok());
+
+        let leftover_amount = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                bid_amount: Some(200),
+                ..sample_adset()
+            }),
+        };
+        assert_eq!(
+            leftover_amount.validate().unwrap_err(),
+            "bid_amount_without_cap_strategy"
+        );
+
+        let missing_roas = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                bid_strategy: BidStrategy::LowestCostWithMinRoas,
+                ..sample_adset()
+            }),
+        };
+        assert_eq!(
+            missing_roas.validate().unwrap_err(),
+            "missing_roas_average_floor"
+        );
+
+        let min_roas = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                bid_strategy: BidStrategy::LowestCostWithMinRoas,
+                roas_average_floor: Some(15_000),
+                ..sample_adset()
+            }),
+        };
+        assert!(min_roas.validate().is_ok());
+
+        let both = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                bid_strategy: BidStrategy::LowestCostWithMinRoas,
+                bid_amount: Some(200),
+                roas_average_floor: Some(10_000),
+                ..sample_adset()
+            }),
+        };
+        assert_eq!(
+            both.validate().unwrap_err(),
+            "bid_amount_without_cap_strategy"
+        );
     }
 }

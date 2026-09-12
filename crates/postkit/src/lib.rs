@@ -63,15 +63,15 @@ pub use oauth::{
 pub mod connectors;
 
 pub use ads::{
-    AdEntity, AdPreviewFormat, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdReviewWait,
-    AdTargeting, FacebookPosition, GeoLocations, InstagramPosition, PublisherPlatform,
-    AdsTokenInspection, AdsTokenKind, BidStrategy, BillingEvent, CampaignObjective,
-    CreateLinkAdCreativeRequest,
-    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
+    billing_event_allowed, supported_adset_pairing, validate_bid_constraints, AdEntity,
+    AdPreviewFormat, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdReviewWait,
+    AdTargeting, AdsTokenInspection, AdsTokenKind, BidStrategy, BillingEvent, CampaignObjective,
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    CreativePreview, CreativePreviewRequest, FacebookPosition, GeoLocations, InstagramPosition,
     LinkAdCreative, LinkCallToAction, MarketingApiAccessTier, MarketingApiAccessTierKind,
-    OptimizationGoal, billing_event_allowed, supported_adset_pairing, PausedAd,
-    PausedAdCreate, PausedAdset, PausedCampaign, UploadAdImageRequest, UploadedAdImage,
-    MARKETING_API_ACCESS_TIER_DASHBOARD, SYSTEM_USER_TOKEN_KIND,
+    OptimizationGoal, PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PublisherPlatform,
+    UploadAdImageRequest, UploadedAdImage, MARKETING_API_ACCESS_TIER_DASHBOARD,
+    SYSTEM_USER_TOKEN_KIND,
 };
 pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
 pub use bundle::bundled_registry;

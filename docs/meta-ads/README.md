@@ -173,10 +173,10 @@ postkit --deadline 30 ads status meta_ads --entity ad --id <AD_ID> --wait --json
   is Meta's child-share flag and requires a campaign budget. Amounts do not
   spend while every object is paused, but they are still reviewed policy input
   for a future activation workflow.
-- `--bid-strategy lowest_cost_without_cap` is required. It leaves the ad set's
-  explicit daily budget as its only bid limit; cost-cap, bid-cap, and ROAS
-  strategies are intentionally unsupported until their constraint fields are
-  modelled as explicit inputs.
+- `--bid-strategy` is required: `lowest_cost_without_cap` (budget only),
+  `lowest_cost_with_bid_cap` / `cost_cap` (need `--bid-amount` in minor units),
+  or `lowest_cost_with_min_roas` (needs `--roas-average-floor`; Meta scale
+  10000 = 1.0 ROAS). A cap strategy without its constraint fails locally.
 - `--targeting-file` must contain a JSON object. Meta performs the final
   platform-specific targeting validation; postkit refuses malformed local
   data before any HTTP request.
