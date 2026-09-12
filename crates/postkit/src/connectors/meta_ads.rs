@@ -1806,6 +1806,7 @@ mod tests {
             account: None,
             entity_ids: vec![],
             breakdowns: vec![],
+            report: crate::insights::InsightsReportKind::Performance,
         }
     }
 
@@ -2954,6 +2955,7 @@ mod tests {
                 account: None,
                 entity_ids: vec![],
                 breakdowns: vec![],
+                report: crate::insights::InsightsReportKind::Performance,
             },
         );
         assert_eq!(row.metrics["frequency"], json!(1.4));

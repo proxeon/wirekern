@@ -188,6 +188,7 @@ pub(crate) struct InsightsOptions {
     pub(crate) ad_account: Option<String>,
     pub(crate) entity_ids: Vec<String>,
     pub(crate) breakdowns: String,
+    pub(crate) report: String,
 }
 
 /// Common builder error shape for advertising input. These errors name only
@@ -559,6 +560,7 @@ pub(crate) fn build_insights_query(
     if parsed.is_empty() {
         return Err(bad("no_metrics".into()));
     }
+    let report = postkit::InsightsReportKind::from_str(&options.report).map_err(bad)?;
     let mut parsed_breakdowns = Vec::new();
     for breakdown in options.breakdowns.split(',') {
         let breakdown = breakdown.trim();
@@ -571,7 +573,7 @@ pub(crate) fn build_insights_query(
         from: from.into(),
         to: to.into(),
     };
-    Ok(InsightsQuery {
+    let query = InsightsQuery {
         level,
         metrics: parsed,
         attribution,
@@ -579,7 +581,10 @@ pub(crate) fn build_insights_query(
         account: options.ad_account,
         entity_ids: options.entity_ids,
         breakdowns: parsed_breakdowns,
-    })
+        report,
+    };
+    query.validate().map_err(bad)?;
+    Ok(query)
 }
 
 /// One human-mode row: `date level entity dimension=v metric=v …`. Keeping

@@ -39,7 +39,7 @@ Last aligned with Meta Marketing API / Graph docs and
 - [x] Additional typed metrics (each with a definition so it cannot be read as a billing total)
 - [x] Additional typed breakdowns / attribution windows
 - [x] Async / bulk Insights jobs (bounded job, cancel, poll deadline, result-size cap)
-- [ ] Separate creative / delivery report contracts (not one unbounded Graph query)
+- [x] Separate creative / delivery report contracts (not one unbounded Graph query)
 
 ## Paused creates
 

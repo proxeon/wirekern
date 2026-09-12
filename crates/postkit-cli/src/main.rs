@@ -144,6 +144,9 @@ enum Commands {
         /// POST an Ad Report Run and poll until --deadline. Pending is explicit.
         #[arg(long = "async")]
         async_report: bool,
+        /// performance (default mixed) | delivery | creative.
+        #[arg(long, default_value = "performance")]
+        report: String,
     },
     /// Read-only advertising-account discovery (not local vault aliases).
     #[command(subcommand)]
@@ -214,6 +217,7 @@ enum AccountsCmd {
 }
 
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum InsightsJobCmd {
     Status {
         site: String,
@@ -241,6 +245,8 @@ enum InsightsJobCmd {
         entity_ids: Vec<String>,
         #[arg(long, default_value = "")]
         breakdowns: String,
+        #[arg(long, default_value = "performance")]
+        report: String,
     },
     Cancel {
         site: String,
@@ -1650,6 +1656,7 @@ async fn dispatch(
             ad_account,
             entity_ids,
             breakdowns,
+            report,
         })) => {
             let query = build_insights_query(
                 &site,
@@ -1662,6 +1669,7 @@ async fn dispatch(
                     ad_account,
                     entity_ids,
                     breakdowns,
+                    report,
                 },
             )
             .map_err(|e| fail(&e, json))?;
@@ -2101,6 +2109,7 @@ async fn dispatch(
             entity_ids,
             breakdowns,
             async_report,
+            report,
         } => {
             let query = build_insights_query(
                 &site,
@@ -2113,6 +2122,7 @@ async fn dispatch(
                     ad_account,
                     entity_ids,
                     breakdowns,
+                    report,
                 },
             )
             .map_err(|e| fail(&e, json))?;
@@ -2473,6 +2483,7 @@ mod tests {
                 ad_account: Some("act_9".into()),
                 entity_ids: vec!["238".into(), "239".into()],
                 breakdowns: "country,age".into(),
+                report: "performance".into(),
             },
         )
         .unwrap();
@@ -2519,6 +2530,7 @@ mod tests {
                     ad_account: None,
                     entity_ids: vec![],
                     breakdowns: String::new(),
+                    report: "performance".into(),
                 },
             )
             .unwrap_err();
@@ -2539,6 +2551,7 @@ mod tests {
                 ad_account: None,
                 entity_ids: vec![],
                 breakdowns: "country,unknown".into(),
+                report: "performance".into(),
             },
         )
         .unwrap_err();

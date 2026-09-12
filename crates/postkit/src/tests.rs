@@ -1884,6 +1884,7 @@ fn insights_query(from: &str, to: &str) -> InsightsQuery {
         account: None,
         entity_ids: vec![],
         breakdowns: vec![],
+        report: crate::insights::InsightsReportKind::Performance,
     }
 }
 

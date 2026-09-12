@@ -402,6 +402,64 @@ fn days_from_civil((y, m, d): (i32, u32, u32)) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// Closed report contract so callers cannot send an unbounded Graph `fields`
+/// list. `performance` is the original mixed set.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InsightsReportKind {
+    #[default]
+    Performance,
+    Delivery,
+    Creative,
+}
+
+impl InsightsReportKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Performance => "performance",
+            Self::Delivery => "delivery",
+            Self::Creative => "creative",
+        }
+    }
+
+    pub fn allows(self, metric: Metric) -> bool {
+        match self {
+            Self::Performance => true,
+            Self::Delivery => matches!(
+                metric,
+                Metric::Spend
+                    | Metric::Impressions
+                    | Metric::Reach
+                    | Metric::Frequency
+                    | Metric::Cpm
+                    | Metric::QualityRanking
+            ),
+            Self::Creative => matches!(
+                metric,
+                Metric::Clicks
+                    | Metric::Ctr
+                    | Metric::UniqueClicks
+                    | Metric::InlineLinkClicks
+                    | Metric::InlineLinkClickCtr
+                    | Metric::VideoThruplay
+            ),
+        }
+    }
+}
+
+impl FromStr for InsightsReportKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "performance" => Ok(Self::Performance),
+            "delivery" => Ok(Self::Delivery),
+            "creative" => Ok(Self::Creative),
+            other => Err(format!("unknown_insights_report:{other}")),
+        }
+    }
+}
+
 /// The read-side analogue of `Intent`: one query, bounded by construction.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InsightsQuery {
@@ -422,12 +480,28 @@ pub struct InsightsQuery {
     /// Requested row dimensions, deliberately separate from [`Metric`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breakdowns: Vec<Breakdown>,
+    #[serde(default, skip_serializing_if = "is_performance_report")]
+    pub report: InsightsReportKind,
+}
+
+fn is_performance_report(kind: &InsightsReportKind) -> bool {
+    *kind == InsightsReportKind::Performance
 }
 
 impl InsightsQuery {
     pub fn validate(&self) -> Result<(), String> {
         self.range.validate()?;
-        validate_breakdowns(&self.breakdowns)
+        validate_breakdowns(&self.breakdowns)?;
+        for metric in &self.metrics {
+            if !self.report.allows(*metric) {
+                return Err(format!(
+                    "metric_not_in_report:{}:{}",
+                    metric.as_str(),
+                    self.report.as_str()
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -701,5 +775,28 @@ mod tests {
         );
         assert!(InsightsJobStatus::Completed.is_terminal());
         assert!(!InsightsJobStatus::Running.is_terminal());
+    }
+
+    #[test]
+    fn report_kind_rejects_metrics_outside_the_contract() {
+        let mut q = InsightsQuery {
+            level: InsightsLevel::Campaign,
+            metrics: vec![Metric::Spend, Metric::Clicks],
+            range: DateRange {
+                from: "2026-06-01".into(),
+                to: "2026-06-01".into(),
+            },
+            attribution: AttributionWindow::OneDayClick,
+            account: None,
+            entity_ids: vec![],
+            breakdowns: vec![],
+            report: InsightsReportKind::Delivery,
+        };
+        assert!(q.validate().unwrap_err().contains("metric_not_in_report:clicks"));
+        q.report = InsightsReportKind::Creative;
+        q.metrics = vec![Metric::Clicks];
+        q.validate().unwrap();
+        q.metrics = vec![Metric::Spend];
+        assert!(q.validate().unwrap_err().contains("metric_not_in_report:spend"));
     }
 }

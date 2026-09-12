@@ -30,6 +30,14 @@ Deferred lifecycle, editing, creative, and reporting work is tracked in the
 
    The code is exchanged for a short token, extended via `fb_exchange_token` (~60 days), and the token's **first ad account** is resolved and stored for backwards-compatible defaults. A token with no ad account fails immediately (`no_ad_account`). When more than one account is visible, discover the IDs first and pass the desired account explicitly on each insights or paused-create call. Existing `ads_read` tokens can keep reading, but must be re-authorized to gain `ads_management` before a create succeeds.
 
+Insights extras: `--metrics` now includes `frequency`, `unique_clicks`,
+`inline_link_clicks`, `inline_link_click_ctr`, `quality_ranking`,
+`video_thruplay` (each defined so it is not an invoice). Attribution also
+accepts `7d_click`, `28d_click`, `7d_view`, `28d_view`. Breakdowns add
+`gender`, `device_platform`, `platform_position` (max two). `--report
+delivery|creative` refuses mixed field lists. Large queries:
+`insights … --async` then `ads insights-job status|result|cancel`.
+
 ### Unattended System User token
 
 Do **not** paste a user OAuth token into a cron job. Create a System User in

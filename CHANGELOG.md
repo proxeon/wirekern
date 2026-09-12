@@ -39,6 +39,14 @@ same detail by subject.
 
 ### Added
 
+- Meta Ads Insights reporting: extra typed metrics (`frequency`,
+  `unique_clicks`, `inline_link_clicks`, `inline_link_click_ctr`,
+  `quality_ranking`, `video_thruplay`) each with a definition that is not
+  an invoice; extra attribution windows and bounded breakdown pairs;
+  async Ad Report Runs (`insights --async`, `ads insights-job`) with page
+  and 5000-row caps; `performance` / `delivery` / `creative` report
+  contracts that reject mixed Graph field lists locally.
+
 - Meta Ads unattended auth ops: `auth meta_ads --token … --system-user`
   stores a Business Manager System User token after `GET /debug_token`
   (refuses a user OAuth token reused as a secret) and skips

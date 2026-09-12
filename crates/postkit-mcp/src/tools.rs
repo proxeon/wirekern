@@ -425,6 +425,8 @@ struct InsightsArgs {
     entity_ids: Vec<String>,
     #[serde(default)]
     breakdowns: Vec<String>,
+    #[serde(default)]
+    report: Option<String>,
     #[serde(default = "default_deadline")]
     deadline: u64,
 }
@@ -560,6 +562,12 @@ fn insights_query(args: &InsightsArgs) -> Result<InsightsQuery, Error> {
         account: args.ad_account.clone(),
         entity_ids: args.entity_ids.clone(),
         breakdowns,
+        report: args
+            .report
+            .as_deref()
+            .unwrap_or("performance")
+            .parse()
+            .map_err(|reason| invalid_query(site, reason))?,
     })
 }
 
