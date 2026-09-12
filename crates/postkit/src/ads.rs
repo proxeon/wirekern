@@ -496,7 +496,7 @@ impl LinkCallToAction {
 
     /// Page-identity CTAs: Meta's value uses `page`, not a destination link.
     pub fn uses_page(self) -> bool {
-        matches!(self, Self::LikePage | Self::CallNow | Self::WhatsAppMessage)
+        matches!(self, Self::LikePage | Self::CallNow)
     }
 
     pub fn requires_geo_link(self) -> bool {
@@ -796,11 +796,19 @@ impl AdTargeting {
         if !self.whatsapp_positions.is_empty() && !has_whatsapp {
             return Err("whatsapp_positions_without_whatsapp_platform".into());
         }
-        if has_whatsapp
-            && self.whatsapp_positions.contains(&WhatsAppPosition::Status)
-            && self.user_age_unknown.is_none()
-        {
-            return Err("whatsapp_status_requires_user_age_unknown".into());
+        if self.whatsapp_positions.contains(&WhatsAppPosition::Status) {
+            // v26.0: Status is not a standalone placement; Instagram Stories
+            // must be selected with it.
+            let has_ig_story = self
+                .publisher_platforms
+                .contains(&PublisherPlatform::Instagram)
+                && self.instagram_positions.contains(&InstagramPosition::Story);
+            if !has_ig_story {
+                return Err("whatsapp_status_requires_instagram_story".into());
+            }
+            if self.user_age_unknown.is_none() {
+                return Err("whatsapp_status_requires_user_age_unknown".into());
+            }
         }
         Ok(())
     }
@@ -1248,6 +1256,11 @@ impl CreateVideoAdCreativeRequest {
             self.creative.instagram_user_id.as_deref(),
             self.creative.whatsapp_identity.as_ref(),
         )?;
+        validate_status_creative_compat(
+            self.creative.whatsapp_identity.as_ref(),
+            self.creative.advantage_plus,
+            true,
+        )?;
         Ok(())
     }
 }
@@ -1363,6 +1376,11 @@ impl CreateAdCreativeRequest {
                     c.instagram_user_id.as_deref(),
                     c.whatsapp_identity.as_ref(),
                 )?;
+                validate_status_creative_compat(
+                    c.whatsapp_identity.as_ref(),
+                    c.advantage_plus,
+                    false,
+                )?;
             }
             AdCreativeKind::Catalog(c) => {
                 require_name(&c.name)?;
@@ -1373,6 +1391,11 @@ impl CreateAdCreativeRequest {
                 validate_creative_identity(
                     c.instagram_user_id.as_deref(),
                     c.whatsapp_identity.as_ref(),
+                )?;
+                validate_status_creative_compat(
+                    c.whatsapp_identity.as_ref(),
+                    c.advantage_plus,
+                    false,
                 )?;
             }
             AdCreativeKind::LeadForm(c) => {
@@ -1396,6 +1419,11 @@ impl CreateAdCreativeRequest {
                     c.instagram_user_id.as_deref(),
                     c.whatsapp_identity.as_ref(),
                 )?;
+                validate_status_creative_compat(
+                    c.whatsapp_identity.as_ref(),
+                    c.advantage_plus,
+                    true,
+                )?;
             }
             AdCreativeKind::AppInstall(c) => {
                 require_name(&c.name)?;
@@ -1407,6 +1435,11 @@ impl CreateAdCreativeRequest {
                 validate_creative_identity(
                     c.instagram_user_id.as_deref(),
                     c.whatsapp_identity.as_ref(),
+                )?;
+                validate_status_creative_compat(
+                    c.whatsapp_identity.as_ref(),
+                    c.advantage_plus,
+                    true,
                 )?;
             }
         }
@@ -1492,8 +1525,32 @@ impl CreateLinkAdCreativeRequest {
             self.creative.instagram_user_id.as_deref(),
             self.creative.whatsapp_identity.as_ref(),
         )?;
+        validate_status_creative_compat(
+            self.creative.whatsapp_identity.as_ref(),
+            self.creative.advantage_plus,
+            true,
+        )?;
         Ok(())
     }
+}
+
+pub fn validate_status_creative_compat(
+    whatsapp_identity: Option<&WhatsAppStatusIdentity>,
+    advantage_plus: bool,
+    allows_status: bool,
+) -> Result<(), String> {
+    if whatsapp_identity.is_none() {
+        return Ok(());
+    }
+    // Status docs: carousel/collection/flexible formats and Advantage+
+    // creative tools are not supported on this placement.
+    if !allows_status {
+        return Err("whatsapp_status_unsupported_creative_format".into());
+    }
+    if advantage_plus {
+        return Err("whatsapp_status_incompatible_with_advantage_plus".into());
+    }
+    Ok(())
 }
 
 pub fn validate_creative_identity(
@@ -1548,7 +1605,11 @@ pub fn validate_link_cta_values(creative: &LinkAdCreative) -> Result<(), String>
 
 /// Meta `call_to_action.value` for this image-link creative.
 pub fn link_cta_value_json(creative: &LinkAdCreative) -> serde_json::Value {
-    if creative.call_to_action.uses_page() {
+    if creative.call_to_action == LinkCallToAction::WhatsAppMessage {
+        // Status / click-to-WhatsApp: Meta's documented value is
+        // `app_destination=whatsapp`, not `page`.
+        serde_json::json!({ "app_destination": "whatsapp" })
+    } else if creative.call_to_action.uses_page() {
         serde_json::json!({ "page": creative.page_id })
     } else if creative.call_to_action.requires_geo_link() {
         serde_json::json!({ "link": creative.geo_link.as_deref().unwrap_or_default() })
@@ -2322,6 +2383,14 @@ mod tests {
             link_cta_value_json(&like_page),
             serde_json::json!({ "page": "456" })
         );
+        let wa = LinkAdCreative {
+            call_to_action: LinkCallToAction::WhatsAppMessage,
+            ..valid_creative.creative.clone()
+        };
+        assert_eq!(
+            link_cta_value_json(&wa),
+            serde_json::json!({ "app_destination": "whatsapp" })
+        );
     }
 
     #[test]
@@ -2369,10 +2438,38 @@ mod tests {
         targeting.publisher_platforms = vec![PublisherPlatform::Whatsapp];
         assert_eq!(
             targeting.validate().unwrap_err(),
+            "whatsapp_status_requires_instagram_story"
+        );
+        targeting.publisher_platforms = vec![
+            PublisherPlatform::Whatsapp,
+            PublisherPlatform::Instagram,
+        ];
+        targeting.instagram_positions = vec![InstagramPosition::Story];
+        assert_eq!(
+            targeting.validate().unwrap_err(),
             "whatsapp_status_requires_user_age_unknown"
         );
         targeting.user_age_unknown = Some(false);
         assert!(targeting.validate().is_ok());
+
+        let ident = WhatsAppStatusIdentity {
+            identity_id: "9".into(),
+            phone_number: None,
+        };
+        let status_carousel = CreateAdCreativeRequest {
+            account: None,
+            kind: AdCreativeKind::Carousel(CarouselAdCreative {
+                whatsapp_identity: Some(ident.clone()),
+                ..match ok.kind {
+                    AdCreativeKind::Carousel(c) => c,
+                    _ => unreachable!(),
+                }
+            }),
+        };
+        assert_eq!(
+            status_carousel.validate().unwrap_err(),
+            "whatsapp_status_unsupported_creative_format"
+        );
     }
 
     #[test]

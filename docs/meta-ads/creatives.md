@@ -21,7 +21,8 @@ need more than `value.link = destination_url`:
 - Website types (`shop_now`, `sign_up`, `download`, `apply_now`, `book_now`,
   `subscribe`, `buy_now`, `contact_us`, `get_quote`, `order_now`) still send
   `value.link` as the destination HTTPS URL.
-- `like_page` / `call_now` / `whatsapp_message` send `value.page = page_id`.
+- `like_page` / `call_now` send `value.page = page_id`.
+- `whatsapp_message` sends `value.app_destination = whatsapp`.
 - `get_directions` requires `--geo-link` (`fbgeo://…` or maps HTTPS).
 - `install_app` requires `--application-id` (numeric) and `--app-link`.
 
@@ -48,8 +49,8 @@ recommended). Each card: `image_hash`, HTTPS `link`, `name`. Parent
 
 ## 5. Catalog / dynamic
 
-`object_story_spec.template_data` with numeric `product_set_id`, HTTPS
-`link`, `message`, CTA. Catalog itself is not created here.
+`object_story_spec.template_data` with HTTPS `link`, `message`, CTA, plus
+top-level creative field `product_set_id`. Catalog itself is not created here.
 
 ## 6. Lead-form creative
 
@@ -76,8 +77,9 @@ Advantage+ Shopping/App campaign create (removed v25.0+).
 
 ## 10. Ads in WhatsApp Status (v26.0)
 
-Targeting: `publisher_platforms` may include `whatsapp`;
-`whatsapp_positions` is `status` only. Third-party creatives must send
-`wamo_whatsapp_identity_spec` (`wamo_whatsapp_identity_id` numeric, optional
-`whatsapp_phone_number`). `user_age_unknown` is explicit when Status is
-selected so Meta's default `true` cannot silently expand the audience.
+Targeting: `whatsapp` + `status` **and** `instagram` + `story` (Status is
+not standalone). Third-party creatives should send `wamo_whatsapp_identity_spec`
+(`wamo_whatsapp_identity_id` numeric, optional `whatsapp_phone_number`).
+`user_age_unknown` is explicit when Status is selected so Meta's default
+`true` cannot silently expand the audience. Carousel/catalog and Advantage+
+enhancements are refused with a Status identity.

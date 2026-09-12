@@ -1052,7 +1052,7 @@ async fn create_typed_ad_creative(
     deadline: Deadline,
 ) -> Result<CreatedAdCreative, Error> {
     use crate::ads::AdCreativeKind;
-    let (name, spec, advantage_plus, wa) = match &request.kind {
+    let (name, spec, advantage_plus, wa, product_set_id) = match &request.kind {
         AdCreativeKind::Carousel(c) => {
             let cards: Vec<_> = c
                 .cards
@@ -1085,13 +1085,13 @@ async fn create_typed_ad_creative(
                 spec,
                 c.advantage_plus,
                 c.whatsapp_identity.clone(),
+                None,
             )
         }
         AdCreativeKind::Catalog(c) => {
             let mut spec = serde_json::json!({
                 "page_id": c.page_id,
                 "template_data": {
-                    "product_set_id": c.product_set_id,
                     "link": c.link,
                     "message": c.message,
                     "call_to_action": { "type": c.call_to_action.meta_value() },
@@ -1108,6 +1108,7 @@ async fn create_typed_ad_creative(
                 spec,
                 c.advantage_plus,
                 c.whatsapp_identity.clone(),
+                Some(c.product_set_id.clone()),
             )
         }
         AdCreativeKind::LeadForm(c) => {
@@ -1138,6 +1139,7 @@ async fn create_typed_ad_creative(
                 spec,
                 c.advantage_plus,
                 c.whatsapp_identity.clone(),
+                None,
             )
         }
         AdCreativeKind::AppInstall(c) => {
@@ -1167,6 +1169,7 @@ async fn create_typed_ad_creative(
                 spec,
                 c.advantage_plus,
                 c.whatsapp_identity.clone(),
+                None,
             )
         }
     };
@@ -1176,6 +1179,11 @@ async fn create_typed_ad_creative(
         ("object_story_spec", object_story_spec),
         ("access_token", token.to_string()),
     ];
+    if let Some(product_set_id) = product_set_id {
+        // Advantage+ catalog ads: product_set_id is a creative field, not
+        // nested under template_data.
+        fields.push(("product_set_id", product_set_id));
+    }
     append_creative_extras(&mut fields, advantage_plus, wa.as_ref());
     let body = form(
         &fields
@@ -2924,6 +2932,43 @@ mod tests {
             .unwrap();
         creative.assert();
         assert_eq!(created.id, "501");
+    }
+
+    #[tokio::test]
+    async fn catalog_creative_posts_product_set_id_as_a_creative_field() {
+        let server = MockServer::start();
+        let creative = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/adcreatives")
+                .body_contains("product_set_id=88")
+                .body_contains("template_data");
+            then.status(200).json_body(json!({ "id": "502" }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let created = connector
+            .create_ad_creative(
+                &empty_app(),
+                &token_creds("123"),
+                &crate::ads::CreateAdCreativeRequest {
+                    account: None,
+                    kind: crate::ads::AdCreativeKind::Catalog(crate::ads::CatalogAdCreative {
+                        name: "Catalog".into(),
+                        page_id: "456".into(),
+                        product_set_id: "88".into(),
+                        link: "https://example.com/shop".into(),
+                        message: "Shop".into(),
+                        call_to_action: LinkCallToAction::ShopNow,
+                        instagram_user_id: None,
+                        advantage_plus: false,
+                        whatsapp_identity: None,
+                    }),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        creative.assert();
+        assert_eq!(created.id, "502");
     }
 
     #[tokio::test]
