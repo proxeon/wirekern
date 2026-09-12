@@ -569,10 +569,9 @@ async fn create_paused_ad(
                         .expect("Vec<String> serializes"),
                 ),
                 (
-                    // Always explicit: Meta requires the campaign-level
-                    // choice. `false` keeps independent ad-set budgets;
-                    // `true` is Meta's up-to-20% child-share flag and is
-                    // only valid with a campaign budget (checked locally).
+                    // Always explicit for ABO (v24.0+). `false` keeps
+                    // independent ad-set budgets; `true` is Meta's up-to-20%
+                    // ABO share and is refused locally with a campaign budget.
                     "is_adset_budget_sharing_enabled",
                     if campaign.is_adset_budget_sharing_enabled {
                         "true".into()
@@ -2113,7 +2112,7 @@ mod tests {
             when.method(POST)
                 .path("/v26.0/act_123/campaigns")
                 .body_contains("daily_budget=5000")
-                .body_contains("is_adset_budget_sharing_enabled=true")
+                .body_contains("is_adset_budget_sharing_enabled=false")
                 .body_contains("status=PAUSED");
             then.status(200).json_body(json!({ "id": "100" }));
         });
@@ -2140,7 +2139,7 @@ mod tests {
                         special_ad_categories: vec![],
                         daily_budget: Some(5000),
                         lifetime_budget: None,
-                        is_adset_budget_sharing_enabled: true,
+                        is_adset_budget_sharing_enabled: false,
                     }),
                 },
                 Deadline::from_secs(30),
@@ -2261,11 +2260,14 @@ mod tests {
                         bid_amount: None,
                         roas_average_floor: Some(10_000),
                         billing_event: crate::ads::BillingEvent::Impressions,
-                        optimization_goal: crate::ads::OptimizationGoal::Reach,
+                        optimization_goal: crate::ads::OptimizationGoal::Value,
                         targeting,
                         start_time: None,
                         end_time: None,
-                        promoted_object: None,
+                        promoted_object: Some(crate::ads::PromotedObject::Pixel {
+                            pixel_id: "789".into(),
+                            custom_event_type: crate::ads::CustomEventType::Purchase,
+                        }),
                     }),
                 },
                 Deadline::from_secs(30),

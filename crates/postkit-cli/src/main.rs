@@ -355,7 +355,7 @@ enum AdsCmd {
         /// Campaign-level lifetime budget (CBO). XOR with `--daily-budget`.
         #[arg(long)]
         lifetime_budget: Option<u64>,
-        /// Meta `is_adset_budget_sharing_enabled`. Requires a campaign budget.
+        /// Meta `is_adset_budget_sharing_enabled`. ABO only; refused with CBO.
         #[arg(long)]
         adset_budget_sharing: bool,
     },
@@ -3170,7 +3170,7 @@ mod tests {
                 special_ad_categories: String::new(),
                 daily_budget: Some(5000),
                 lifetime_budget: None,
-                is_adset_budget_sharing_enabled: true,
+                is_adset_budget_sharing_enabled: false,
             },
         )
         .unwrap();
@@ -3178,10 +3178,25 @@ mod tests {
             cbo.create,
             PausedAdCreate::Campaign(PausedCampaign {
                 daily_budget: Some(5000),
-                is_adset_budget_sharing_enabled: true,
+                is_adset_budget_sharing_enabled: false,
                 ..
             })
         ));
+        let sharing_with_cbo = build_paused_campaign_request(
+            "meta_ads",
+            PausedCampaignOptions {
+                ad_account: None,
+                name: "CBO share".into(),
+                objective: "awareness".into(),
+                special_ad_categories: String::new(),
+                daily_budget: Some(5000),
+                lifetime_budget: None,
+                is_adset_budget_sharing_enabled: true,
+            },
+        );
+        assert!(
+            matches!(sharing_with_cbo, Err(Error::InvalidQuery { reason, .. }) if reason == "budget_sharing_incompatible_with_campaign_budget")
+        );
         let both_budgets = build_paused_campaign_request(
             "meta_ads",
             PausedCampaignOptions {
@@ -3360,14 +3375,17 @@ mod tests {
                 start_time: None,
                 end_time: None,
                 billing_event: "IMPRESSIONS".into(),
-                optimization_goal: "REACH".into(),
+                optimization_goal: "VALUE".into(),
                 countries: vec!["MY".into()],
                 age_min: None,
                 age_max: None,
                 publisher_platforms: vec![],
                 facebook_positions: vec![],
                 instagram_positions: vec![],
-                promoted_object: None,
+                promoted_object: Some(postkit::PromotedObject::Pixel {
+                    pixel_id: "789".into(),
+                    custom_event_type: postkit::CustomEventType::Purchase,
+                }),
             },
         )
         .unwrap();

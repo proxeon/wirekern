@@ -204,10 +204,16 @@ pub fn validate_adset_schedule(
 
 /// Cap/floor fields must match the strategy. Meta rejects `bid_amount`
 /// together with `bid_constraints`; we fail the same way locally.
+///
+/// Min-ROAS: `optimization_goal` must be `VALUE` and `roas_average_floor` is
+/// in `[100, 10000000]` (10000 = 1.0). Cost cap: `billing_event` must be
+/// `IMPRESSIONS`.
 pub fn validate_bid_constraints(
     strategy: BidStrategy,
     bid_amount: Option<u64>,
     roas_average_floor: Option<u64>,
+    billing: BillingEvent,
+    goal: OptimizationGoal,
 ) -> Result<(), String> {
     if strategy.requires_bid_amount() {
         match bid_amount {
@@ -219,11 +225,18 @@ pub fn validate_bid_constraints(
     }
     if strategy.requires_roas_floor() {
         match roas_average_floor {
-            Some(floor) if floor > 0 => {}
-            _ => return Err("missing_roas_average_floor".into()),
+            Some(floor) if (100..=10_000_000).contains(&floor) => {}
+            Some(_) => return Err("roas_average_floor_out_of_range".into()),
+            None => return Err("missing_roas_average_floor".into()),
+        }
+        if goal != OptimizationGoal::Value {
+            return Err("min_roas_requires_value_goal".into());
         }
     } else if roas_average_floor.is_some() {
         return Err("roas_floor_without_min_roas_strategy".into());
+    }
+    if strategy == BidStrategy::CostCap && billing != BillingEvent::Impressions {
+        return Err("cost_cap_requires_impressions_billing".into());
     }
     Ok(())
 }
@@ -487,7 +500,9 @@ impl FromStr for AdPreviewFormat {
 /// **or** each child ad set, never both: Meta's create docs say you can set
 /// `daily_budget` / `lifetime_budget` at one level. `None`/`None` keeps the
 /// historical ad-set-budget path. Sharing (`is_adset_budget_sharing_enabled`)
-/// is Meta's up-to-20% child-share flag and needs a campaign budget first.
+/// is Meta's up-to-20% ABO child-share flag (v24.0+ required when the
+/// campaign has no budget). It is incompatible with a campaign budget
+/// (Marketing error 4834002).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PausedCampaign {
     pub name: String,
@@ -500,8 +515,8 @@ pub struct PausedCampaign {
     pub daily_budget: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifetime_budget: Option<u64>,
-    /// Meta `is_adset_budget_sharing_enabled`. Default `false` matches
-    /// independent ad-set budgets. `true` is refused without a campaign budget.
+    /// Meta `is_adset_budget_sharing_enabled`. Default `false` is independent
+    /// ad-set budgets. `true` is ABO sharing and is refused with CBO.
     #[serde(default)]
     pub is_adset_budget_sharing_enabled: bool,
 }
@@ -878,7 +893,10 @@ fn promoted_object_matches_goal(goal: OptimizationGoal, object: &PromotedObject)
         (goal, object),
         (OptimizationGoal::PageLikes, PromotedObject::Page { .. })
             | (OptimizationGoal::AppInstalls, PromotedObject::App { .. })
-            | (OptimizationGoal::OffsiteConversions, PromotedObject::Pixel { .. })
+            | (
+                OptimizationGoal::OffsiteConversions,
+                PromotedObject::Pixel { .. }
+            )
             | (
                 OptimizationGoal::Value,
                 PromotedObject::Pixel { .. } | PromotedObject::ProductSet { .. }
@@ -1073,10 +1091,10 @@ impl PausedAdCreate {
                 }
                 validate_budget_xor(campaign.daily_budget, campaign.lifetime_budget, true)?;
                 if campaign.is_adset_budget_sharing_enabled
-                    && campaign.daily_budget.is_none()
-                    && campaign.lifetime_budget.is_none()
+                    && (campaign.daily_budget.is_some() || campaign.lifetime_budget.is_some())
                 {
-                    return Err("budget_sharing_requires_campaign_budget".into());
+                    // Meta 4834002: sharing is ABO-only, not CBO.
+                    return Err("budget_sharing_incompatible_with_campaign_budget".into());
                 }
             }
             Self::Adset(adset) => {
@@ -1087,6 +1105,8 @@ impl PausedAdCreate {
                     adset.bid_strategy,
                     adset.bid_amount,
                     adset.roas_average_floor,
+                    adset.billing_event,
+                    adset.optimization_goal,
                 )?;
                 validate_adset_schedule(
                     adset.start_time.as_deref(),
@@ -1756,16 +1776,25 @@ mod tests {
                 ..sample_campaign()
             }),
         };
+        assert!(sharing.validate().is_ok());
+
+        let cbo_and_sharing = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Campaign(PausedCampaign {
+                daily_budget: Some(5000),
+                is_adset_budget_sharing_enabled: true,
+                ..sample_campaign()
+            }),
+        };
         assert_eq!(
-            sharing.validate().unwrap_err(),
-            "budget_sharing_requires_campaign_budget"
+            cbo_and_sharing.validate().unwrap_err(),
+            "budget_sharing_incompatible_with_campaign_budget"
         );
 
         let cbo = CreatePausedAdRequest {
             account: Some("123".into()),
             create: PausedAdCreate::Campaign(PausedCampaign {
                 daily_budget: Some(5000),
-                is_adset_budget_sharing_enabled: true,
                 ..sample_campaign()
             }),
         };
@@ -1901,7 +1930,7 @@ mod tests {
             "missing_roas_average_floor"
         );
 
-        let min_roas = CreatePausedAdRequest {
+        let min_roas_wrong_goal = CreatePausedAdRequest {
             account: Some("123".into()),
             create: PausedAdCreate::Adset(PausedAdset {
                 bid_strategy: BidStrategy::LowestCostWithMinRoas,
@@ -1909,7 +1938,39 @@ mod tests {
                 ..sample_adset()
             }),
         };
+        assert_eq!(
+            min_roas_wrong_goal.validate().unwrap_err(),
+            "min_roas_requires_value_goal"
+        );
+
+        let min_roas = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                bid_strategy: BidStrategy::LowestCostWithMinRoas,
+                roas_average_floor: Some(15_000),
+                optimization_goal: OptimizationGoal::Value,
+                promoted_object: Some(PromotedObject::Pixel {
+                    pixel_id: "789".into(),
+                    custom_event_type: CustomEventType::Purchase,
+                }),
+                ..sample_adset()
+            }),
+        };
         assert!(min_roas.validate().is_ok());
+
+        let floor_too_small = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                bid_strategy: BidStrategy::LowestCostWithMinRoas,
+                roas_average_floor: Some(50),
+                optimization_goal: OptimizationGoal::Value,
+                ..sample_adset()
+            }),
+        };
+        assert_eq!(
+            floor_too_small.validate().unwrap_err(),
+            "roas_average_floor_out_of_range"
+        );
 
         let both = CreatePausedAdRequest {
             account: Some("123".into()),

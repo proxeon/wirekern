@@ -85,7 +85,7 @@ pub struct DraftCampaign {
     pub daily_budget: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifetime_budget: Option<u64>,
-    /// Meta `is_adset_budget_sharing_enabled`. Requires a campaign budget.
+    /// Meta `is_adset_budget_sharing_enabled`. ABO only; refused with CBO.
     #[serde(default)]
     pub is_adset_budget_sharing_enabled: bool,
 }
@@ -165,10 +165,9 @@ impl PausedDraftManifest {
             true,
         )?;
         if self.campaign.is_adset_budget_sharing_enabled
-            && self.campaign.daily_budget.is_none()
-            && self.campaign.lifetime_budget.is_none()
+            && (self.campaign.daily_budget.is_some() || self.campaign.lifetime_budget.is_some())
         {
-            return Err("budget_sharing_requires_campaign_budget".into());
+            return Err("budget_sharing_incompatible_with_campaign_budget".into());
         }
         // Ad set
         require_name(&self.adset.name)?;
@@ -187,6 +186,8 @@ impl PausedDraftManifest {
             self.adset.bid_strategy,
             self.adset.bid_amount,
             self.adset.roas_average_floor,
+            self.adset.billing_event,
+            self.adset.optimization_goal,
         )?;
         crate::ads::validate_adset_schedule(
             self.adset.start_time.as_deref(),
@@ -939,19 +940,21 @@ mod tests {
         manifest.adset.daily_budget = None;
         manifest.validate().unwrap();
 
-        manifest.campaign.daily_budget = None;
+        manifest.campaign.daily_budget = Some(5000);
         manifest.campaign.is_adset_budget_sharing_enabled = true;
         assert_eq!(
             manifest.validate().unwrap_err(),
-            "budget_sharing_requires_campaign_budget"
+            "budget_sharing_incompatible_with_campaign_budget"
         );
 
+        manifest.campaign.daily_budget = None;
         manifest.campaign.is_adset_budget_sharing_enabled = false;
         manifest.adset.daily_budget = None;
         manifest.adset.lifetime_budget = None;
         assert_eq!(manifest.validate().unwrap_err(), "missing_budget");
 
         manifest.adset.lifetime_budget = Some(20_000);
+        manifest.adset.end_time = Some("2026-11-21T14:26:09-08:00".into());
         manifest.validate().unwrap();
     }
 
@@ -970,6 +973,16 @@ mod tests {
             "missing_roas_average_floor"
         );
         manifest.adset.roas_average_floor = Some(10_000);
+        assert_eq!(
+            manifest.validate().unwrap_err(),
+            "min_roas_requires_value_goal"
+        );
+        manifest.campaign.objective = CampaignObjective::Sales;
+        manifest.adset.optimization_goal = crate::ads::OptimizationGoal::Value;
+        manifest.adset.promoted_object = Some(crate::ads::PromotedObject::Pixel {
+            pixel_id: "789".into(),
+            custom_event_type: crate::ads::CustomEventType::Purchase,
+        });
         manifest.validate().unwrap();
     }
 

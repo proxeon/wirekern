@@ -170,7 +170,8 @@ postkit --deadline 30 ads status meta_ads --entity ad --id <AD_ID> --wait --json
   integers in account minor units. Put the budget on the campaign (`--daily-budget`
   / `--lifetime-budget` on `create-campaign`) for CBO and omit it on the ad set,
   or put it on the ad set and omit it on the campaign. `--adset-budget-sharing`
-  is Meta's child-share flag and requires a campaign budget. Amounts do not
+  is Meta's ABO child-share flag (up to 20%) and is refused with a campaign
+  budget (Graph 4834002). Amounts do not
   spend while every object is paused, but they are still reviewed policy input
   for a future activation workflow.
 - `--bid-strategy` is required: `lowest_cost_without_cap` (budget only),

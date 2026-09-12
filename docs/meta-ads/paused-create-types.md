@@ -36,16 +36,18 @@ that already used `{ "geo_locations": { "countries": ["MY"] } }` still parse.
 ## 3. Lifetime / campaign budget / sharing
 
 Ad set: `daily_budget` XOR `lifetime_budget` (positive minor units). Lifetime
-requires `end_time`. Campaign: optional `daily_budget` / `lifetime_budget` and
-explicit `is_adset_budget_sharing_enabled` (today hard-coded `false`). CBO:
-campaign has the budget; ad set omits its own.
+requires `end_time`. Campaign: optional `daily_budget` / `lifetime_budget`.
+`is_adset_budget_sharing_enabled` is ABO-only (v24 requires the boolean when
+the campaign has no budget) and is refused with CBO. CBO: campaign has the
+budget; ad set omits its own.
 
 ## 4. Bid strategies with constraints
 
 `LOWEST_COST_WITHOUT_CAP` (no extra field). `LOWEST_COST_WITH_BID_CAP` and
-`COST_CAP` require `bid_amount` > 0. `LOWEST_COST_WITH_MIN_ROAS` requires
-`roas_average_floor` (Meta `bid_constraints.roas_average_floor`; 10000 = 1.0).
-Sending a cap strategy without its constraint fails locally.
+`COST_CAP` require `bid_amount` > 0; cost cap also requires `IMPRESSIONS`
+billing. `LOWEST_COST_WITH_MIN_ROAS` requires `optimization_goal=VALUE` and
+`roas_average_floor` in `[100, 10000000]` (10000 = 1.0). Sending a cap
+strategy without its constraint fails locally.
 
 ## 5. Schedule
 
