@@ -331,9 +331,19 @@ enum AdsCmd {
         headline: String,
         #[arg(long)]
         destination_url: String,
-        /// `learn_more`; more CTA types need their own typed value fields.
+        /// learn_more | shop_now | sign_up | download | apply_now | book_now |
+        /// subscribe | buy_now | contact_us | get_quote | order_now | call_now |
+        /// like_page | whatsapp_message | get_directions | install_app
         #[arg(long)]
         call_to_action: String,
+        /// Required for `--call-to-action get_directions`.
+        #[arg(long)]
+        geo_link: Option<String>,
+        /// Required with `--app-link` for `install_app`.
+        #[arg(long)]
+        application_id: Option<String>,
+        #[arg(long)]
+        app_link: Option<String>,
     },
     /// Create a Meta campaign with status hard-coded to PAUSED.
     CreateCampaign {
@@ -1882,6 +1892,9 @@ async fn dispatch(
             headline,
             destination_url,
             call_to_action,
+            geo_link,
+            application_id,
+            app_link,
         }) => {
             let request = build_link_ad_creative_request(
                 &site,
@@ -1894,6 +1907,9 @@ async fn dispatch(
                     headline,
                     destination_url,
                     call_to_action,
+                    geo_link,
+                    application_id,
+                    app_link,
                 },
             )
             .map_err(|e| fail(&e, json))?;
@@ -3020,10 +3036,32 @@ mod tests {
                 headline: "Learn more".into(),
                 destination_url: "https://example.com/offer".into(),
                 call_to_action: "learn_more".into(),
+                geo_link: None,
+                application_id: None,
+                app_link: None,
             },
         )
         .unwrap();
         assert_eq!(request.creative.call_to_action, LinkCallToAction::LearnMore);
+
+        let shop = build_link_ad_creative_request(
+            "meta_ads",
+            LinkCreativeOptions {
+                ad_account: None,
+                name: "Hero".into(),
+                page_id: "456".into(),
+                image_hash: "hash-1".into(),
+                message: "A clear benefit".into(),
+                headline: "Shop".into(),
+                destination_url: "https://example.com/offer".into(),
+                call_to_action: "shop_now".into(),
+                geo_link: None,
+                application_id: None,
+                app_link: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(shop.creative.call_to_action, LinkCallToAction::ShopNow);
 
         let invalid = build_link_ad_creative_request(
             "meta_ads",
@@ -3035,15 +3073,35 @@ mod tests {
                 message: "A clear benefit".into(),
                 headline: "Learn more".into(),
                 destination_url: "http://example.com/offer".into(),
-                call_to_action: "shop_now".into(),
+                call_to_action: "swipe_up_shop".into(),
+                geo_link: None,
+                application_id: None,
+                app_link: None,
             },
         )
         .unwrap_err();
-        // CTA parsing happens before URL validation, so a caller gets one
-        // precise, local field correction at a time rather than Graph's
-        // combined form error after a remote write.
         assert!(
-            matches!(invalid, Error::InvalidQuery { reason, .. } if reason == "unknown_link_call_to_action:shop_now")
+            matches!(invalid, Error::InvalidQuery { reason, .. } if reason == "unknown_link_call_to_action:swipe_up_shop")
+        );
+        let missing_geo = build_link_ad_creative_request(
+            "meta_ads",
+            LinkCreativeOptions {
+                ad_account: None,
+                name: "Hero".into(),
+                page_id: "456".into(),
+                image_hash: "hash-1".into(),
+                message: "A clear benefit".into(),
+                headline: "Directions".into(),
+                destination_url: "https://example.com/offer".into(),
+                call_to_action: "get_directions".into(),
+                geo_link: None,
+                application_id: None,
+                app_link: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(missing_geo, Error::InvalidQuery { reason, .. } if reason == "missing_geo_link")
         );
 
         let upload = build_upload_ad_image_request(

@@ -734,9 +734,9 @@ async fn upload_ad_image(
     })
 }
 
-/// Create an unpublished Page-backed image-link creative. It intentionally
-/// sends only the narrow, reviewable `object_story_spec` V1 supports; video,
-/// carousel, and Instagram creative shapes need their own typed contracts.
+/// Create an unpublished Page-backed image-link creative. CTA `value` is
+/// built from the typed extra fields; video, carousel, and Instagram shapes
+/// have their own typed contracts.
 async fn create_link_ad_creative(
     http: &Http,
     base: &str,
@@ -756,7 +756,7 @@ async fn create_link_ad_creative(
             "name": creative.headline,
             "call_to_action": {
                 "type": creative.call_to_action.meta_value(),
-                "value": { "link": creative.destination_url },
+                "value": crate::ads::link_cta_value_json(creative),
             },
         },
     })
@@ -2388,6 +2388,9 @@ mod tests {
                         headline: "Learn more".into(),
                         destination_url: "https://example.com/offer".into(),
                         call_to_action: LinkCallToAction::LearnMore,
+                        geo_link: None,
+                        application_id: None,
+                        app_link: None,
                     },
                 },
                 Deadline::from_secs(30),

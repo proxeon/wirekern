@@ -69,7 +69,7 @@ no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
 - [x] CTA `learn_more` only
 - [x] Preview `desktop_feed_standard` | `mobile_feed_standard` to a **new** local HTML file
 - [x] Policy gate `UploadAdImage` / `CreateLinkAdCreative` (assets cannot spend alone)
-- [ ] Additional image-link CTAs (each has extra Meta value requirements)
+- [x] Additional image-link CTAs (each has extra Meta value requirements)
 - [ ] Video upload + processing/status poll
 - [ ] Video creative
 - [ ] Carousel

@@ -391,6 +391,9 @@ pub(crate) struct LinkCreativeOptions {
     pub(crate) headline: String,
     pub(crate) destination_url: String,
     pub(crate) call_to_action: String,
+    pub(crate) geo_link: Option<String>,
+    pub(crate) application_id: Option<String>,
+    pub(crate) app_link: Option<String>,
 }
 
 pub(crate) fn build_link_ad_creative_request(
@@ -409,6 +412,9 @@ pub(crate) fn build_link_ad_creative_request(
             headline: options.headline,
             destination_url: options.destination_url,
             call_to_action,
+            geo_link: options.geo_link,
+            application_id: options.application_id,
+            app_link: options.app_link,
         },
     };
     request

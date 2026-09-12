@@ -426,20 +426,85 @@ pub fn supported_adset_pairing(
     )
 }
 
-/// The CTA supported by the first image-link creative format. More CTA kinds
-/// are not aliases: Meta gives some of them additional value requirements, so
-/// each must be modelled deliberately rather than accepted as a raw string.
+/// Image-link CTAs Meta documents on `AdCreativeLinkDataCallToAction`.
+/// Website types share `value.link` with the destination URL. Page-click
+/// types send `value.page`. `get_directions` and `install_app` need extra
+/// typed fields (geo link / application + app link) or they fail locally.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkCallToAction {
     LearnMore,
+    ShopNow,
+    SignUp,
+    Download,
+    ApplyNow,
+    BookNow,
+    Subscribe,
+    BuyNow,
+    ContactUs,
+    GetQuote,
+    OrderNow,
+    CallNow,
+    LikePage,
+    WhatsAppMessage,
+    GetDirections,
+    InstallApp,
 }
 
 impl LinkCallToAction {
     pub fn meta_value(self) -> &'static str {
         match self {
             Self::LearnMore => "LEARN_MORE",
+            Self::ShopNow => "SHOP_NOW",
+            Self::SignUp => "SIGN_UP",
+            Self::Download => "DOWNLOAD",
+            Self::ApplyNow => "APPLY_NOW",
+            Self::BookNow => "BOOK_NOW",
+            Self::Subscribe => "SUBSCRIBE",
+            Self::BuyNow => "BUY_NOW",
+            Self::ContactUs => "CONTACT_US",
+            Self::GetQuote => "GET_QUOTE",
+            Self::OrderNow => "ORDER_NOW",
+            Self::CallNow => "CALL_NOW",
+            Self::LikePage => "LIKE_PAGE",
+            Self::WhatsAppMessage => "WHATSAPP_MESSAGE",
+            Self::GetDirections => "GET_DIRECTIONS",
+            Self::InstallApp => "INSTALL_MOBILE_APP",
         }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LearnMore => "learn_more",
+            Self::ShopNow => "shop_now",
+            Self::SignUp => "sign_up",
+            Self::Download => "download",
+            Self::ApplyNow => "apply_now",
+            Self::BookNow => "book_now",
+            Self::Subscribe => "subscribe",
+            Self::BuyNow => "buy_now",
+            Self::ContactUs => "contact_us",
+            Self::GetQuote => "get_quote",
+            Self::OrderNow => "order_now",
+            Self::CallNow => "call_now",
+            Self::LikePage => "like_page",
+            Self::WhatsAppMessage => "whatsapp_message",
+            Self::GetDirections => "get_directions",
+            Self::InstallApp => "install_app",
+        }
+    }
+
+    /// Page-identity CTAs: Meta's value uses `page`, not a destination link.
+    pub fn uses_page(self) -> bool {
+        matches!(self, Self::LikePage | Self::CallNow | Self::WhatsAppMessage)
+    }
+
+    pub fn requires_geo_link(self) -> bool {
+        matches!(self, Self::GetDirections)
+    }
+
+    pub fn requires_app(self) -> bool {
+        matches!(self, Self::InstallApp)
     }
 }
 
@@ -448,7 +513,22 @@ impl FromStr for LinkCallToAction {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "learn_more" => Ok(Self::LearnMore),
+            "learn_more" | "LEARN_MORE" => Ok(Self::LearnMore),
+            "shop_now" | "SHOP_NOW" => Ok(Self::ShopNow),
+            "sign_up" | "SIGN_UP" => Ok(Self::SignUp),
+            "download" | "DOWNLOAD" => Ok(Self::Download),
+            "apply_now" | "APPLY_NOW" => Ok(Self::ApplyNow),
+            "book_now" | "BOOK_NOW" => Ok(Self::BookNow),
+            "subscribe" | "SUBSCRIBE" => Ok(Self::Subscribe),
+            "buy_now" | "BUY_NOW" => Ok(Self::BuyNow),
+            "contact_us" | "CONTACT_US" => Ok(Self::ContactUs),
+            "get_quote" | "GET_QUOTE" => Ok(Self::GetQuote),
+            "order_now" | "ORDER_NOW" => Ok(Self::OrderNow),
+            "call_now" | "CALL_NOW" => Ok(Self::CallNow),
+            "like_page" | "LIKE_PAGE" => Ok(Self::LikePage),
+            "whatsapp_message" | "WHATSAPP_MESSAGE" => Ok(Self::WhatsAppMessage),
+            "get_directions" | "GET_DIRECTIONS" => Ok(Self::GetDirections),
+            "install_app" | "INSTALL_MOBILE_APP" | "INSTALL_APP" => Ok(Self::InstallApp),
             other => Err(format!("unknown_link_call_to_action:{other}")),
         }
     }
@@ -980,6 +1060,15 @@ pub struct LinkAdCreative {
     pub headline: String,
     pub destination_url: String,
     pub call_to_action: LinkCallToAction,
+    /// Required for `get_directions` (`fbgeo://…` or HTTPS maps). Refused on
+    /// every other CTA so a leftover geo link cannot hitch a ride.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_link: Option<String>,
+    /// Required with `app_link` for `install_app`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_link: Option<String>,
 }
 
 /// Account override plus one image-link creative. Unlike a campaign/ad set/ad
@@ -1001,7 +1090,62 @@ impl CreateLinkAdCreativeRequest {
         require_text("message", &self.creative.message)?;
         require_text("headline", &self.creative.headline)?;
         require_https_url("destination_url", &self.creative.destination_url)?;
+        validate_link_cta_values(&self.creative)?;
         Ok(())
+    }
+}
+
+/// Extra CTA value fields must match the type. Meta's call-to-action value
+/// object has no phone-number field; CALL_NOW/LIKE_PAGE/WHATSAPP_MESSAGE use
+/// `page`. GET_DIRECTIONS needs a geo link; INSTALL_MOBILE_APP needs the app.
+pub fn validate_link_cta_values(creative: &LinkAdCreative) -> Result<(), String> {
+    let cta = creative.call_to_action;
+    if cta.requires_geo_link() {
+        let geo = creative
+            .geo_link
+            .as_deref()
+            .ok_or_else(|| "missing_geo_link".to_string())?;
+        if geo.starts_with("fbgeo://") {
+            if geo.trim().len() <= "fbgeo://".len() {
+                return Err("missing_geo_link".into());
+            }
+        } else {
+            require_https_url("geo_link", geo)?;
+        }
+    } else if creative.geo_link.is_some() {
+        return Err("geo_link_without_get_directions".into());
+    }
+    if cta.requires_app() {
+        let application_id = creative
+            .application_id
+            .as_deref()
+            .ok_or_else(|| "missing_application_id".to_string())?;
+        require_numeric_id("application_id", application_id)?;
+        let app_link = creative
+            .app_link
+            .as_deref()
+            .ok_or_else(|| "missing_app_link".to_string())?;
+        require_https_url("app_link", app_link)?;
+    } else if creative.application_id.is_some() || creative.app_link.is_some() {
+        return Err("app_fields_without_install_app".into());
+    }
+    Ok(())
+}
+
+/// Meta `call_to_action.value` for this image-link creative.
+pub fn link_cta_value_json(creative: &LinkAdCreative) -> serde_json::Value {
+    if creative.call_to_action.uses_page() {
+        serde_json::json!({ "page": creative.page_id })
+    } else if creative.call_to_action.requires_geo_link() {
+        serde_json::json!({ "link": creative.geo_link.as_deref().unwrap_or_default() })
+    } else if creative.call_to_action.requires_app() {
+        serde_json::json!({
+            "application": creative.application_id.as_deref().unwrap_or_default(),
+            "app_link": creative.app_link.as_deref().unwrap_or_default(),
+            "link": creative.destination_url,
+        })
+    } else {
+        serde_json::json!({ "link": creative.destination_url })
     }
 }
 
@@ -1501,8 +1645,12 @@ mod tests {
             "LEARN_MORE"
         );
         assert_eq!(
-            LinkCallToAction::from_str("shop_now").unwrap_err(),
-            "unknown_link_call_to_action:shop_now"
+            LinkCallToAction::from_str("shop_now").unwrap().meta_value(),
+            "SHOP_NOW"
+        );
+        assert_eq!(
+            LinkCallToAction::from_str("swipe_up_shop").unwrap_err(),
+            "unknown_link_call_to_action:swipe_up_shop"
         );
         assert_eq!(
             AdPreviewFormat::from_str("desktop_feed_standard")
@@ -1597,6 +1745,9 @@ mod tests {
                 headline: "Learn more".into(),
                 destination_url: "https://example.com/offer".into(),
                 call_to_action: LinkCallToAction::LearnMore,
+                geo_link: None,
+                application_id: None,
+                app_link: None,
             },
         };
         assert!(valid_creative.validate().is_ok());
@@ -1625,11 +1776,78 @@ mod tests {
         let bad_page = CreateLinkAdCreativeRequest {
             creative: LinkAdCreative {
                 page_id: "page-456".into(),
-                ..valid_creative.creative
+                ..valid_creative.creative.clone()
             },
-            ..valid_creative
+            ..valid_creative.clone()
         };
         assert_eq!(bad_page.validate().unwrap_err(), "bad_page_id:page-456");
+
+        let missing_geo = CreateLinkAdCreativeRequest {
+            creative: LinkAdCreative {
+                call_to_action: LinkCallToAction::GetDirections,
+                ..valid_creative.creative.clone()
+            },
+            ..valid_creative.clone()
+        };
+        assert_eq!(missing_geo.validate().unwrap_err(), "missing_geo_link");
+        let directions = CreateLinkAdCreativeRequest {
+            creative: LinkAdCreative {
+                call_to_action: LinkCallToAction::GetDirections,
+                geo_link: Some("fbgeo://37.48,-122.15,\"1601 Willow Rd\"".into()),
+                ..valid_creative.creative.clone()
+            },
+            ..valid_creative.clone()
+        };
+        assert!(directions.validate().is_ok());
+        assert_eq!(
+            link_cta_value_json(&directions.creative)["link"].as_str(),
+            Some("fbgeo://37.48,-122.15,\"1601 Willow Rd\"")
+        );
+
+        let missing_app = CreateLinkAdCreativeRequest {
+            creative: LinkAdCreative {
+                call_to_action: LinkCallToAction::InstallApp,
+                ..valid_creative.creative.clone()
+            },
+            ..valid_creative.clone()
+        };
+        assert_eq!(
+            missing_app.validate().unwrap_err(),
+            "missing_application_id"
+        );
+        let install = CreateLinkAdCreativeRequest {
+            creative: LinkAdCreative {
+                call_to_action: LinkCallToAction::InstallApp,
+                application_id: Some("1".into()),
+                app_link: Some("https://apps.apple.com/app/id1".into()),
+                ..valid_creative.creative.clone()
+            },
+            ..valid_creative.clone()
+        };
+        assert!(install.validate().is_ok());
+        let leftover_geo = CreateLinkAdCreativeRequest {
+            creative: LinkAdCreative {
+                geo_link: Some("fbgeo://1,2".into()),
+                ..valid_creative.creative.clone()
+            },
+            ..valid_creative.clone()
+        };
+        assert_eq!(
+            leftover_geo.validate().unwrap_err(),
+            "geo_link_without_get_directions"
+        );
+        assert_eq!(
+            link_cta_value_json(&valid_creative.creative),
+            serde_json::json!({ "link": "https://example.com/offer" })
+        );
+        let like_page = LinkAdCreative {
+            call_to_action: LinkCallToAction::LikePage,
+            ..valid_creative.creative.clone()
+        };
+        assert_eq!(
+            link_cta_value_json(&like_page),
+            serde_json::json!({ "page": "456" })
+        );
     }
 
     #[test]

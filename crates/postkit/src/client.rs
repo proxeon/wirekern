@@ -2129,6 +2129,9 @@ mod draft_run {
                                 headline: manifest.creative.headline.clone(),
                                 destination_url: manifest.creative.destination_url.clone(),
                                 call_to_action: manifest.creative.call_to_action,
+                                geo_link: manifest.creative.geo_link.clone(),
+                                application_id: manifest.creative.application_id.clone(),
+                                app_link: manifest.creative.app_link.clone(),
                             },
                         };
                         self.create_link_ad_creative(key, request, deadline)

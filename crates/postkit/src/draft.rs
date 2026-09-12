@@ -135,6 +135,12 @@ pub struct DraftCreative {
     pub headline: String,
     pub destination_url: String,
     pub call_to_action: crate::ads::LinkCallToAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_link: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -217,6 +223,18 @@ impl PausedDraftManifest {
         require_text("message", &self.creative.message)?;
         require_text("headline", &self.creative.headline)?;
         require_https_url("destination_url", &self.creative.destination_url)?;
+        crate::ads::validate_link_cta_values(&crate::ads::LinkAdCreative {
+            name: self.creative.name.clone(),
+            page_id: self.creative.page_id.clone(),
+            image_hash: "draft".into(),
+            message: self.creative.message.clone(),
+            headline: self.creative.headline.clone(),
+            destination_url: self.creative.destination_url.clone(),
+            call_to_action: self.creative.call_to_action,
+            geo_link: self.creative.geo_link.clone(),
+            application_id: self.creative.application_id.clone(),
+            app_link: self.creative.app_link.clone(),
+        })?;
         self.image_filename()?;
         // Ad
         require_name(&self.ad.name)?;
