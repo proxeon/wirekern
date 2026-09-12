@@ -2022,7 +2022,23 @@ async fn dispatch(
                 return Err(2);
             }
             let key = AccountKey::new(&site, &account);
-            let result = if let Some(password) = password {
+            let result = if system_user {
+                if site != "meta_ads" {
+                    eprintln!("--system-user is only valid for meta_ads");
+                    return Err(2);
+                }
+                let Some(token) = token else {
+                    eprintln!("--system-user requires --token");
+                    return Err(2);
+                };
+                if code.is_some() || password.is_some() {
+                    eprintln!("--system-user cannot be combined with --code or --password");
+                    return Err(2);
+                }
+                client
+                    .put_ads_system_user_token(&key, &token, deadline)
+                    .await
+            } else if let Some(password) = password {
                 if token.is_some() || code.is_some() {
                     eprintln!("--password cannot be combined with --token or --code");
                     return Err(2);
@@ -2048,18 +2064,6 @@ async fn dispatch(
                             pds: None,
                         },
                     )
-                    .await
-            } else if system_user {
-                let Some(token) = token else {
-                    eprintln!("--system-user requires --token");
-                    return Err(2);
-                };
-                if code.is_some() || password.is_some() {
-                    eprintln!("--system-user cannot be combined with --code or --password");
-                    return Err(2);
-                }
-                client
-                    .put_ads_system_user_token(&key, &token, deadline)
                     .await
             } else if let Some(token) = token {
                 if code.is_some() {

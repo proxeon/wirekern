@@ -476,7 +476,15 @@ impl AdsManager for MetaAds {
                 reason: "invalid_token".into(),
             });
         }
-        refuse_non_system_user_debug(&self.site, debug.debug_type.as_deref())?;
+        refuse_non_system_user_debug(&self.site, debug.debug_type.as_deref(), debug.expires_at)?;
+        if let Some(app_id) = debug.app_id.as_deref() {
+            if app_id != oauth.client_id {
+                return Err(Error::Auth {
+                    site: self.site.clone(),
+                    reason: "token_app_mismatch".into(),
+                });
+            }
+        }
         let me = whoami(&self.http, &self.base, token, deadline).await?;
         let account = first_ad_account(&self.http, &self.base, token, deadline)
             .await?
@@ -1066,6 +1074,7 @@ fn creds_from_long(long: &TokenLong, user_id: Option<String>) -> AccountCreds {
     if let Some(id) = user_id {
         extra.insert("user_id".into(), Value::String(id));
     }
+    extra.insert("token_kind".into(), Value::String("user_oauth".into()));
     extra.insert("refreshed_at".into(), Value::from(unix_now()));
     if let Some(exp) = long.expires_in {
         extra.insert(
@@ -1245,16 +1254,32 @@ fn app_access_token(oauth: &OAuthApp) -> String {
     format!("{}|{}", oauth.client_id, oauth.client_secret)
 }
 
-fn refuse_non_system_user_debug(site: &Site, debug_type: Option<&str>) -> Result<(), Error> {
-    match debug_type
-        .map(|value| value.to_ascii_uppercase())
-        .as_deref()
-    {
-        None | Some("SYSTEM_USER") => Ok(()),
-        Some("USER") => Err(Error::Auth {
+/// System User tokens are often labelled `USER` by `/debug_token` (the
+/// official field table does not even document `type`). A person OAuth token
+/// still has a non-zero `expires_at` (~60 days). Never-expiring USER tokens
+/// are accepted; PAGE/APP tokens are not a Marketing API system user.
+fn refuse_non_system_user_debug(
+    site: &Site,
+    debug_type: Option<&str>,
+    expires_at: Option<u64>,
+) -> Result<(), Error> {
+    let kind = debug_type.map(|value| value.to_ascii_uppercase());
+    match kind.as_deref() {
+        Some("SYSTEM_USER") => Ok(()),
+        Some("PAGE") | Some("APP") => Err(Error::Auth {
             site: site.clone(),
-            reason: "user_token_not_system_user".into(),
+            reason: format!("wrong_token_type:{}", kind.as_deref().unwrap_or("")),
         }),
+        Some("USER") | None => {
+            if expires_at.is_none() {
+                Ok(())
+            } else {
+                Err(Error::Auth {
+                    site: site.clone(),
+                    reason: "user_token_not_system_user".into(),
+                })
+            }
+        }
         Some(other) => Err(Error::Auth {
             site: site.clone(),
             reason: format!("wrong_token_type:{other}"),
@@ -1302,7 +1327,6 @@ async fn debug_token(
     let resp = http.send(http.get(&url), deadline, &site).await?;
     let body = read_json(resp, &site).await?;
     let data = body.get("data").cloned().unwrap_or(Value::Null);
-    let expires_at = data.get("expires_at").and_then(|v| v.as_u64());
     Ok(AdsTokenInspection {
         site,
         token_kind: vault_kind,
@@ -1314,11 +1338,8 @@ async fn debug_token(
             .get("is_valid")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        expires_at: expires_at.filter(|value| *value != 0),
-        data_access_expires_at: data
-            .get("data_access_expires_at")
-            .and_then(|v| v.as_u64())
-            .filter(|value| *value != 0),
+        expires_at: unix_field(&data, "expires_at"),
+        data_access_expires_at: unix_field(&data, "data_access_expires_at"),
         scopes: data
             .get("scopes")
             .and_then(|v| v.as_array())
@@ -1329,19 +1350,22 @@ async fn debug_token(
                     .collect()
             })
             .unwrap_or_default(),
-        user_id: data
-            .get("user_id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        app_id: data
-            .get("app_id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
+        user_id: value_string(data.get("user_id")),
+        app_id: value_string(data.get("app_id")),
         application: data
             .get("application")
             .and_then(|v| v.as_str())
             .map(str::to_string),
     })
+}
+
+fn unix_field(data: &Value, key: &str) -> Option<u64> {
+    let value = data.get(key)?;
+    let n = value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+        .or_else(|| value.as_str().and_then(|s| s.parse().ok()))?;
+    (n != 0).then_some(n)
 }
 
 fn access_tier_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> {
@@ -1358,15 +1382,6 @@ fn access_tier_from_headers(headers: &reqwest::header::HeaderMap) -> Option<Stri
             if let Some(tier) = json_ads_api_access_tier(&json) {
                 return Some(tier);
             }
-        }
-        if let Some(tier) = value
-            .split("ads_api_access_tier")
-            .nth(1)
-            .and_then(|rest| rest.split(['"', ',', '}']).nth(1))
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            return Some(tier.to_string());
         }
     }
     None
@@ -2658,12 +2673,34 @@ mod tests {
     #[test]
     fn system_user_debug_refuses_a_user_token() {
         let site = Site::new(SITE);
-        let err = refuse_non_system_user_debug(&site, Some("USER")).unwrap_err();
+        let err =
+            refuse_non_system_user_debug(&site, Some("USER"), Some(1_800_000_000)).unwrap_err();
         assert!(
             matches!(err, Error::Auth { reason, .. } if reason == "user_token_not_system_user")
         );
-        assert!(refuse_non_system_user_debug(&site, Some("SYSTEM_USER")).is_ok());
-        assert!(refuse_non_system_user_debug(&site, None).is_ok());
+        assert!(refuse_non_system_user_debug(&site, Some("USER"), None).is_ok());
+        assert!(refuse_non_system_user_debug(&site, Some("SYSTEM_USER"), None).is_ok());
+        assert!(refuse_non_system_user_debug(&site, None, None).is_ok());
+        let err = refuse_non_system_user_debug(&site, Some("PAGE"), None).unwrap_err();
+        assert!(matches!(err, Error::Auth { reason, .. } if reason == "wrong_token_type:PAGE"));
+    }
+
+    #[test]
+    fn access_tier_headers_require_json() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "x-fb-ads-insights-throttle",
+            "not-json ads_api_access_tier".parse().unwrap(),
+        );
+        assert_eq!(access_tier_from_headers(&headers), None);
+        headers.insert(
+            "x-fb-ads-insights-throttle",
+            r#"{"ads_api_access_tier":"development_access"}"#.parse().unwrap(),
+        );
+        assert_eq!(
+            access_tier_from_headers(&headers).as_deref(),
+            Some("development_access")
+        );
     }
 
     #[tokio::test]
@@ -2731,7 +2768,12 @@ mod tests {
         server.mock(|when, then| {
             when.method(GET).path("/v26.0/debug_token");
             then.status(200).json_body(json!({
-                "data": { "type": "USER", "is_valid": true, "user_id": "1" }
+                "data": {
+                    "type": "USER",
+                    "is_valid": true,
+                    "expires_at": 1_800_000_000,
+                    "user_id": "1"
+                }
             }));
         });
         let t = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
@@ -2742,6 +2784,47 @@ mod tests {
         assert!(
             matches!(err, Error::Auth { reason, .. } if reason == "user_token_not_system_user")
         );
+    }
+
+    #[tokio::test]
+    async fn system_user_bootstrap_accepts_never_expiring_user_type() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v26.0/debug_token");
+            then.status(200).json_body(json!({
+                "data": {
+                    "app_id": "id",
+                    "type": "USER",
+                    "is_valid": true,
+                    "expires_at": 0,
+                    "user_id": 55
+                }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v26.0/me");
+            then.status(200)
+                .json_body(json!({ "id": "55", "name": "Bot" }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v26.0/me/adaccounts");
+            then.status(200)
+                .json_body(json!({ "data": [{ "account_id": "9" }] }));
+        });
+        let t = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let creds = t
+            .bootstrap_system_user_token(&oauth_app(), "SYS", Deadline::from_secs(30))
+            .await
+            .unwrap();
+        match &creds {
+            AccountCreds::OAuth2 { extra, .. } => {
+                assert_eq!(
+                    extra.get("token_kind").and_then(|v| v.as_str()),
+                    Some(SYSTEM_USER_TOKEN_KIND)
+                );
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[tokio::test]

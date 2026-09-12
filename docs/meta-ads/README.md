@@ -39,9 +39,11 @@ Business Manager, assign the ad account, generate a token for this app, then:
 postkit auth meta_ads --token '<SYSTEM_USER_TOKEN>' --system-user --json
 ```
 
-Postkit calls `GET /debug_token` with the app access token and refuses
-`type=USER` (a person token reused as a secret). It then verifies `/me` and
-stores `token_kind=system_user` plus the first ad account. System User tokens
+Postkit calls `GET /debug_token` with the app access token. It refuses PAGE/APP
+tokens and person OAuth tokens (`type=USER` with a non-zero `expires_at`).
+Never-expiring tokens that Meta still labels `USER` are accepted — `/debug_token`
+often types System Users that way. It then verifies `/me` and stores
+`token_kind=system_user` plus the first ad account. System User tokens
 are **not** refreshed via `fb_exchange_token`; generate a new token in
 Business Manager when Meta invalidates one.
 
