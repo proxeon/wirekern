@@ -184,6 +184,7 @@ impl Server {
             "insights" => tools::insights(&self.client, arguments).await,
             "ads_accounts" => tools::ads_accounts(&self.client, arguments).await,
             "ads_list" => tools::ads_list(&self.client, arguments).await,
+            "ads_inspect" => tools::ads_inspect(&self.client, arguments).await,
             "pages_accounts" => tools::pages_accounts(&self.client, arguments).await,
             "media_list" => tools::media_list(&self.client, arguments).await,
             other => {
@@ -383,6 +384,7 @@ mod tests {
                 "insights",
                 "ads_accounts",
                 "ads_list",
+                "ads_inspect",
                 "pages_accounts",
                 "media_list"
             ]
@@ -754,6 +756,16 @@ mod tests {
         .await;
         assert_eq!(
             listed["result"]["structuredContent"]["error"],
+            "unknown_account"
+        );
+        let inspected = call(
+            &server,
+            "ads_inspect",
+            json!({ "site": "meta_ads", "entity": "adset", "id": "456" }),
+        )
+        .await;
+        assert_eq!(
+            inspected["result"]["structuredContent"]["error"],
             "unknown_account"
         );
         let bad_attr = call(

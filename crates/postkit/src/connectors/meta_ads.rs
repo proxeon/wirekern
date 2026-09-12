@@ -7,12 +7,12 @@
 //! `fb_exchange_token` grant (~60 days).
 
 use crate::ads::{
-    AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdsInventoryItem, AdsInventoryKind,
-    AdsInventoryReply, AdsInventoryRequest, AdsTokenInspection, AdsTokenKind,
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, MarketingApiAccessTierKind,
-    PausedAdCreate, UploadAdImageRequest, UploadedAdImage, MARKETING_API_ACCESS_TIER_DASHBOARD,
-    SYSTEM_USER_TOKEN_KIND,
+    AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdsInspectReply, AdsInspectRequest,
+    AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
+    AdsTargetingReadback, AdsTokenInspection, AdsTokenKind, CreateLinkAdCreativeRequest,
+    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
+    MarketingApiAccessTier, MarketingApiAccessTierKind, PausedAdCreate, UploadAdImageRequest,
+    UploadedAdImage, MARKETING_API_ACCESS_TIER_DASHBOARD, SYSTEM_USER_TOKEN_KIND,
 };
 use crate::error::Error;
 use crate::facets::{AdsManager, InsightsSource};
@@ -622,6 +622,17 @@ impl AdsManager for MetaAds {
             deadline,
         )
         .await
+    }
+
+    async fn inspect_ads_object(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &AdsInspectRequest,
+        deadline: Deadline,
+    ) -> Result<AdsInspectReply, Error> {
+        let token = access_token(creds)?;
+        inspect_ads_object(&self.http, &self.base, &self.site, token, request, deadline).await
     }
 }
 
@@ -1473,6 +1484,197 @@ fn inventory_item_from(
         objective: nonempty_value_string(value.get("objective")),
         object_type: None,
     }))
+}
+
+/// Read one object's spend-shaped fields. Campaign/ad set carry budget and
+/// bid; targeting and destination live on the ad set (and sometimes the ad);
+/// Page and click destination live on the creative.
+async fn inspect_ads_object(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    token: &str,
+    request: &AdsInspectRequest,
+    deadline: Deadline,
+) -> Result<AdsInspectReply, Error> {
+    let params = form(&[
+        ("fields", inspect_fields(request.kind)),
+        ("access_token", token),
+    ]);
+    let url = format!("{base}/{}?{params}", request.id);
+    let response = http.send(http.get(&url), deadline, site).await?;
+    let response = read_json(response, site).await?;
+    inspect_reply_from(site, request, &response)
+}
+
+fn inspect_fields(kind: AdsInventoryKind) -> &'static str {
+    match kind {
+        AdsInventoryKind::Campaign => {
+            "id,name,configured_status,effective_status,daily_budget,lifetime_budget,bid_strategy,objective"
+        }
+        AdsInventoryKind::Adset => {
+            "id,name,campaign_id,configured_status,effective_status,daily_budget,lifetime_budget,bid_strategy,bid_amount,targeting,promoted_object,destination_type"
+        }
+        AdsInventoryKind::Ad => {
+            "id,name,adset_id,campaign_id,configured_status,effective_status,targeting,creative{id,name,object_story_spec,actor_id,object_url,link_url,call_to_action_type}"
+        }
+        AdsInventoryKind::Creative => {
+            "id,name,status,object_story_spec,actor_id,object_url,link_url,call_to_action_type,product_set_id"
+        }
+    }
+}
+
+fn inspect_reply_from(
+    site: &Site,
+    request: &AdsInspectRequest,
+    value: &Value,
+) -> Result<AdsInspectReply, Error> {
+    let creative = value.get("creative");
+    let story = value
+        .get("object_story_spec")
+        .or_else(|| creative.and_then(|creative| creative.get("object_story_spec")));
+    Ok(AdsInspectReply {
+        site: site.clone(),
+        kind: request.kind,
+        id: request.id.clone(),
+        name: nonempty_value_string(value.get("name")),
+        configured_status: nonempty_value_string(value.get("configured_status")),
+        effective_status: nonempty_value_string(value.get("effective_status")),
+        status: nonempty_value_string(value.get("status")),
+        daily_budget: nonempty_value_string(value.get("daily_budget")),
+        lifetime_budget: nonempty_value_string(value.get("lifetime_budget")),
+        bid_strategy: nonempty_value_string(value.get("bid_strategy")),
+        bid_amount: nonempty_value_string(value.get("bid_amount")),
+        targeting: targeting_readback(value.get("targeting")),
+        page_id: page_id_from(value, story),
+        destination: destination_from(value, story),
+        destination_type: nonempty_value_string(value.get("destination_type")),
+        campaign_id: nonempty_value_string(value.get("campaign_id")),
+        adset_id: nonempty_value_string(value.get("adset_id")),
+        creative_id: nonempty_value_string(
+            value
+                .get("creative")
+                .and_then(|creative| creative.get("id")),
+        ),
+        objective: nonempty_value_string(value.get("objective")),
+    })
+}
+
+fn page_id_from(value: &Value, story: Option<&Value>) -> Option<String> {
+    nonempty_value_string(story.and_then(|story| story.get("page_id")))
+        .or_else(|| nonempty_value_string(value.get("actor_id")))
+        .or_else(|| {
+            nonempty_value_string(
+                value
+                    .get("promoted_object")
+                    .and_then(|object| object.get("page_id")),
+            )
+        })
+        .or_else(|| {
+            nonempty_value_string(
+                value
+                    .get("creative")
+                    .and_then(|creative| creative.get("actor_id")),
+            )
+        })
+}
+
+fn destination_from(value: &Value, story: Option<&Value>) -> Option<String> {
+    story_destination(story)
+        .or_else(|| nonempty_value_string(value.get("link_url")))
+        .or_else(|| nonempty_value_string(value.get("object_url")))
+        .or_else(|| {
+            story_destination(
+                value
+                    .get("creative")
+                    .and_then(|creative| creative.get("object_story_spec")),
+            )
+            .or_else(|| {
+                nonempty_value_string(
+                    value
+                        .get("creative")
+                        .and_then(|creative| creative.get("link_url")),
+                )
+            })
+            .or_else(|| {
+                nonempty_value_string(
+                    value
+                        .get("creative")
+                        .and_then(|creative| creative.get("object_url")),
+                )
+            })
+        })
+}
+
+fn story_destination(story: Option<&Value>) -> Option<String> {
+    let story = story?;
+    for key in ["link_data", "video_data", "template_data"] {
+        let Some(data) = story.get(key) else {
+            continue;
+        };
+        if let Some(link) = nonempty_value_string(data.get("link")) {
+            return Some(link);
+        }
+        if let Some(link) = nonempty_value_string(
+            data.get("call_to_action")
+                .and_then(|cta| cta.get("value"))
+                .and_then(|value| value.get("link")),
+        ) {
+            return Some(link);
+        }
+    }
+    None
+}
+
+fn targeting_readback(value: Option<&Value>) -> Option<AdsTargetingReadback> {
+    let targeting = value?;
+    if !targeting.is_object() {
+        return None;
+    }
+    let countries = targeting
+        .get("geo_locations")
+        .and_then(|geo| geo.get("countries"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| nonempty_value_string(Some(item)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let readback = AdsTargetingReadback {
+        countries,
+        age_min: targeting
+            .get("age_min")
+            .and_then(Value::as_u64)
+            .and_then(|n| u8::try_from(n).ok()),
+        age_max: targeting
+            .get("age_max")
+            .and_then(Value::as_u64)
+            .and_then(|n| u8::try_from(n).ok()),
+        publisher_platforms: string_list(targeting.get("publisher_platforms")),
+        facebook_positions: string_list(targeting.get("facebook_positions")),
+        instagram_positions: string_list(targeting.get("instagram_positions")),
+        whatsapp_positions: string_list(targeting.get("whatsapp_positions")),
+        user_age_unknown: targeting.get("user_age_unknown").and_then(Value::as_bool),
+    };
+    if readback.is_empty() {
+        None
+    } else {
+        Some(readback)
+    }
+}
+
+fn string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| nonempty_value_string(Some(item)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Map a metric to its Graph insights field name; `None` for metrics that
@@ -2385,9 +2587,10 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
 mod tests {
     use super::*;
     use crate::ads::{
-        AdEntity, AdPreviewFormat, AdReviewStatusRequest, AdsInventoryKind, AdsInventoryRequest,
-        CampaignObjective, CreateLinkAdCreativeRequest, CreativePreviewRequest, LinkAdCreative,
-        LinkCallToAction, PausedAd, PausedAdset, PausedCampaign, UploadAdImageRequest,
+        AdEntity, AdPreviewFormat, AdReviewStatusRequest, AdsInspectRequest, AdsInventoryKind,
+        AdsInventoryRequest, CampaignObjective, CreateLinkAdCreativeRequest,
+        CreativePreviewRequest, LinkAdCreative, LinkCallToAction, PausedAd, PausedAdset,
+        PausedCampaign, UploadAdImageRequest,
     };
     use crate::facets::{AdsManager, InsightsSource};
     use crate::insights::{AttributionWindow, InsightsLevel, InsightsQuery, Metric};
@@ -3383,6 +3586,103 @@ mod tests {
             matches!(err, Error::InvalidQuery { reason, .. } if reason == "bad_ad_account:nope")
         );
         assert_eq!(sink.hits(), 0);
+    }
+
+    #[tokio::test]
+    async fn ads_inspect_reads_budget_bid_targeting_page_and_destination() {
+        let server = MockServer::start();
+        let adset = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/456")
+                .query_param(
+                    "fields",
+                    "id,name,campaign_id,configured_status,effective_status,daily_budget,lifetime_budget,bid_strategy,bid_amount,targeting,promoted_object,destination_type",
+                );
+            then.status(200).json_body(json!({
+                "id": "456",
+                "name": "Paused set",
+                "campaign_id": "100",
+                "configured_status": "PAUSED",
+                "effective_status": "PAUSED",
+                "daily_budget": "500",
+                "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+                "bid_amount": 2,
+                "destination_type": "WEBSITE",
+                "promoted_object": { "page_id": "111" },
+                "targeting": {
+                    "geo_locations": { "countries": ["MY"] },
+                    "age_min": 18,
+                    "age_max": 65,
+                    "publisher_platforms": ["facebook"],
+                    "flexible_spec": [{ "interests": [{ "id": "1" }] }]
+                }
+            }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let reply = connector
+            .inspect_ads_object(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsInspectRequest {
+                    kind: AdsInventoryKind::Adset,
+                    id: "456".into(),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        adset.assert();
+        assert_eq!(reply.daily_budget.as_deref(), Some("500"));
+        assert_eq!(
+            reply.bid_strategy.as_deref(),
+            Some("LOWEST_COST_WITHOUT_CAP")
+        );
+        assert_eq!(reply.page_id.as_deref(), Some("111"));
+        assert_eq!(reply.destination_type.as_deref(), Some("WEBSITE"));
+        let targeting = reply.targeting.expect("subset");
+        assert_eq!(targeting.countries, ["MY"]);
+        assert_eq!(targeting.age_min, Some(18));
+        assert_eq!(targeting.publisher_platforms, ["facebook"]);
+
+        let creative = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/789")
+                .query_param(
+                    "fields",
+                    "id,name,status,object_story_spec,actor_id,object_url,link_url,call_to_action_type,product_set_id",
+                );
+            then.status(200).json_body(json!({
+                "id": "789",
+                "name": "Hero",
+                "status": "ACTIVE",
+                "object_story_spec": {
+                    "page_id": "111",
+                    "link_data": {
+                        "link": "https://example.com/offer",
+                        "call_to_action": { "type": "LEARN_MORE", "value": { "link": "https://example.com/offer" } }
+                    }
+                }
+            }));
+        });
+        let creative_reply = connector
+            .inspect_ads_object(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsInspectRequest {
+                    kind: AdsInventoryKind::Creative,
+                    id: "789".into(),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        creative.assert();
+        assert_eq!(creative_reply.page_id.as_deref(), Some("111"));
+        assert_eq!(
+            creative_reply.destination.as_deref(),
+            Some("https://example.com/offer")
+        );
+        assert!(creative_reply.daily_budget.is_none());
     }
 
     #[tokio::test]

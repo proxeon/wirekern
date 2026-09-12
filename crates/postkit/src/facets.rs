@@ -7,11 +7,12 @@
 //! trait by accident.
 
 use crate::ads::{
-    AdReviewStatus, AdReviewStatusRequest, AdVideoStatus, AdVideoStatusRequest, AdsInventoryReply,
-    AdsInventoryRequest, AdsTokenInspection, CreateAdCreativeRequest, CreateLinkAdCreativeRequest,
-    CreatePausedAdRequest, CreateVideoAdCreativeRequest, CreatedAd, CreatedAdCreative,
-    CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest,
-    UploadAdVideoRequest, UploadedAdImage, UploadedAdVideo,
+    AdReviewStatus, AdReviewStatusRequest, AdVideoStatus, AdVideoStatusRequest, AdsInspectReply,
+    AdsInspectRequest, AdsInventoryReply, AdsInventoryRequest, AdsTokenInspection,
+    CreateAdCreativeRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
+    CreateVideoAdCreativeRequest, CreatedAd, CreatedAdCreative, CreativePreview,
+    CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest, UploadAdVideoRequest,
+    UploadedAdImage, UploadedAdVideo,
 };
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsJob, InsightsQuery, InsightsReply};
@@ -188,6 +189,21 @@ pub trait AdsManager: Send + Sync {
         _request: &AdsInventoryRequest,
         _deadline: Deadline,
     ) -> Result<AdsInventoryReply, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ReadAdsInventory,
+        })
+    }
+
+    /// GET-by-id budget/bid/targeting/Page/destination. Default refuses so a
+    /// paused-create mock cannot grow a Graph inspect path.
+    async fn inspect_ads_object(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _request: &AdsInspectRequest,
+        _deadline: Deadline,
+    ) -> Result<AdsInspectReply, Error> {
         Err(Error::UnsupportedCapability {
             site: Site::new(""),
             need: Capability::ReadAdsInventory,

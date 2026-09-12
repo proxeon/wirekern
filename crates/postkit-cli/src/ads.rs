@@ -4,12 +4,12 @@ use crate::app::fail;
 use crate::output::{emit_ok, emit_raw, human_line};
 use postkit::{
     AccountKey, AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest,
-    AdReviewWait, AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
-    AttributionWindow, BidStrategy, Breakdown, CampaignObjective, Client,
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, Error, InsightRow,
-    InsightsLevel, InsightsQuery, LinkAdCreative, LinkCallToAction, Metric, PausedAd,
-    PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
+    AdReviewWait, AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind,
+    AdsInventoryReply, AdsInventoryRequest, AttributionWindow, BidStrategy, Breakdown,
+    CampaignObjective, Client, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
+    CreatedAdCreative, CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply,
+    Error, InsightRow, InsightsLevel, InsightsQuery, LinkAdCreative, LinkCallToAction, Metric,
+    PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
     PublishedMedia, Site, UploadAdImageRequest, UploadedAdImage,
 };
 use std::fs::OpenOptions;
@@ -688,6 +688,84 @@ pub(crate) fn build_ads_inventory_request(
     let request = AdsInventoryRequest {
         account: ad_account,
         kind,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+/// Inspect is GET-only. Human output names the spend-shaped fields that
+/// this object actually has so a campaign cannot be read as having a Page
+/// destination it never stored.
+pub(crate) async fn one_ads_inspect(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsInspectRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.inspect_ads_object(key, request, deadline).await {
+        Ok(reply) => {
+            if json {
+                emit_raw(&serde_json::to_value(&reply).expect("json"));
+            } else {
+                emit_ads_inspect(&reply);
+            }
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+pub(crate) fn emit_ads_inspect(reply: &AdsInspectReply) {
+    human_line(inspect_line(reply));
+}
+
+pub(crate) fn inspect_line(reply: &AdsInspectReply) -> String {
+    let mut line = format!("{} {}", reply.kind.as_str(), reply.id);
+    if let Some(name) = reply.name.as_deref() {
+        line.push_str(&format!(" name={name}"));
+    }
+    if let Some(budget) = reply.daily_budget.as_deref() {
+        line.push_str(&format!(" daily_budget={budget}"));
+    }
+    if let Some(budget) = reply.lifetime_budget.as_deref() {
+        line.push_str(&format!(" lifetime_budget={budget}"));
+    }
+    if let Some(strategy) = reply.bid_strategy.as_deref() {
+        line.push_str(&format!(" bid_strategy={strategy}"));
+    }
+    if let Some(amount) = reply.bid_amount.as_deref() {
+        line.push_str(&format!(" bid_amount={amount}"));
+    }
+    if let Some(page) = reply.page_id.as_deref() {
+        line.push_str(&format!(" page={page}"));
+    }
+    if let Some(destination) = reply.destination.as_deref() {
+        line.push_str(&format!(" destination={destination}"));
+    }
+    if let Some(destination_type) = reply.destination_type.as_deref() {
+        line.push_str(&format!(" destination_type={destination_type}"));
+    }
+    if let Some(targeting) = reply.targeting.as_ref() {
+        if !targeting.countries.is_empty() {
+            line.push_str(&format!(" countries={}", targeting.countries.join(",")));
+        }
+    }
+    line
+}
+
+pub(crate) fn build_ads_inspect_request(
+    site: &str,
+    entity: &str,
+    id: &str,
+) -> Result<AdsInspectRequest, Error> {
+    let kind =
+        AdsInventoryKind::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
+    let request = AdsInspectRequest {
+        kind,
+        id: id.into(),
     };
     request
         .validate()

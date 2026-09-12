@@ -274,6 +274,17 @@ enum AdsCmd {
         #[arg(long)]
         ad_account: Option<String>,
     },
+    /// Read budget, bid, targeting, Page, and destination on one known object.
+    /// GET-only; needed before any later activate. Cannot change delivery.
+    Inspect {
+        site: String,
+        /// campaign | adset | ad | creative.
+        #[arg(long)]
+        entity: String,
+        /// Existing Meta campaign, ad set, ad, or creative ID.
+        #[arg(long)]
+        id: String,
+    },
     /// Async Insights Ad Report Run: status, result, or cancel. Jobs expire
     /// in ~30 days and are not stored in the vault.
     #[command(name = "insights-job", subcommand)]
@@ -1906,6 +1917,18 @@ async fn dispatch(
             )
             .await
         }
+        Commands::Ads(AdsCmd::Inspect { site, entity, id }) => {
+            let request =
+                build_ads_inspect_request(&site, &entity, &id).map_err(|e| fail(&e, json))?;
+            one_ads_inspect(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
         Commands::Ads(AdsCmd::Status {
             site,
             entity,
@@ -2948,6 +2971,21 @@ mod tests {
         assert_eq!(
             line,
             "campaign 100 name=Paused configured=PAUSED effective=PAUSED objective=OUTCOME_TRAFFIC"
+        );
+        let cli = Cli::try_parse_from([
+            "postkit", "ads", "inspect", "meta_ads", "--entity", "adset", "--id", "456",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ads(AdsCmd::Inspect { site, entity, id })
+                if site == "meta_ads" && entity == "adset" && id == "456"
+        ));
+        let inspect = build_ads_inspect_request("meta_ads", "creative", "789").unwrap();
+        assert_eq!(inspect.kind, AdsInventoryKind::Creative);
+        let bad_id = build_ads_inspect_request("meta_ads", "ad", "ad-1").unwrap_err();
+        assert!(
+            matches!(bad_id, Error::InvalidQuery { reason, .. } if reason == "bad_ads_inspect_id:ad-1")
         );
     }
 

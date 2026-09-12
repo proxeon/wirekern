@@ -58,6 +58,7 @@ and no calendar.
 | `insights` | `Client::insights` | Explicit attribution window |
 | `ads_accounts` | `Client::ad_accounts` | Remote `act_` ids, not vault aliases |
 | `ads_list` | `Client::list_ads_inventory` | Campaigns, ad sets, ads, or creatives; capped pages |
+| `ads_inspect` | `Client::inspect_ads_object` | Budget, bid, targeting, Page, destination; GET-only |
 | `pages_accounts` | `Client::pages` | Page identities, never Page tokens |
 | `media_list` | `Client::media` | First page, limit 1–25 |
 

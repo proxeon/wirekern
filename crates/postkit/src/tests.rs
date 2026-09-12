@@ -1,9 +1,9 @@
 use crate::ads::{
     AdEntity, AdPreviewFormat, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest,
-    AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest, CampaignObjective,
-    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreview, CreativePreviewRequest, PausedAdCreate, PausedCampaign, UploadAdImageRequest,
-    UploadedAdImage,
+    AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind, AdsInventoryReply,
+    AdsInventoryRequest, AdsTargetingReadback, CampaignObjective, CreateLinkAdCreativeRequest,
+    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
+    PausedAdCreate, PausedCampaign, UploadAdImageRequest, UploadedAdImage,
 };
 use crate::apps::{AppStore, MemoryAppStore};
 use crate::client::Client;
@@ -537,6 +537,39 @@ impl AdsManager for MockPub {
                 objective: Some("OUTCOME_TRAFFIC".into()),
                 object_type: None,
             }],
+        })
+    }
+
+    async fn inspect_ads_object(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &AdsInspectRequest,
+        _deadline: Deadline,
+    ) -> Result<AdsInspectReply, Error> {
+        Ok(AdsInspectReply {
+            site: self.site.clone(),
+            kind: request.kind,
+            id: request.id.clone(),
+            name: Some("Paused set".into()),
+            configured_status: Some("PAUSED".into()),
+            effective_status: Some("PAUSED".into()),
+            status: None,
+            daily_budget: Some("500".into()),
+            lifetime_budget: None,
+            bid_strategy: Some("LOWEST_COST_WITHOUT_CAP".into()),
+            bid_amount: None,
+            targeting: Some(AdsTargetingReadback {
+                countries: vec!["MY".into()],
+                ..AdsTargetingReadback::default()
+            }),
+            page_id: Some("111".into()),
+            destination: Some("https://example.com".into()),
+            destination_type: Some("WEBSITE".into()),
+            campaign_id: Some("100".into()),
+            adset_id: None,
+            creative_id: None,
+            objective: None,
         })
     }
 
@@ -2583,6 +2616,66 @@ async fn client_list_ads_inventory_routes_validates_and_checks_capability() {
         .await
         .unwrap_err();
     assert!(matches!(err, Error::InvalidQuery { reason, .. } if reason == "bad_ad_account:nope"));
+}
+
+/// Inspect is the same GET-only capability as inventory. A non-numeric ID
+/// fails before vault access so a typo cannot become a Graph call.
+#[tokio::test]
+async fn client_inspect_ads_object_routes_validates_and_checks_capability() {
+    let (client, key) = setup(MockPub::ads_inventory("meta_ads"));
+    let reply = client
+        .inspect_ads_object(
+            &key,
+            AdsInspectRequest {
+                kind: AdsInventoryKind::Adset,
+                id: "456".into(),
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.daily_budget.as_deref(), Some("500"));
+    assert_eq!(reply.page_id.as_deref(), Some("111"));
+    assert_eq!(
+        reply.targeting.as_ref().unwrap().countries,
+        ["MY".to_string()]
+    );
+
+    let (no_inventory, key) = setup(MockPub::text("meta_ads"));
+    let err = no_inventory
+        .inspect_ads_object(
+            &key,
+            AdsInspectRequest {
+                kind: AdsInventoryKind::Ad,
+                id: "1".into(),
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadAdsInventory)
+    );
+
+    let empty = Client::new(
+        Registry::new(),
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let err = empty
+        .inspect_ads_object(
+            &AccountKey::new("meta_ads", "default"),
+            AdsInspectRequest {
+                kind: AdsInventoryKind::Creative,
+                id: "creative-1".into(),
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidQuery { reason, .. } if reason == "bad_ads_inspect_id:creative-1")
+    );
 }
 
 /// A poller is useful only if it stops on the platform's final state. The

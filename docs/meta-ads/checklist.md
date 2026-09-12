@@ -92,7 +92,7 @@ no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
 - [x] `status-draft --wait` GET-only over checkpointed IDs
 - [x] Live no-spend validation (2026-09-10, `act_1414222080648203`)
 - [x] List/inventory: campaigns, ad sets, ads, creatives for a selected account (capped pages, stable order)
-- [ ] Readback of budget, bid, targeting, Page, destination on a known object (needed before any activate)
+- [x] Readback of budget, bid, targeting, Page, destination on a known object (needed before any activate)
 
 ## Lifecycle and edits (not shipped; policy stubs exist)
 
@@ -122,6 +122,7 @@ policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 | Paused creates / drafts | [x] | [x] | [ ] | [ ] |
 | Status / preview | [x] | [x] | [ ] | [ ] |
 | Inventory list | [x] | [x] | [x] `ads_list` | [ ] |
+| Object inspect | [x] | [x] | [x] `ads_inspect` | [ ] |
 | Activate / budget edit | policy deny | [ ] | [ ] | [ ] |
 
 - [x] Not routable via generic `post` (`publish_unsupported`)

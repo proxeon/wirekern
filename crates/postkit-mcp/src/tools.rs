@@ -4,9 +4,9 @@
 //! kernel first; this file only adapts JSON-RPC arguments onto those types.
 
 use postkit::{
-    AccountKey, AdsInventoryKind, AdsInventoryRequest, AttributionWindow, Breakdown, Client,
-    DateRange, Deadline, Error, InsightsLevel, InsightsQuery, MediaQuery, Metric, PostRequest,
-    Site, WhatsAppSendRequest, WireError, DEFAULT_MEDIA_LIMIT,
+    AccountKey, AdsInspectRequest, AdsInventoryKind, AdsInventoryRequest, AttributionWindow,
+    Breakdown, Client, DateRange, Deadline, Error, InsightsLevel, InsightsQuery, MediaQuery,
+    Metric, PostRequest, Site, WhatsAppSendRequest, WireError, DEFAULT_MEDIA_LIMIT,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -81,6 +81,13 @@ pub fn catalog() -> &'static [ToolSpec] {
             read_only: true,
             destructive: false,
             schema: ads_list_schema,
+        },
+        ToolSpec {
+            name: "ads_inspect",
+            description: "Read budget, bid, targeting, Page, and destination on one known ads object. GET-only; cannot activate.",
+            read_only: true,
+            destructive: false,
+            schema: ads_inspect_schema,
         },
         ToolSpec {
             name: "pages_accounts",
@@ -236,6 +243,21 @@ fn ads_list_schema() -> Value {
             "deadline": { "type": "integer", "minimum": 1, "default": 30 }
         },
         "required": ["site", "entity"],
+        "additionalProperties": false
+    })
+}
+
+fn ads_inspect_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "site": { "type": "string" },
+            "account": { "type": "string", "default": "default" },
+            "entity": { "type": "string", "enum": ["campaign", "adset", "ad", "creative"] },
+            "id": { "type": "string" },
+            "deadline": { "type": "integer", "minimum": 1, "default": 30 }
+        },
+        "required": ["site", "entity", "id"],
         "additionalProperties": false
     })
 }
@@ -443,6 +465,17 @@ struct AdsListArgs {
 }
 
 #[derive(Deserialize)]
+struct AdsInspectArgs {
+    site: String,
+    #[serde(default = "default_account")]
+    account: String,
+    entity: String,
+    id: String,
+    #[serde(default = "default_deadline")]
+    deadline: u64,
+}
+
+#[derive(Deserialize)]
 struct InsightsArgs {
     #[serde(default = "default_ads_site")]
     site: String,
@@ -539,6 +572,26 @@ pub async fn ads_list(client: &Client, arguments: Value) -> Value {
     let key = AccountKey::new(&args.site, &args.account);
     match client
         .list_ads_inventory(&key, request, Deadline::from_secs(args.deadline.max(1)))
+        .await
+    {
+        Ok(reply) => value_ok(&args.site, reply),
+        Err(error) => tool_err(error),
+    }
+}
+
+pub async fn ads_inspect(client: &Client, arguments: Value) -> Value {
+    let args: AdsInspectArgs = match serde_json::from_value(arguments) {
+        Ok(value) => value,
+        Err(error) => return tool_err(invalid_query("", format!("json:{error}"))),
+    };
+    let kind = match AdsInventoryKind::from_str(&args.entity) {
+        Ok(kind) => kind,
+        Err(reason) => return tool_err(invalid_query(&args.site, reason)),
+    };
+    let request = AdsInspectRequest { kind, id: args.id };
+    let key = AccountKey::new(&args.site, &args.account);
+    match client
+        .inspect_ads_object(&key, request, Deadline::from_secs(args.deadline.max(1)))
         .await
     {
         Ok(reply) => value_ok(&args.site, reply),

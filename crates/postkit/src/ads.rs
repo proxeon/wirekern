@@ -135,6 +135,98 @@ pub struct AdsInventoryReply {
     pub items: Vec<AdsInventoryItem>,
 }
 
+/// Identify one existing object for a spend-shaped GET. IDs are globally
+/// unique, so this request has no ad-account field — same as review status.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsInspectRequest {
+    pub kind: AdsInventoryKind,
+    pub id: String,
+}
+
+impl AdsInspectRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("ads_inspect_id", &self.id)
+    }
+}
+
+/// Known targeting keys only. Graph targeting carries many fields Postkit
+/// does not write; `AdTargeting` denies unknowns, so inspect extracts a
+/// subset instead of deserializing the whole object.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+pub struct AdsTargetingReadback {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub countries: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub age_min: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub age_max: Option<u8>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub publisher_platforms: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facebook_positions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instagram_positions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub whatsapp_positions: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_age_unknown: Option<bool>,
+}
+
+impl AdsTargetingReadback {
+    pub fn is_empty(&self) -> bool {
+        self.countries.is_empty()
+            && self.age_min.is_none()
+            && self.age_max.is_none()
+            && self.publisher_platforms.is_empty()
+            && self.facebook_positions.is_empty()
+            && self.instagram_positions.is_empty()
+            && self.whatsapp_positions.is_empty()
+            && self.user_age_unknown.is_none()
+    }
+}
+
+/// Budget, bid, targeting, Page, and destination as Graph returned them.
+/// Absent fields stay absent so a campaign read cannot invent an ad-set
+/// bid or a creative destination.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsInspectReply {
+    pub site: Site,
+    pub kind: AdsInventoryKind,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configured_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daily_budget: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifetime_budget: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bid_strategy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bid_amount: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targeting: Option<AdsTargetingReadback>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adset_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creative_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+}
+
 /// Meta's outcome-based campaign objectives. Keeping this closed prevents a
 /// misspelled command-line objective from becoming an opaque Graph error
 /// after a write has already been attempted.
@@ -2330,6 +2422,21 @@ mod tests {
             .validate()
             .unwrap_err(),
             "bad_ad_account:nope"
+        );
+        assert!(AdsInspectRequest {
+            kind: AdsInventoryKind::Adset,
+            id: "456".into(),
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            AdsInspectRequest {
+                kind: AdsInventoryKind::Campaign,
+                id: "campaign-1".into(),
+            }
+            .validate()
+            .unwrap_err(),
+            "bad_ads_inspect_id:campaign-1"
         );
         // The raw iframe is intentionally available in-process for a caller
         // to write to a file, but its derived JSON form must never become a
