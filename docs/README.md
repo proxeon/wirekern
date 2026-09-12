@@ -11,6 +11,7 @@ Credentials: copy [`.env.example`](../.env.example) to `.env` (gitignored). The 
 | [facebook-pages/](./facebook-pages/) | First live Facebook Page post (Page scopes, re-auth, discovery, explicit target). |
 | [instagram/](./instagram/) | First live Instagram image post (Instagram Login, professional account, public HTTPS image). |
 | [linkedin/](./linkedin/) | First live LinkedIn member text post (OIDC identity, Share on LinkedIn, versioned Posts API). |
+| [meta-ads/](./meta-ads/) | Meta Ads: insights + paused drafts. Shipped vs missing: [checklist.md](./meta-ads/checklist.md). Auth-ops notes: [auth-ops.md](./meta-ads/auth-ops.md). |
 | [whatsapp-cloud/](./whatsapp-cloud/) | WhatsApp Cloud setup: System User token, typed sends (text/reply/template/media/interactive/Flows), signed webhook parse, local wamid ledger. Remaining work: [checklist.md](./whatsapp-cloud/checklist.md). |
 | [mcp/](./mcp/) | Local MCP stdio adapter for agent hosts. Remaining work: [checklist.md](./mcp/checklist.md). |
 | [cli.md](./cli.md) | Flag-by-flag reference: `post` / `auth` semantics, vault layout, exit codes. |

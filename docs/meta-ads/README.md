@@ -3,7 +3,8 @@
 Spend/performance insights plus paused-first management through the Meta Marketing API (Graph `v26.0`, pinned). Scope: `ads_read,ads_management`. Tier B can upload an account image, create a Page image-link creative, preview that creative locally, and create campaigns, ad sets, and ads; every delivery object form hard-codes `status=PAUSED`. There is no activation, budget-update, or delete command; policy refuses those future spend-shaped actions by default.
 
 Deferred lifecycle, editing, creative, and reporting work is tracked in the
-[Meta Ads roadmap](./roadmap.md), rather than a generic repository TODO.
+[Meta Ads roadmap](./roadmap.md). Shipped vs missing board:
+[checklist.md](./checklist.md).
 
 ## One-time setup (operator)
 
