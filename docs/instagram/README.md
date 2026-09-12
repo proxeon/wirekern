@@ -38,6 +38,10 @@ an ad, spend money, or select a Facebook Page.
    Environment values override an `apps/instagram.json` file, so use one
    source at a time when troubleshooting.
 
+Graph `200` / `API access blocked` is the Facebook user (checkpoint or
+developer verify), not a bad vault file. Identity work is mobile-first;
+see [meta-identity.md](../meta-identity.md).
+
 5. Run the authorization flow while signed in to the intended Instagram
    account. Paste the full redirect URL, including `state`, back into the
    terminal:

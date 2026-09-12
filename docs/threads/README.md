@@ -241,6 +241,7 @@ Client refreshes the long-lived token when `expires_at` is within 7 days **and**
 | user has not accepted the invite (1349245) | Tester pending | Accept under Threads Website permissions → Invites |
 | `missing_app_config` | No `apps set` and no `POSTKIT_THREADS_*` in the process env | Step 5 |
 | Authorize URL then hang in a non-TTY | CLI will not read stdin | Use `--code` with the copied URL |
+| `platform` code `200` `API access blocked` on `auth` / `whoami` / `post` | Facebook user checkpointed or developer identity unverified — not a bad vault file | Fix the Facebook user on the **phone**, then a **new** `auth`. Do not reuse the last `--code`. [meta-identity.md](../meta-identity.md) |
 
 ---
 

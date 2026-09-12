@@ -99,6 +99,7 @@ not remain visible.
 | `page_access_token_missing` | Meta listed a Page but did not provide a usable Page token. Re-authenticate with the three scopes and confirm Page task access. |
 | `token_expired` | The user token could not be used. Keep the app config available for automatic long-lived refresh, or re-run `auth facebook_pages`. |
 | Meta code `10` or permission error | The user/app lacks one of the Page permissions or a required Page task. Review Meta app mode, tester invitation, scopes, and Page access. |
+| `platform` code `200` `API access blocked` | Facebook user checkpointed or developer identity unverified. Fix it on the phone, then a new `auth`. [meta-identity.md](../meta-identity.md) |
 | `bad_page_id` / `unsupported_param:*` | `page_id` must be a numeric string and is the only v1 Page parameter. |
 | `image_source_unsupported:url` | Pass a local path to `--image`; URL ingestion is intentionally out of scope. |
 

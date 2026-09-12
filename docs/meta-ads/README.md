@@ -67,6 +67,10 @@ Postkit flag. Check **App Dashboard → App Review → Permissions and features 
 Marketing API Access Tier**. Full access needs 500 Marketing API calls in 15
 days with <15% errors. Postkit cannot grant or bypass the tier.
 
+Graph `200` / `API access blocked` on `auth` / `whoami` / insights is the
+Facebook user (checkpoint or developer verify), not a bad vault file.
+Identity work is mobile-first; see [meta-identity.md](../meta-identity.md).
+
 ## Dev mode is enough to start
 
 A development-mode app can call the Marketing API for **accounts owned by the app's admins/developers/testers** — reading and paused-draft creation on your own ad account need no app review. `ads_read` / `ads_management` Advanced Access + business verification are only required when serving *other people's* accounts (i.e., when serving customers); file that review when that day comes, not before.
@@ -195,8 +199,10 @@ postkit --deadline 30 ads status meta_ads --entity ad --id <AD_ID> --wait --json
 - `--file` is read locally only by the CLI. Its filesystem path is never sent
   to Meta or included in a postkit error; only its basename and bytes upload.
 - `--page-id`, `--image-hash`, `--message`, `--headline`, destination HTTPS
-  URL, and `--call-to-action learn_more` are all required. Postkit intentionally
-  has no Page, copy, tracking, or CTA defaults.
+  URL, and `--call-to-action` are all required. Website CTAs (`learn_more`,
+  `shop_now`, …) send `value.link` as the destination. `like_page` / `call_now`
+  / `whatsapp_message` send `value.page`. `get_directions` needs `--geo-link`;
+  `install_app` needs `--application-id` and `--app-link`.
 - `preview-creative` accepts only `desktop_feed_standard` and
   `mobile_feed_standard` until other placement contracts have explicit types
   and tests. The Creative ID is globally addressed by Meta, so no
