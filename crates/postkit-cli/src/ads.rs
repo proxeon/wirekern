@@ -4,13 +4,14 @@ use crate::app::fail;
 use crate::output::{emit_ok, emit_raw, human_line};
 use postkit::{
     AccountKey, AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest,
-    AdReviewWait, AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind,
-    AdsInventoryReply, AdsInventoryRequest, AttributionWindow, BidStrategy, Breakdown,
-    CampaignObjective, Client, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
-    CreatedAdCreative, CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply,
-    Error, InsightRow, InsightsLevel, InsightsQuery, LinkAdCreative, LinkCallToAction, Metric,
-    PausedAd, PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
-    PublishedMedia, Site, UploadAdImageRequest, UploadedAdImage,
+    AdReviewWait, AdsActivateRequest, AdsInspectReply, AdsInspectRequest, AdsInventoryItem,
+    AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest, AdsLifecycleCheckpoint,
+    AdsLifecycleOutcome, AttributionWindow, BidStrategy, Breakdown, CampaignObjective, Client,
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, Error, InsightRow,
+    InsightsLevel, InsightsQuery, LinkAdCreative, LinkCallToAction, Metric, PausedAd,
+    PausedAdCreate, PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult,
+    PublishedMedia, Site, UploadAdImageRequest, UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE,
 };
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -771,6 +772,143 @@ pub(crate) fn build_ads_inspect_request(
         .validate()
         .map_err(|reason| ads_input_error(site, reason))?;
     Ok(request)
+}
+
+pub(crate) fn build_ads_activate_request(
+    site: &str,
+    entity: &str,
+    id: &str,
+    confirm_id: &str,
+    confirm_daily_budget: Option<u64>,
+    confirm_lifetime_budget: Option<u64>,
+) -> Result<AdsActivateRequest, Error> {
+    let entity = AdEntity::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
+    let request = AdsActivateRequest {
+        entity,
+        id: id.into(),
+        confirm_id: confirm_id.into(),
+        confirm_daily_budget,
+        confirm_lifetime_budget,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_ads_activate(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsActivateRequest,
+    state: Option<&Path>,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    if let Some(path) = state {
+        if let Some(existing) = read_lifecycle_checkpoint(path) {
+            if existing.in_flight && existing.id == request.id && existing.action == "activate" {
+                emit_lifecycle_outcome(
+                    &AdsLifecycleOutcome::ReconciliationRequired {
+                        entity: request.entity,
+                        id: request.id.clone(),
+                        guidance: ACTIVATE_RECONCILE_GUIDANCE.into(),
+                    },
+                    json,
+                );
+                return Ok(());
+            }
+        }
+        if let Err(error) = write_lifecycle_checkpoint(
+            path,
+            &AdsLifecycleCheckpoint {
+                action: "activate".into(),
+                entity: request.entity,
+                id: request.id.clone(),
+                in_flight: true,
+            },
+        ) {
+            return Err(fail(&error, json));
+        }
+    }
+    match client.activate_ad(key, request.clone(), deadline).await {
+        Ok(outcome) => {
+            if let Some(path) = state {
+                match &outcome {
+                    AdsLifecycleOutcome::Applied { .. } => {
+                        let _ = write_lifecycle_checkpoint(
+                            path,
+                            &AdsLifecycleCheckpoint {
+                                action: "activate".into(),
+                                entity: request.entity,
+                                id: request.id.clone(),
+                                in_flight: false,
+                            },
+                        );
+                    }
+                    AdsLifecycleOutcome::ReconciliationRequired { .. } => {}
+                }
+            }
+            emit_lifecycle_outcome(&outcome, json);
+            Ok(())
+        }
+        Err(error) => {
+            if let Some(path) = state {
+                if matches!(
+                    error,
+                    Error::PolicyDenied { .. } | Error::InvalidQuery { .. }
+                ) {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            Err(fail(&error, json))
+        }
+    }
+}
+
+fn emit_lifecycle_outcome(outcome: &AdsLifecycleOutcome, json: bool) {
+    if json {
+        emit_raw(&serde_json::to_value(outcome).expect("json"));
+        return;
+    }
+    match outcome {
+        AdsLifecycleOutcome::Applied { status } => {
+            emit_ad_review_status(status, "applied");
+        }
+        AdsLifecycleOutcome::ReconciliationRequired {
+            entity,
+            id,
+            guidance,
+        } => {
+            human_line(format!(
+                "{} {} reconciliation_required {}",
+                entity.as_str(),
+                id,
+                guidance
+            ));
+        }
+    }
+}
+
+fn read_lifecycle_checkpoint(path: &Path) -> Option<AdsLifecycleCheckpoint> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn write_lifecycle_checkpoint(
+    path: &Path,
+    checkpoint: &AdsLifecycleCheckpoint,
+) -> Result<(), Error> {
+    let body = serde_json::to_vec_pretty(checkpoint).map_err(Error::Json)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(&body)?;
+    file.sync_all()?;
+    Ok(())
 }
 
 /// Parse the CLI's broad `--entity` string only at the boundary, then carry a

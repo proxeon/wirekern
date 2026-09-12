@@ -1,18 +1,19 @@
-//! Meta Ads connector — Tier A reads plus Tier B paused creates (026 §5).
+//! Meta Ads connector — Tier A reads, Tier B paused creates, Tier C lifecycle.
 //!
-//! The only management verbs create `PAUSED` drafts; this module exposes no
-//! activation or budget-update endpoint. `Client` calls `policy.rs` before a
-//! create reaches this connector. Auth reuses the Threads paste-code machinery
+//! Creates still hard-code `status=PAUSED`. Activation and other spend-shaped
+//! updates exist as explicit `AdsManager` methods; `Client` still calls
+//! `policy.rs` before credentials. Auth reuses the Threads paste-code machinery
 //! against the Facebook OAuth host; the long-lived exchange is Meta's
 //! `fb_exchange_token` grant (~60 days).
 
 use crate::ads::{
     AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdsInspectReply, AdsInspectRequest,
     AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
-    AdsTargetingReadback, AdsTokenInspection, AdsTokenKind, CreateLinkAdCreativeRequest,
-    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
-    MarketingApiAccessTier, MarketingApiAccessTierKind, PausedAdCreate, UploadAdImageRequest,
-    UploadedAdImage, MARKETING_API_ACCESS_TIER_DASHBOARD, SYSTEM_USER_TOKEN_KIND,
+    AdsStatusUpdateRequest, AdsTargetingReadback, AdsTokenInspection, AdsTokenKind,
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, MarketingApiAccessTierKind,
+    PausedAdCreate, UploadAdImageRequest, UploadedAdImage, MARKETING_API_ACCESS_TIER_DASHBOARD,
+    SYSTEM_USER_TOKEN_KIND,
 };
 use crate::error::Error;
 use crate::facets::{AdsManager, InsightsSource};
@@ -110,6 +111,7 @@ impl Publisher for MetaAds {
             Capability::ReadAdsInventory,
             Capability::CreatePausedAds,
             Capability::CreateAdCreative,
+            Capability::ManageAdsLifecycle,
         ]
     }
 
@@ -633,6 +635,17 @@ impl AdsManager for MetaAds {
     ) -> Result<AdsInspectReply, Error> {
         let token = access_token(creds)?;
         inspect_ads_object(&self.http, &self.base, &self.site, token, request, deadline).await
+    }
+
+    async fn update_ad_status(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &AdsStatusUpdateRequest,
+        deadline: Deadline,
+    ) -> Result<AdReviewStatus, Error> {
+        let token = access_token(creds)?;
+        update_ad_status(&self.http, &self.base, &self.site, token, request, deadline).await
     }
 }
 
@@ -1427,6 +1440,56 @@ async fn list_ads_inventory(
         kind,
         items,
     })
+}
+
+/// POST one documented `status` on a globally unique object, then GET the
+/// review fields. Token stays in the form body, same as paused creates.
+async fn update_ad_status(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    token: &str,
+    request: &AdsStatusUpdateRequest,
+    deadline: Deadline,
+) -> Result<AdReviewStatus, Error> {
+    let status = request.status.meta_value();
+    let body = form(&[("status", status), ("access_token", token)]);
+    let url = format!("{base}/{}", request.id);
+    let response = http
+        .send(
+            http.post(&url)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(body),
+            deadline,
+            site,
+        )
+        .await?;
+    let response = read_json(response, site).await?;
+    // Meta documents `{success: true}` for status updates. A false or
+    // missing success is not a delivery claim.
+    let success = response
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !success {
+        return Err(Error::Platform {
+            site: site.clone(),
+            code: "status_update_unconfirmed".into(),
+            message: "ad status update returned no success".into(),
+        });
+    }
+    read_ad_review_status(
+        http,
+        base,
+        site,
+        token,
+        &AdReviewStatusRequest {
+            entity: request.entity,
+            id: request.id.clone(),
+        },
+        deadline,
+    )
+    .await
 }
 
 fn inventory_list_fields(kind: AdsInventoryKind) -> &'static str {
@@ -2587,10 +2650,10 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
 mod tests {
     use super::*;
     use crate::ads::{
-        AdEntity, AdPreviewFormat, AdReviewStatusRequest, AdsInspectRequest, AdsInventoryKind,
-        AdsInventoryRequest, CampaignObjective, CreateLinkAdCreativeRequest,
-        CreativePreviewRequest, LinkAdCreative, LinkCallToAction, PausedAd, PausedAdset,
-        PausedCampaign, UploadAdImageRequest,
+        AdEntity, AdPreviewFormat, AdReviewStatusRequest, AdsConfiguredStatus, AdsInspectRequest,
+        AdsInventoryKind, AdsInventoryRequest, AdsStatusUpdateRequest, CampaignObjective,
+        CreateLinkAdCreativeRequest, CreativePreviewRequest, LinkAdCreative, LinkCallToAction,
+        PausedAd, PausedAdset, PausedCampaign, UploadAdImageRequest,
     };
     use crate::facets::{AdsManager, InsightsSource};
     use crate::insights::{AttributionWindow, InsightsLevel, InsightsQuery, Metric};
@@ -3683,6 +3746,47 @@ mod tests {
             Some("https://example.com/offer")
         );
         assert!(creative_reply.daily_budget.is_none());
+    }
+
+    #[tokio::test]
+    async fn ads_status_update_posts_active_then_reads_review() {
+        let server = MockServer::start();
+        let post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/456")
+                .body_contains("status=ACTIVE");
+            then.status(200).json_body(json!({ "success": true }));
+        });
+        let get = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/456").query_param(
+                "fields",
+                "id,name,configured_status,effective_status,issues_info",
+            );
+            then.status(200).json_body(json!({
+                "id": "456",
+                "name": "Paused set",
+                "configured_status": "ACTIVE",
+                "effective_status": "ACTIVE"
+            }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let status = connector
+            .update_ad_status(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsStatusUpdateRequest {
+                    entity: AdEntity::Adset,
+                    id: "456".into(),
+                    status: AdsConfiguredStatus::Active,
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        post.assert();
+        get.assert();
+        assert_eq!(status.configured_status, "ACTIVE");
+        assert_eq!(status.effective_status, "ACTIVE");
     }
 
     #[tokio::test]

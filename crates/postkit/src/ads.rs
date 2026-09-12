@@ -63,6 +63,14 @@ impl AdsInventoryKind {
         }
     }
 
+    pub fn from_entity(entity: AdEntity) -> Self {
+        match entity {
+            AdEntity::Campaign => Self::Campaign,
+            AdEntity::Adset => Self::Adset,
+            AdEntity::Ad => Self::Ad,
+        }
+    }
+
     /// Marketing API edge under `act_{id}`. Historical names (`adsets`,
     /// `adcreatives`) are the documented paths, not Postkit aliases.
     pub fn graph_edge(self) -> &'static str {
@@ -226,6 +234,110 @@ pub struct AdsInspectReply {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub objective: Option<String>,
 }
+
+/// The four Graph `status` values Meta documents for campaign/ad set/ad
+/// updates. Closed so a typo cannot become `status=ACTIVE` by accident.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdsConfiguredStatus {
+    Active,
+    Paused,
+    Archived,
+    Deleted,
+}
+
+impl AdsConfiguredStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Archived => "archived",
+            Self::Deleted => "deleted",
+        }
+    }
+
+    pub fn meta_value(self) -> &'static str {
+        match self {
+            Self::Active => "ACTIVE",
+            Self::Paused => "PAUSED",
+            Self::Archived => "ARCHIVED",
+            Self::Deleted => "DELETED",
+        }
+    }
+}
+
+/// Wire POST of one documented `status` on a known object. Client methods
+/// that can spend (activate) sit in front of this with policy and preflight.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsStatusUpdateRequest {
+    pub entity: AdEntity,
+    pub id: String,
+    pub status: AdsConfiguredStatus,
+}
+
+impl AdsStatusUpdateRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("ad_entity_id", &self.id)
+    }
+}
+
+/// Operator-confirmed PAUSED → ACTIVE. `confirm_id` must equal `id` so a
+/// copied `--allow-activate` cannot aim at a different object. Budget
+/// echoes are required only when inspect reports a daily or lifetime budget.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsActivateRequest {
+    pub entity: AdEntity,
+    pub id: String,
+    pub confirm_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_daily_budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_lifetime_budget: Option<u64>,
+}
+
+impl AdsActivateRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_numeric_id("ad_entity_id", &self.id)?;
+        require_numeric_id("confirm_id", &self.confirm_id)?;
+        if self.confirm_id != self.id {
+            return Err("confirm_id_mismatch".into());
+        }
+        match (self.confirm_daily_budget, self.confirm_lifetime_budget) {
+            (Some(0), _) | (_, Some(0)) => Err("budget_must_be_positive".into()),
+            (Some(_), Some(_)) => Err("daily_and_lifetime_budget_mutually_exclusive".into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Durable marker written *before* an activate POST. A leftover
+/// `in_flight` means the previous attempt may have reached Meta; the next
+/// command must not POST again.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsLifecycleCheckpoint {
+    pub action: String,
+    pub entity: AdEntity,
+    pub id: String,
+    pub in_flight: bool,
+}
+
+/// Activate/pause outcome. `reconciliation_required` is success of the
+/// protocol (exit 0): the write may have applied and must not be retried.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "lifecycle", rename_all = "snake_case")]
+pub enum AdsLifecycleOutcome {
+    Applied {
+        status: AdReviewStatus,
+    },
+    ReconciliationRequired {
+        entity: AdEntity,
+        id: String,
+        guidance: String,
+    },
+}
+
+pub const ACTIVATE_RECONCILE_GUIDANCE: &str =
+    "Activation POST left without a confirmed Graph reply. Read ads status for this id; do not retry activate.";
 
 /// Meta's outcome-based campaign objectives. Keeping this closed prevents a
 /// misspelled command-line objective from becoming an opaque Graph error
@@ -2438,6 +2550,28 @@ mod tests {
             .unwrap_err(),
             "bad_ads_inspect_id:campaign-1"
         );
+        assert!(AdsActivateRequest {
+            entity: AdEntity::Adset,
+            id: "456".into(),
+            confirm_id: "456".into(),
+            confirm_daily_budget: Some(500),
+            confirm_lifetime_budget: None,
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            AdsActivateRequest {
+                entity: AdEntity::Adset,
+                id: "456".into(),
+                confirm_id: "999".into(),
+                confirm_daily_budget: None,
+                confirm_lifetime_budget: None,
+            }
+            .validate()
+            .unwrap_err(),
+            "confirm_id_mismatch"
+        );
+        assert_eq!(AdsConfiguredStatus::Active.meta_value(), "ACTIVE");
         // The raw iframe is intentionally available in-process for a caller
         // to write to a file, but its derived JSON form must never become a
         // surprise terminal/log payload.

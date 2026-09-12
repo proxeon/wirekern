@@ -99,10 +99,10 @@ no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
 `AdsAction::Activate` and `AdsAction::UpdateBudget` exist and the default
 policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 
-- [ ] Typed `PAUSED` → `ACTIVE` with explicit confirmation of delivery + budget consequences
+- [x] Typed `PAUSED` → `ACTIVE` with explicit confirmation of delivery + budget consequences
 - [ ] Typed `ACTIVE` → `PAUSED` emergency stop
-- [ ] Refuse activate when configured status is not paused or review is unresolved
-- [ ] Write-ahead / no blind retry on ambiguous activation
+- [x] Refuse activate when configured status is not paused or review is unresolved
+- [x] Write-ahead / no blind retry on ambiguous activation
 - [ ] Archive
 - [ ] Delete (destructive; separate proposal)
 - [ ] Duplicate (can inherit delivery/budget; separate proposal)
@@ -123,7 +123,7 @@ policy **denies** them (`paused_only`). No CLI/HTTP/MCP verb.
 | Status / preview | [x] | [x] | [ ] | [ ] |
 | Inventory list | [x] | [x] | [x] `ads_list` | [ ] |
 | Object inspect | [x] | [x] | [x] `ads_inspect` | [ ] |
-| Activate / budget edit | policy deny | [ ] | [ ] | [ ] |
+| Activate | policy deny default | [x] `--allow-activate` | [ ] | [ ] |
 
 - [x] Not routable via generic `post` (`publish_unsupported`)
 - [x] MCP omits creates (no unattended spend over a tool call)

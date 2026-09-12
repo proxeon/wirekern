@@ -21,6 +21,11 @@ pub enum AdsAction {
     UploadAdVideo,
     CreateLinkAdCreative,
     Activate,
+    /// Emergency stop. Cannot start spend; default policy allows it.
+    Pause,
+    Archive,
+    Delete,
+    Duplicate,
     UpdateBudget,
 }
 
@@ -42,6 +47,10 @@ impl AdsAction {
             Self::UploadAdVideo => "upload_ad_video",
             Self::CreateLinkAdCreative => "create_link_ad_creative",
             Self::Activate => "activate",
+            Self::Pause => "pause",
+            Self::Archive => "archive",
+            Self::Delete => "delete",
+            Self::Duplicate => "duplicate",
             Self::UpdateBudget => "update_budget",
         }
     }
@@ -70,13 +79,42 @@ impl AdsPolicy for PausedOnlyAdsPolicy {
             // Their later use is still gated by the structurally paused ad.
             | AdsAction::UploadAdImage
             | AdsAction::UploadAdVideo
-            | AdsAction::CreateLinkAdCreative => Ok(()),
-            AdsAction::Activate | AdsAction::UpdateBudget => Err(Error::PolicyDenied {
+            | AdsAction::CreateLinkAdCreative
+            // Pause stops delivery. It cannot start spend, so the paused-only
+            // default keeps it as the emergency valve.
+            | AdsAction::Pause => Ok(()),
+            AdsAction::Activate
+            | AdsAction::Archive
+            | AdsAction::Delete
+            | AdsAction::Duplicate
+            | AdsAction::UpdateBudget => Err(Error::PolicyDenied {
                 site: site.clone(),
                 action: action.as_str().into(),
                 reason: "paused_only".into(),
             }),
         }
+    }
+}
+
+/// Opt-in for **one** extra spend-shaped action. `--allow-activate` must not
+/// also unlock delete or a budget edit.
+#[derive(Clone, Copy, Debug)]
+pub struct AllowAdsActionPolicy {
+    extra: AdsAction,
+}
+
+impl AllowAdsActionPolicy {
+    pub fn new(extra: AdsAction) -> Self {
+        Self { extra }
+    }
+}
+
+impl AdsPolicy for AllowAdsActionPolicy {
+    fn authorize(&self, site: &Site, action: AdsAction) -> Result<(), Error> {
+        if action == self.extra {
+            return Ok(());
+        }
+        PausedOnlyAdsPolicy.authorize(site, action)
     }
 }
 
@@ -192,9 +230,17 @@ mod tests {
         assert!(policy
             .authorize(&site, AdsAction::CreateLinkAdCreative)
             .is_ok());
+        assert!(policy.authorize(&site, AdsAction::Pause).is_ok());
         let err = policy.authorize(&site, AdsAction::Activate).unwrap_err();
         assert!(
             matches!(err, Error::PolicyDenied { action, reason, .. } if action == "activate" && reason == "paused_only")
+        );
+        let allowed = AllowAdsActionPolicy::new(AdsAction::Activate);
+        assert!(allowed.authorize(&site, AdsAction::Activate).is_ok());
+        assert!(allowed.authorize(&site, AdsAction::Pause).is_ok());
+        let still_denied = allowed.authorize(&site, AdsAction::Delete).unwrap_err();
+        assert!(
+            matches!(still_denied, Error::PolicyDenied { action, reason, .. } if action == "delete" && reason == "paused_only")
         );
     }
 

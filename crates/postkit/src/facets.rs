@@ -8,11 +8,11 @@
 
 use crate::ads::{
     AdReviewStatus, AdReviewStatusRequest, AdVideoStatus, AdVideoStatusRequest, AdsInspectReply,
-    AdsInspectRequest, AdsInventoryReply, AdsInventoryRequest, AdsTokenInspection,
-    CreateAdCreativeRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
-    CreateVideoAdCreativeRequest, CreatedAd, CreatedAdCreative, CreativePreview,
-    CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest, UploadAdVideoRequest,
-    UploadedAdImage, UploadedAdVideo,
+    AdsInspectRequest, AdsInventoryReply, AdsInventoryRequest, AdsStatusUpdateRequest,
+    AdsTokenInspection, CreateAdCreativeRequest, CreateLinkAdCreativeRequest,
+    CreatePausedAdRequest, CreateVideoAdCreativeRequest, CreatedAd, CreatedAdCreative,
+    CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest,
+    UploadAdVideoRequest, UploadedAdImage, UploadedAdVideo,
 };
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsJob, InsightsQuery, InsightsReply};
@@ -207,6 +207,21 @@ pub trait AdsManager: Send + Sync {
         Err(Error::UnsupportedCapability {
             site: Site::new(""),
             need: Capability::ReadAdsInventory,
+        })
+    }
+
+    /// POST `status` on a known campaign, ad set, or ad. Default refuses so
+    /// a paused-create mock cannot grow an activation path.
+    async fn update_ad_status(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _request: &AdsStatusUpdateRequest,
+        _deadline: Deadline,
+    ) -> Result<AdReviewStatus, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ManageAdsLifecycle,
         })
     }
 

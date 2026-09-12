@@ -119,6 +119,8 @@ pub enum Capability {
     CreatePausedAds,
     #[serde(rename = "create.ad_creative")]
     CreateAdCreative,
+    #[serde(rename = "manage.ads_lifecycle")]
+    ManageAdsLifecycle,
 }
 
 impl Capability {
@@ -159,6 +161,7 @@ impl Capability {
             Self::ReadAdsInventory => "read.ads_inventory",
             Self::CreatePausedAds => "create.paused_ads",
             Self::CreateAdCreative => "create.ad_creative",
+            Self::ManageAdsLifecycle => "manage.ads_lifecycle",
         }
     }
 }

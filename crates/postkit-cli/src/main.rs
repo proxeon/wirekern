@@ -285,6 +285,29 @@ enum AdsCmd {
         #[arg(long)]
         id: String,
     },
+    /// Confirmed PAUSED → ACTIVE. Default policy denies this. Echo the
+    /// object id and, when the object has a budget, its current minor units.
+    Activate {
+        site: String,
+        /// campaign | adset | ad.
+        #[arg(long)]
+        entity: String,
+        #[arg(long)]
+        id: String,
+        /// Must equal `--id`.
+        #[arg(long)]
+        confirm_id: String,
+        /// Policy opt-in. Without it activate is `paused_only` before vault.
+        #[arg(long)]
+        allow_activate: bool,
+        #[arg(long)]
+        confirm_daily_budget: Option<u64>,
+        #[arg(long)]
+        confirm_lifetime_budget: Option<u64>,
+        /// Write-ahead marker. A leftover in_flight is reconciliation, not a retry.
+        #[arg(long)]
+        state: Option<PathBuf>,
+    },
     /// Async Insights Ad Report Run: status, result, or cancel. Jobs expire
     /// in ~30 days and are not stored in the vault.
     #[command(name = "insights-job", subcommand)]
@@ -1159,6 +1182,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
         other => {
             let allow_whatsapp_send = whatsapp_send_allowed(&other);
             let client = make_client(&home, allow_whatsapp_send).map_err(|e| fail(&e, json))?;
+            let client = apply_ads_lifecycle_policy(client, &other);
             dispatch(client, &home, other, json, account, deadline).await
         }
     }
@@ -1167,6 +1191,18 @@ async fn run(cli: Cli) -> Result<(), i32> {
 /// The only commands permitted to install the allowing policy are explicit
 /// private sends and the two sensitive phone-registration mutations. Each has
 /// its own acknowledgement (`--allow-send` or `--yes`) before dispatch.
+fn apply_ads_lifecycle_policy(client: Client, command: &Commands) -> Client {
+    match command {
+        Commands::Ads(AdsCmd::Activate {
+            allow_activate: true,
+            ..
+        }) => client.with_ads_policy(std::sync::Arc::new(postkit::AllowAdsActionPolicy::new(
+            postkit::AdsAction::Activate,
+        ))),
+        _ => client,
+    }
+}
+
 fn whatsapp_send_allowed(command: &Commands) -> bool {
     matches!(
         command,
@@ -1924,6 +1960,35 @@ async fn dispatch(
                 &client,
                 &AccountKey::new(&site, &account),
                 request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::Activate {
+            site,
+            entity,
+            id,
+            confirm_id,
+            allow_activate: _,
+            confirm_daily_budget,
+            confirm_lifetime_budget,
+            state,
+        }) => {
+            let request = build_ads_activate_request(
+                &site,
+                &entity,
+                &id,
+                &confirm_id,
+                confirm_daily_budget,
+                confirm_lifetime_budget,
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_ads_activate(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                state.as_deref(),
                 deadline,
                 json,
             )
@@ -2983,6 +3048,33 @@ mod tests {
         ));
         let inspect = build_ads_inspect_request("meta_ads", "creative", "789").unwrap();
         assert_eq!(inspect.kind, AdsInventoryKind::Creative);
+        let cli = Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "activate",
+            "meta_ads",
+            "--entity",
+            "adset",
+            "--id",
+            "456",
+            "--confirm-id",
+            "456",
+            "--allow-activate",
+            "--confirm-daily-budget",
+            "500",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ads(AdsCmd::Activate {
+                allow_activate: true,
+                confirm_daily_budget: Some(500),
+                ..
+            })
+        ));
+        let activate =
+            build_ads_activate_request("meta_ads", "adset", "456", "456", Some(500), None).unwrap();
+        assert_eq!(activate.entity, AdEntity::Adset);
         let bad_id = build_ads_inspect_request("meta_ads", "ad", "ad-1").unwrap_err();
         assert!(
             matches!(bad_id, Error::InvalidQuery { reason, .. } if reason == "bad_ads_inspect_id:ad-1")

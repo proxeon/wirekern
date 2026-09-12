@@ -1,7 +1,8 @@
 use crate::ads::{
     AdEntity, AdPreviewFormat, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest,
-    AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind, AdsInventoryReply,
-    AdsInventoryRequest, AdsTargetingReadback, CampaignObjective, CreateLinkAdCreativeRequest,
+    AdsActivateRequest, AdsInspectReply, AdsInspectRequest, AdsInventoryItem,
+    AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest, AdsLifecycleOutcome,
+    AdsStatusUpdateRequest, AdsTargetingReadback, CampaignObjective, CreateLinkAdCreativeRequest,
     CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
     PausedAdCreate, PausedCampaign, UploadAdImageRequest, UploadedAdImage,
 };
@@ -19,7 +20,7 @@ use crate::media::{MediaQuery, MediaReply, PublishedMedia};
 use crate::pages::{PageAccount, PagesReply};
 #[cfg(feature = "whatsapp-cloud")]
 use crate::policy::AllowWhatsAppSendsPolicy;
-use crate::policy::{AdsAction, AdsPolicy};
+use crate::policy::{AdsAction, AdsPolicy, AllowAdsActionPolicy};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::{Connector, Registry};
 use crate::types::{
@@ -159,6 +160,17 @@ impl MockPub {
     fn ads_inventory(site: &str) -> Self {
         Self {
             caps: vec![Capability::ReadAdsInventory],
+            ..Self::text(site)
+        }
+    }
+
+    fn ads_lifecycle(site: &str) -> Self {
+        Self {
+            caps: vec![
+                Capability::ReadAdReviewStatus,
+                Capability::ReadAdsInventory,
+                Capability::ManageAdsLifecycle,
+            ],
             ..Self::text(site)
         }
     }
@@ -570,6 +582,24 @@ impl AdsManager for MockPub {
             adset_id: None,
             creative_id: None,
             objective: None,
+        })
+    }
+
+    async fn update_ad_status(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &AdsStatusUpdateRequest,
+        _deadline: Deadline,
+    ) -> Result<AdReviewStatus, Error> {
+        Ok(AdReviewStatus {
+            site: self.site.clone(),
+            entity: request.entity,
+            id: request.id.clone(),
+            name: Some("Paused set".into()),
+            configured_status: request.status.meta_value().into(),
+            effective_status: request.status.meta_value().into(),
+            issues: vec![],
         })
     }
 
@@ -2676,6 +2706,98 @@ async fn client_inspect_ads_object_routes_validates_and_checks_capability() {
     assert!(
         matches!(err, Error::InvalidQuery { reason, .. } if reason == "bad_ads_inspect_id:creative-1")
     );
+}
+
+fn activate_request() -> AdsActivateRequest {
+    AdsActivateRequest {
+        entity: AdEntity::Adset,
+        id: "456".into(),
+        confirm_id: "456".into(),
+        confirm_daily_budget: Some(500),
+        confirm_lifetime_budget: None,
+    }
+}
+
+/// Default policy refuses activate before the vault. Confirmation and
+/// review preflight also fail locally so a typo cannot POST status=ACTIVE.
+#[tokio::test]
+async fn client_activate_ad_policy_preflight_and_opt_in() {
+    let (client, key) = setup(MockPub::ads_lifecycle("meta_ads"));
+    let denied = client
+        .activate_ad(&key, activate_request(), Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(denied, Error::PolicyDenied { action, reason, .. } if action == "activate" && reason == "paused_only")
+    );
+
+    let empty = Client::new(
+        Registry::new(),
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let mismatch = empty
+        .activate_ad(
+            &AccountKey::new("meta_ads", "default"),
+            AdsActivateRequest {
+                confirm_id: "999".into(),
+                ..activate_request()
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(mismatch, Error::InvalidQuery { reason, .. } if reason == "confirm_id_mismatch")
+    );
+
+    let mut registry = Registry::new();
+    register_mock(&mut registry, Arc::new(MockPub::ads_lifecycle("meta_ads")));
+    let vault = Arc::new(MemoryVault::new());
+    let apps = Arc::new(MemoryAppStore::new());
+    let key = AccountKey::new("meta_ads", "default");
+    apps.put(&AppConfig {
+        site: Site::new("meta_ads"),
+        oauth: None,
+        extra: serde_json::json!({}),
+    })
+    .unwrap();
+    vault
+        .put(
+            &key,
+            &AccountCreds::OAuth2 {
+                access_token: "tok".into(),
+                refresh_token: None,
+                extra: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+    let allowed = Client::new(registry, vault, apps)
+        .with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::Activate)));
+    let outcome = allowed
+        .activate_ad(&key, activate_request(), Deadline::from_secs(30))
+        .await
+        .unwrap();
+    match outcome {
+        AdsLifecycleOutcome::Applied { status } => {
+            assert_eq!(status.configured_status, "ACTIVE");
+            assert_eq!(status.id, "456");
+        }
+        other => panic!("expected applied, got {other:?}"),
+    }
+
+    let pending = {
+        let mut mock = MockPub::ads_lifecycle("meta_ads");
+        mock.review_status_pending_reads = 1;
+        mock
+    };
+    let (client, key) = setup(pending);
+    let client = client.with_ads_policy(Arc::new(AllowAdsActionPolicy::new(AdsAction::Activate)));
+    let err = client
+        .activate_ad(&key, activate_request(), Deadline::from_secs(30))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidQuery { reason, .. } if reason == "review_unresolved"));
 }
 
 /// A poller is useful only if it stops on the platform's final state. The

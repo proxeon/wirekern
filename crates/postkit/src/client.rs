@@ -1,10 +1,12 @@
 #[cfg(feature = "meta-ads")]
 use crate::ads::AdReviewWait;
 use crate::ads::{
-    AdReviewStatus, AdReviewStatusRequest, AdsInspectReply, AdsInspectRequest, AdsInventoryReply,
-    AdsInventoryRequest, AdsTokenInspection, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
-    CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest, MarketingApiAccessTier,
-    UploadAdImageRequest, UploadedAdImage, SYSTEM_USER_TOKEN_KIND,
+    AdReviewStatus, AdReviewStatusRequest, AdsActivateRequest, AdsConfiguredStatus,
+    AdsInspectReply, AdsInspectRequest, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
+    AdsLifecycleOutcome, AdsStatusUpdateRequest, AdsTokenInspection, CreateLinkAdCreativeRequest,
+    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
+    MarketingApiAccessTier, UploadAdImageRequest, UploadedAdImage, ACTIVATE_RECONCILE_GUIDANCE,
+    SYSTEM_USER_TOKEN_KIND,
 };
 use crate::apps::AppStore;
 use crate::error::Error;
@@ -1604,6 +1606,32 @@ impl Client {
         .await
     }
 
+    /// Confirmed PAUSED → ACTIVE. Policy, confirmation, and review preflight
+    /// all run before the vault. A network/deadline failure after the POST
+    /// leaves is `reconciliation_required`, never a second activate.
+    pub async fn activate_ad(
+        &self,
+        key: &AccountKey,
+        request: AdsActivateRequest,
+        deadline: Deadline,
+    ) -> Result<AdsLifecycleOutcome, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.ads_policy.authorize(&key.site, AdsAction::Activate)?;
+        self.require_capability(&key.site, Capability::ManageAdsLifecycle)?;
+        let ads = self.ads_manager(&key.site, Capability::ManageAdsLifecycle)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(
+                async move { activate_ad_inner(&*ads, &app, &creds, &request, deadline).await },
+            )
+        })
+        .await
+    }
+
     /// Read one ad object's configured and effective state once. This is a
     /// GET-only operation, so it bypasses `AdsPolicy`: inspecting a Meta
     /// review cannot activate an object, alter a budget, or affect billing.
@@ -2100,6 +2128,113 @@ fn resolve_whatsapp_outbound_sender(
         selected_app.extra["phone_number_id"] = serde_json::Value::String(selected.clone());
     }
     Ok((selected_app, selected))
+}
+
+async fn activate_ad_inner(
+    ads: &dyn AdsManager,
+    app: &AppConfig,
+    creds: &AccountCreds,
+    request: &AdsActivateRequest,
+    deadline: Deadline,
+) -> Result<AdsLifecycleOutcome, Error> {
+    let review = ads
+        .ad_review_status(
+            app,
+            creds,
+            &AdReviewStatusRequest {
+                entity: request.entity,
+                id: request.id.clone(),
+            },
+            deadline,
+        )
+        .await?;
+    if review.configured_status != "PAUSED" {
+        return Err(Error::InvalidQuery {
+            site: review.site.clone(),
+            reason: format!("not_paused:{}", review.configured_status),
+        });
+    }
+    if review.is_pending_review() {
+        return Err(Error::InvalidQuery {
+            site: review.site.clone(),
+            reason: "review_unresolved".into(),
+        });
+    }
+    if !review.issues.is_empty() {
+        return Err(Error::InvalidQuery {
+            site: review.site.clone(),
+            reason: "review_issues".into(),
+        });
+    }
+    let inspect = ads
+        .inspect_ads_object(
+            app,
+            creds,
+            &AdsInspectRequest {
+                kind: AdsInventoryKind::from_entity(request.entity),
+                id: request.id.clone(),
+            },
+            deadline,
+        )
+        .await?;
+    confirm_activate_budget(&inspect, request).map_err(|reason| Error::InvalidQuery {
+        site: inspect.site.clone(),
+        reason,
+    })?;
+    match ads
+        .update_ad_status(
+            app,
+            creds,
+            &AdsStatusUpdateRequest {
+                entity: request.entity,
+                id: request.id.clone(),
+                status: AdsConfiguredStatus::Active,
+            },
+            deadline,
+        )
+        .await
+    {
+        Ok(status) => Ok(AdsLifecycleOutcome::Applied { status }),
+        Err(Error::Network { .. } | Error::DeadlineExceeded { .. }) => {
+            Ok(AdsLifecycleOutcome::ReconciliationRequired {
+                entity: request.entity,
+                id: request.id.clone(),
+                guidance: ACTIVATE_RECONCILE_GUIDANCE.into(),
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn confirm_activate_budget(
+    inspect: &AdsInspectReply,
+    request: &AdsActivateRequest,
+) -> Result<(), String> {
+    let daily = inspect
+        .daily_budget
+        .as_deref()
+        .map(|raw| raw.parse::<u64>())
+        .transpose()
+        .map_err(|_| "bad_inspect_daily_budget".to_string())?;
+    let lifetime = inspect
+        .lifetime_budget
+        .as_deref()
+        .map(|raw| raw.parse::<u64>())
+        .transpose()
+        .map_err(|_| "bad_inspect_lifetime_budget".to_string())?;
+    if daily.is_some() && request.confirm_daily_budget != daily {
+        return Err("confirm_daily_budget_mismatch".into());
+    }
+    if lifetime.is_some() && request.confirm_lifetime_budget != lifetime {
+        return Err("confirm_lifetime_budget_mismatch".into());
+    }
+    if daily.is_none() && request.confirm_daily_budget.is_some() {
+        return Err("confirm_daily_budget_not_on_object".into());
+    }
+    if lifetime.is_none() && request.confirm_lifetime_budget.is_some() {
+        return Err("confirm_lifetime_budget_not_on_object".into());
+    }
+    Ok(())
 }
 
 #[cfg(feature = "whatsapp-cloud")]

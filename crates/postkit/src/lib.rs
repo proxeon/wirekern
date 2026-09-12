@@ -67,8 +67,9 @@ pub use ads::{
     supported_adset_pairing, validate_adset_schedule, validate_bid_constraints,
     validate_link_cta_values, validate_promoted_object, AdCreativeKind, AdEntity, AdPreviewFormat,
     AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdReviewWait, AdTargeting, AdVideoStatus,
-    AdVideoStatusKind, AdVideoStatusRequest, AdVideoWait, AdsInspectReply, AdsInspectRequest,
-    AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
+    AdVideoStatusKind, AdVideoStatusRequest, AdVideoWait, AdsActivateRequest, AdsConfiguredStatus,
+    AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind, AdsInventoryReply,
+    AdsInventoryRequest, AdsLifecycleCheckpoint, AdsLifecycleOutcome, AdsStatusUpdateRequest,
     AdsTargetingReadback, AdsTokenInspection, AdsTokenKind, AppInstallAdCreative, BidStrategy,
     BillingEvent, CampaignObjective, CarouselAdCreative, CarouselCard, CatalogAdCreative,
     CreateAdCreativeRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
@@ -78,7 +79,7 @@ pub use ads::{
     MarketingApiAccessTierKind, OptimizationGoal, PausedAd, PausedAdCreate, PausedAdset,
     PausedCampaign, PromotedObject, PublisherPlatform, UploadAdImageRequest, UploadAdVideoRequest,
     UploadedAdImage, UploadedAdVideo, VideoAdCreative, WhatsAppPosition, WhatsAppStatusIdentity,
-    MARKETING_API_ACCESS_TIER_DASHBOARD, SYSTEM_USER_TOKEN_KIND,
+    ACTIVATE_RECONCILE_GUIDANCE, MARKETING_API_ACCESS_TIER_DASHBOARD, SYSTEM_USER_TOKEN_KIND,
 };
 pub use apps::{app_source, env_override, AppStore, MemoryAppStore};
 pub use bundle::bundled_registry;
@@ -103,7 +104,7 @@ pub use insights::{
 };
 pub use media::{MediaQuery, MediaReply, PublishedMedia, DEFAULT_MEDIA_LIMIT, MAX_MEDIA_LIMIT};
 pub use pages::{PageAccount, PagesReply};
-pub use policy::{AdsAction, AdsPolicy, PausedOnlyAdsPolicy};
+pub use policy::{AdsAction, AdsPolicy, AllowAdsActionPolicy, PausedOnlyAdsPolicy};
 #[cfg(feature = "whatsapp-cloud")]
 pub use policy::{AllowWhatsAppSendsPolicy, NoWhatsAppSendsPolicy, WhatsAppAction, WhatsAppPolicy};
 pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};
