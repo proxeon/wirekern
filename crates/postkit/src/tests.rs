@@ -457,6 +457,20 @@ impl AdsManager for MockPub {
         })
     }
 
+    async fn create_video_ad_creative(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &crate::ads::CreateVideoAdCreativeRequest,
+        _deadline: Deadline,
+    ) -> Result<CreatedAdCreative, Error> {
+        Ok(CreatedAdCreative {
+            site: self.site.clone(),
+            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
+            id: "video-creative-0".into(),
+        })
+    }
+
     async fn preview_ad_creative(
         &self,
         _app: &AppConfig,
@@ -2861,6 +2875,20 @@ mod draft_tests {
             _app: &AppConfig,
             _creds: &AccountCreds,
             _request: &CreateLinkAdCreativeRequest,
+            _deadline: Deadline,
+        ) -> Result<CreatedAdCreative, Error> {
+            self.write_gate()?;
+            Ok(CreatedAdCreative {
+                site: self.site.clone(),
+                account_id: "act_777".into(),
+                id: format!("3{:03}", self.creatives.fetch_add(1, Ordering::SeqCst)),
+            })
+        }
+        async fn create_video_ad_creative(
+            &self,
+            _app: &AppConfig,
+            _creds: &AccountCreds,
+            _request: &crate::ads::CreateVideoAdCreativeRequest,
             _deadline: Deadline,
         ) -> Result<CreatedAdCreative, Error> {
             self.write_gate()?;

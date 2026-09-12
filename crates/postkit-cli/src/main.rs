@@ -365,6 +365,33 @@ enum AdsCmd {
         #[arg(long)]
         app_link: Option<String>,
     },
+    /// Create a Page-backed video creative. The video must already be uploaded.
+    CreateVideoCreative {
+        site: String,
+        #[arg(long)]
+        ad_account: Option<String>,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        page_id: String,
+        #[arg(long)]
+        video_id: String,
+        /// Thumbnail image hash from `upload-image`.
+        #[arg(long)]
+        image_hash: String,
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        destination_url: String,
+        #[arg(long)]
+        call_to_action: String,
+        #[arg(long)]
+        geo_link: Option<String>,
+        #[arg(long)]
+        application_id: Option<String>,
+        #[arg(long)]
+        app_link: Option<String>,
+    },
     /// Create a Meta campaign with status hard-coded to PAUSED.
     CreateCampaign {
         site: String,
@@ -1971,6 +1998,46 @@ async fn dispatch(
             )
             .map_err(|e| fail(&e, json))?;
             one_link_creative(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::CreateVideoCreative {
+            site,
+            ad_account,
+            name,
+            page_id,
+            video_id,
+            image_hash,
+            message,
+            destination_url,
+            call_to_action,
+            geo_link,
+            application_id,
+            app_link,
+        }) => {
+            let request = build_video_ad_creative_request(
+                &site,
+                VideoCreativeOptions {
+                    ad_account,
+                    name,
+                    page_id,
+                    video_id,
+                    image_hash,
+                    message,
+                    destination_url,
+                    call_to_action,
+                    geo_link,
+                    application_id,
+                    app_link,
+                },
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_video_creative(
                 &client,
                 &AccountKey::new(&site, &account),
                 request,

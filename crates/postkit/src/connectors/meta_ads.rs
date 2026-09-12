@@ -477,6 +477,21 @@ impl AdsManager for MetaAds {
         .await
     }
 
+    async fn create_video_ad_creative(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &crate::ads::CreateVideoAdCreativeRequest,
+        deadline: Deadline,
+    ) -> Result<CreatedAdCreative, Error> {
+        let token = access_token(creds)?;
+        let account = account_id(creds, request.account.as_deref())?;
+        create_video_ad_creative(
+            &self.http, &self.base, &self.site, &account, token, request, deadline,
+        )
+        .await
+    }
+
     async fn preview_ad_creative(
         &self,
         _app: &AppConfig,
@@ -852,6 +867,69 @@ async fn create_link_ad_creative(
             "call_to_action": {
                 "type": creative.call_to_action.meta_value(),
                 "value": crate::ads::link_cta_value_json(creative),
+            },
+        },
+    })
+    .to_string();
+    let body = form(&[
+        ("name", creative.name.as_str()),
+        ("object_story_spec", object_story_spec.as_str()),
+        ("access_token", token),
+    ]);
+    let url = format!("{base}/act_{account}/adcreatives");
+    let response = http
+        .send(
+            http.post(&url)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(body),
+            deadline,
+            site,
+        )
+        .await?;
+    let response = read_json(response, site).await?;
+    let id = value_string(response.get("id")).ok_or_else(|| Error::Platform {
+        site: site.clone(),
+        code: "missing_creative_id".into(),
+        message: "creative create returned no id".into(),
+    })?;
+    Ok(CreatedAdCreative {
+        site: site.clone(),
+        account_id: format!("act_{account}"),
+        id,
+    })
+}
+
+async fn create_video_ad_creative(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    account: &str,
+    token: &str,
+    request: &crate::ads::CreateVideoAdCreativeRequest,
+    deadline: Deadline,
+) -> Result<CreatedAdCreative, Error> {
+    let creative = &request.creative;
+    let link_cta = crate::ads::LinkAdCreative {
+        name: creative.name.clone(),
+        page_id: creative.page_id.clone(),
+        image_hash: creative.image_hash.clone(),
+        message: creative.message.clone(),
+        headline: String::new(),
+        destination_url: creative.destination_url.clone(),
+        call_to_action: creative.call_to_action,
+        geo_link: creative.geo_link.clone(),
+        application_id: creative.application_id.clone(),
+        app_link: creative.app_link.clone(),
+    };
+    let object_story_spec = serde_json::json!({
+        "page_id": creative.page_id,
+        "video_data": {
+            "video_id": creative.video_id,
+            "image_hash": creative.image_hash,
+            "message": creative.message,
+            "call_to_action": {
+                "type": creative.call_to_action.meta_value(),
+                "value": crate::ads::link_cta_value_json(&link_cta),
             },
         },
     })
@@ -2550,6 +2628,44 @@ mod tests {
             status_out.video_status,
             crate::ads::AdVideoStatusKind::Processing
         );
+    }
+
+    #[tokio::test]
+    async fn video_creative_posts_video_data_story_spec() {
+        let server = MockServer::start();
+        let creative = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/adcreatives")
+                .body_contains("video_id")
+                .body_contains("9001");
+            then.status(200).json_body(json!({ "id": "501" }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let created = connector
+            .create_video_ad_creative(
+                &empty_app(),
+                &token_creds("123"),
+                &crate::ads::CreateVideoAdCreativeRequest {
+                    account: None,
+                    creative: crate::ads::VideoAdCreative {
+                        name: "Hero video".into(),
+                        page_id: "456".into(),
+                        video_id: "9001".into(),
+                        image_hash: "hash-1".into(),
+                        message: "Watch".into(),
+                        destination_url: "https://example.com/offer".into(),
+                        call_to_action: LinkCallToAction::LearnMore,
+                        geo_link: None,
+                        application_id: None,
+                        app_link: None,
+                    },
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        creative.assert();
+        assert_eq!(created.id, "501");
     }
 
     #[tokio::test]

@@ -71,6 +71,25 @@ pub(crate) async fn one_link_creative(
     }
 }
 
+pub(crate) async fn one_video_creative(
+    client: &Client,
+    key: &AccountKey,
+    request: postkit::CreateVideoAdCreativeRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client
+        .create_video_ad_creative(key, request, deadline)
+        .await
+    {
+        Ok(created) => {
+            emit_ok(&created, json, || created_creative_line(&created));
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
 /// Preview markup is intentionally not passed to `emit_ok`: an iframe body
 /// is useful only as a local artifact and could be unwieldy or unsafe in an
 /// agent log. The success reply records just enough to locate and review it.
@@ -509,6 +528,47 @@ pub(crate) fn build_link_ad_creative_request(
             image_hash: options.image_hash,
             message: options.message,
             headline: options.headline,
+            destination_url: options.destination_url,
+            call_to_action,
+            geo_link: options.geo_link,
+            application_id: options.application_id,
+            app_link: options.app_link,
+        },
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) struct VideoCreativeOptions {
+    pub(crate) ad_account: Option<String>,
+    pub(crate) name: String,
+    pub(crate) page_id: String,
+    pub(crate) video_id: String,
+    pub(crate) image_hash: String,
+    pub(crate) message: String,
+    pub(crate) destination_url: String,
+    pub(crate) call_to_action: String,
+    pub(crate) geo_link: Option<String>,
+    pub(crate) application_id: Option<String>,
+    pub(crate) app_link: Option<String>,
+}
+
+pub(crate) fn build_video_ad_creative_request(
+    site: &str,
+    options: VideoCreativeOptions,
+) -> Result<postkit::CreateVideoAdCreativeRequest, Error> {
+    let call_to_action = LinkCallToAction::from_str(&options.call_to_action)
+        .map_err(|reason| ads_input_error(site, reason))?;
+    let request = postkit::CreateVideoAdCreativeRequest {
+        account: options.ad_account,
+        creative: postkit::VideoAdCreative {
+            name: options.name,
+            page_id: options.page_id,
+            video_id: options.video_id,
+            image_hash: options.image_hash,
+            message: options.message,
             destination_url: options.destination_url,
             call_to_action,
             geo_link: options.geo_link,

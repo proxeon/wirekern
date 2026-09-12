@@ -1143,6 +1143,57 @@ pub enum AdVideoWait {
     Pending(AdVideoStatus),
 }
 
+/// Page-backed video creative. Thumbnail `image_hash` is required so Meta
+/// does not invent a frame. `video_id` is the `/advideos` asset.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VideoAdCreative {
+    pub name: String,
+    pub page_id: String,
+    pub video_id: String,
+    pub image_hash: String,
+    pub message: String,
+    pub destination_url: String,
+    pub call_to_action: LinkCallToAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_link: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CreateVideoAdCreativeRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    pub creative: VideoAdCreative,
+}
+
+impl CreateVideoAdCreativeRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_account(self.account.as_deref())?;
+        require_name(&self.creative.name)?;
+        require_numeric_id("page_id", &self.creative.page_id)?;
+        require_numeric_id("video_id", &self.creative.video_id)?;
+        require_text("image_hash", &self.creative.image_hash)?;
+        require_text("message", &self.creative.message)?;
+        require_https_url("destination_url", &self.creative.destination_url)?;
+        validate_link_cta_values(&LinkAdCreative {
+            name: self.creative.name.clone(),
+            page_id: self.creative.page_id.clone(),
+            image_hash: self.creative.image_hash.clone(),
+            message: self.creative.message.clone(),
+            headline: String::new(),
+            destination_url: self.creative.destination_url.clone(),
+            call_to_action: self.creative.call_to_action,
+            geo_link: self.creative.geo_link.clone(),
+            application_id: self.creative.application_id.clone(),
+            app_link: self.creative.app_link.clone(),
+        })?;
+        Ok(())
+    }
+}
+
 /// The exact input for a static image website creative. It purposefully has
 /// no implicit Page, media, copy, destination, or CTA: these determine the
 /// future ad even though the creative alone cannot deliver.
@@ -1955,6 +2006,35 @@ mod tests {
         assert_eq!(
             leftover_geo.validate().unwrap_err(),
             "geo_link_without_get_directions"
+        );
+
+        let video = CreateVideoAdCreativeRequest {
+            account: Some("123".into()),
+            creative: VideoAdCreative {
+                name: "Hero video".into(),
+                page_id: "456".into(),
+                video_id: "9001".into(),
+                image_hash: "hash-1".into(),
+                message: "Watch".into(),
+                destination_url: "https://example.com/offer".into(),
+                call_to_action: LinkCallToAction::LearnMore,
+                geo_link: None,
+                application_id: None,
+                app_link: None,
+            },
+        };
+        assert!(video.validate().is_ok());
+        assert_eq!(
+            CreateVideoAdCreativeRequest {
+                creative: VideoAdCreative {
+                    video_id: "vid".into(),
+                    ..video.creative.clone()
+                },
+                ..video
+            }
+            .validate()
+            .unwrap_err(),
+            "bad_video_id:vid"
         );
         assert_eq!(
             link_cta_value_json(&valid_creative.creative),
