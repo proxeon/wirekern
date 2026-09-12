@@ -2986,9 +2986,8 @@ fn scoped_whatsapp_idempotency(phone_number_id: &str, idempotency_key: &str) -> 
 mod draft_run {
     use super::Client;
     use crate::ads::{
-        AdEntity, AdReviewStatusRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
-        LinkAdCreative, PausedAd, PausedAdCreate, PausedAdset, PausedCampaign,
-        UploadAdImageRequest,
+        AdEntity, AdReviewStatusRequest, CreatePausedAdRequest, PausedAd, PausedAdCreate,
+        PausedAdset, PausedCampaign, UploadAdImageRequest,
     };
     use crate::draft::{
         adoption_entity, manifest_fingerprint, DraftImage, DraftStage, DraftStatusReply, DraftStep,
@@ -3124,6 +3123,23 @@ mod draft_run {
                 if !state.step_pending(step) {
                     continue; // checkpointed by a previous run
                 }
+                if step == DraftStep::Image && !manifest.needs_image_upload() {
+                    state.set_output(
+                        DraftStep::Image,
+                        manifest
+                            .creative
+                            .image_hash
+                            .clone()
+                            .unwrap_or_else(|| "skipped".into()),
+                    );
+                    store
+                        .checkpoint(state_path, &state)
+                        .map_err(|reason| Error::InvalidQuery {
+                            site: site.clone(),
+                            reason,
+                        })?;
+                    continue;
+                }
                 deadline.check(&site)?;
                 // Policy before the marker: a denied step must leave the
                 // state exactly as it was found.
@@ -3195,30 +3211,8 @@ mod draft_run {
                             .map(|created| created.id)
                     }
                     DraftStep::Creative => {
-                        let request = CreateLinkAdCreativeRequest {
-                            account: Some(account.clone()),
-                            creative: LinkAdCreative {
-                                name: manifest.creative.name.clone(),
-                                page_id: manifest.creative.page_id.clone(),
-                                image_hash: state
-                                    .image_hash
-                                    .clone()
-                                    .expect("lattice guarantees the image"),
-                                message: manifest.creative.message.clone(),
-                                headline: manifest.creative.headline.clone(),
-                                destination_url: manifest.creative.destination_url.clone(),
-                                call_to_action: manifest.creative.call_to_action,
-                                geo_link: manifest.creative.geo_link.clone(),
-                                application_id: manifest.creative.application_id.clone(),
-                                app_link: manifest.creative.app_link.clone(),
-                                instagram_user_id: None,
-                                advantage_plus: false,
-                                whatsapp_identity: None,
-                            },
-                        };
-                        self.create_link_ad_creative(key, request, deadline)
+                        self.draft_create_creative(key, manifest, &state, &account, deadline)
                             .await
-                            .map(|created| created.id)
                     }
                     DraftStep::Ad => {
                         let request = CreatePausedAdRequest {
@@ -3488,6 +3482,20 @@ mod draft_run {
                 bytes: image.bytes.clone(),
             }))
         }
+
+        async fn draft_create_creative(
+            &self,
+            key: &AccountKey,
+            manifest: &crate::draft::PausedDraftManifest,
+            state: &crate::draft::PausedDraftState,
+            account: &str,
+            deadline: Deadline,
+        ) -> Result<String, Error> {
+            crate::client::draft_create_creative_inner(
+                self, key, manifest, state, account, deadline,
+            )
+            .await
+        }
     }
 
     fn completed_result(site: &Site, state: &PausedDraftState) -> Result<PausedDraftResult, Error> {
@@ -3515,6 +3523,145 @@ mod draft_run {
             ad_id: ad_id.clone(),
             configured_status: CONFIGURED_PAUSED,
         })
+    }
+}
+
+#[cfg(feature = "draft")]
+async fn draft_create_creative_inner(
+    client: &Client,
+    key: &AccountKey,
+    manifest: &crate::draft::PausedDraftManifest,
+    state: &crate::draft::PausedDraftState,
+    account: &str,
+    deadline: Deadline,
+) -> Result<String, Error> {
+    let c = &manifest.creative;
+    let hash = state
+        .image_hash
+        .clone()
+        .filter(|h| h != "skipped")
+        .or_else(|| c.image_hash.clone())
+        .unwrap_or_default();
+    match c.kind {
+        crate::draft::DraftCreativeKind::Link => {
+            let request = crate::ads::CreateLinkAdCreativeRequest {
+                account: Some(account.into()),
+                creative: crate::ads::LinkAdCreative {
+                    name: c.name.clone(),
+                    page_id: c.page_id.clone(),
+                    image_hash: hash,
+                    message: c.message.clone(),
+                    headline: c.headline.clone(),
+                    destination_url: c.destination_url.clone(),
+                    call_to_action: c.call_to_action,
+                    geo_link: c.geo_link.clone(),
+                    application_id: c.application_id.clone(),
+                    app_link: c.app_link.clone(),
+                    instagram_user_id: None,
+                    advantage_plus: false,
+                    whatsapp_identity: None,
+                },
+            };
+            client
+                .create_link_ad_creative(key, request, deadline)
+                .await
+                .map(|created| created.id)
+        }
+        crate::draft::DraftCreativeKind::Video => {
+            let request = crate::ads::CreateVideoAdCreativeRequest {
+                account: Some(account.into()),
+                creative: crate::ads::VideoAdCreative {
+                    name: c.name.clone(),
+                    page_id: c.page_id.clone(),
+                    video_id: c.video_id.clone().unwrap_or_default(),
+                    image_hash: hash,
+                    message: c.message.clone(),
+                    destination_url: c.destination_url.clone(),
+                    call_to_action: c.call_to_action,
+                    geo_link: c.geo_link.clone(),
+                    application_id: c.application_id.clone(),
+                    app_link: c.app_link.clone(),
+                    instagram_user_id: None,
+                    advantage_plus: false,
+                    whatsapp_identity: None,
+                },
+            };
+            client
+                .create_video_ad_creative(key, request, deadline)
+                .await
+                .map(|created| created.id)
+        }
+        other => {
+            let kind = match other {
+                crate::draft::DraftCreativeKind::Carousel => {
+                    crate::ads::AdCreativeKind::Carousel(crate::ads::CarouselAdCreative {
+                        name: c.name.clone(),
+                        page_id: c.page_id.clone(),
+                        message: c.message.clone(),
+                        call_to_action: c.call_to_action,
+                        cards: c.cards.clone(),
+                        instagram_user_id: None,
+                        advantage_plus: false,
+                        whatsapp_identity: None,
+                    })
+                }
+                crate::draft::DraftCreativeKind::Catalog => {
+                    crate::ads::AdCreativeKind::Catalog(crate::ads::CatalogAdCreative {
+                        name: c.name.clone(),
+                        page_id: c.page_id.clone(),
+                        product_set_id: c.product_set_id.clone().unwrap_or_default(),
+                        link: c.link.clone().unwrap_or_else(|| c.destination_url.clone()),
+                        message: c.message.clone(),
+                        call_to_action: c.call_to_action,
+                        instagram_user_id: None,
+                        advantage_plus: false,
+                        whatsapp_identity: None,
+                    })
+                }
+                crate::draft::DraftCreativeKind::LeadForm => {
+                    crate::ads::AdCreativeKind::LeadForm(crate::ads::LeadFormAdCreative {
+                        name: c.name.clone(),
+                        page_id: c.page_id.clone(),
+                        image_hash: hash,
+                        message: c.message.clone(),
+                        headline: c.headline.clone(),
+                        destination_url: c.destination_url.clone(),
+                        lead_gen_form_id: c.lead_gen_form_id.clone().unwrap_or_default(),
+                        call_to_action: c.call_to_action,
+                        instagram_user_id: None,
+                        advantage_plus: false,
+                        whatsapp_identity: None,
+                    })
+                }
+                crate::draft::DraftCreativeKind::AppInstall => {
+                    crate::ads::AdCreativeKind::AppInstall(crate::ads::AppInstallAdCreative {
+                        name: c.name.clone(),
+                        page_id: c.page_id.clone(),
+                        image_hash: hash,
+                        message: c.message.clone(),
+                        application_id: c.application_id.clone().unwrap_or_default(),
+                        object_store_url: c.object_store_url.clone().unwrap_or_default(),
+                        instagram_user_id: None,
+                        advantage_plus: false,
+                        whatsapp_identity: None,
+                    })
+                }
+                crate::draft::DraftCreativeKind::Link | crate::draft::DraftCreativeKind::Video => {
+                    unreachable!()
+                }
+            };
+            client
+                .create_ad_creative(
+                    key,
+                    crate::ads::CreateAdCreativeRequest {
+                        account: Some(account.into()),
+                        kind,
+                    },
+                    deadline,
+                )
+                .await
+                .map(|created| created.id)
+        }
     }
 }
 

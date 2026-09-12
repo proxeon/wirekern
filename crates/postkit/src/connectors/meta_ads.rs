@@ -2835,10 +2835,18 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
     // 80004 is the Marketing API ads-management rate limit; 341 is Graph's
     // application-limit / throttling code. Both are retryable waits, not
     // validation failures.
+    // 10/200 are permission denials: not refreshable. 368 is Graph
+    // "temporarily blocked" — wait, same family as rate_limited.
+    if matches!(code, 10 | 200) {
+        return Error::Auth {
+            site,
+            reason: "permission".into(),
+        };
+    }
     let (auth_hit, rate_hit) = if code != 0 {
         (
             matches!(code, 190 | 102),
-            matches!(code, 4 | 17 | 32 | 341 | 613 | 80004),
+            matches!(code, 4 | 17 | 32 | 341 | 368 | 613 | 80004),
         )
     } else {
         (
@@ -3051,6 +3059,18 @@ mod tests {
         // reference and Graph error-handling tables (v26.0).
         #[allow(clippy::type_complexity)]
         let cases: &[(&str, fn(&Error) -> bool)] = &[
+            (
+                r#"{"error":{"code":10,"message":"Permission denied"}}"#,
+                |err| matches!(err, Error::Auth { reason, .. } if reason == "permission"),
+            ),
+            (
+                r#"{"error":{"code":200,"message":"Permissions error"}}"#,
+                |err| matches!(err, Error::Auth { reason, .. } if reason == "permission"),
+            ),
+            (
+                r#"{"error":{"code":368,"message":"Temporarily blocked for policies"}}"#,
+                |err| matches!(err, Error::RateLimited { .. }),
+            ),
             (
                 r#"{"error":{"code":80004,"message":"There have been too many calls to this ad-account"}}"#,
                 |err| matches!(err, Error::RateLimited { .. }),

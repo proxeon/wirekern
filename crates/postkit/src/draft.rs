@@ -120,20 +120,42 @@ pub struct DraftAdset {
     pub promoted_object: Option<crate::ads::PromotedObject>,
 }
 
+/// Which primitive creative the draft should create. Default `link` keeps
+/// schema-1 manifests working without a version bump.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftCreativeKind {
+    #[default]
+    Link,
+    Video,
+    Carousel,
+    Catalog,
+    LeadForm,
+    AppInstall,
+}
+
 /// The image reference is a *CLI-boundary* path: the CLI resolves it to
 /// bytes + basename before anything enters the library, which never sees a
 /// filesystem path (the same rule `UploadAdImageRequest` follows).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DraftCreative {
+    #[serde(default)]
+    pub kind: DraftCreativeKind,
     pub name: String,
     /// Local image file whose *basename* becomes the upload filename. The
     /// basename must be a plain filename — no `/`, no `\`, no traversal.
+    /// Unused for carousel/catalog (hashes/ids already on the spec).
+    #[serde(default)]
     pub image_file: String,
     pub page_id: String,
+    #[serde(default)]
     pub message: String,
+    #[serde(default)]
     pub headline: String,
+    #[serde(default)]
     pub destination_url: String,
+    #[serde(default)]
     pub call_to_action: crate::ads::LinkCallToAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geo_link: Option<String>,
@@ -141,6 +163,20 @@ pub struct DraftCreative {
     pub application_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cards: Vec<crate::ads::CarouselCard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_set_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_gen_form_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_store_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -220,9 +256,19 @@ impl PausedDraftManifest {
         // Creative
         require_name(&self.creative.name)?;
         require_numeric_id("page_id", &self.creative.page_id)?;
-        require_text("message", &self.creative.message)?;
-        require_text("headline", &self.creative.headline)?;
-        require_https_url("destination_url", &self.creative.destination_url)?;
+        if matches!(
+            self.creative.kind,
+            DraftCreativeKind::Link | DraftCreativeKind::Video | DraftCreativeKind::LeadForm
+        ) {
+            require_text("message", &self.creative.message)?;
+        }
+        if matches!(
+            self.creative.kind,
+            DraftCreativeKind::Link | DraftCreativeKind::LeadForm
+        ) {
+            require_text("headline", &self.creative.headline)?;
+            require_https_url("destination_url", &self.creative.destination_url)?;
+        }
         crate::ads::validate_link_cta_values(&crate::ads::LinkAdCreative {
             name: self.creative.name.clone(),
             page_id: self.creative.page_id.clone(),
@@ -260,7 +306,20 @@ impl PausedDraftManifest {
     /// The upload filename is the manifest image path's basename. It must be
     /// a real basename (no separators) so an operator cannot smuggle a path
     /// component into Meta's stored filename or a local path into an error.
+    pub fn needs_image_upload(&self) -> bool {
+        matches!(
+            self.creative.kind,
+            DraftCreativeKind::Link
+                | DraftCreativeKind::Video
+                | DraftCreativeKind::LeadForm
+                | DraftCreativeKind::AppInstall
+        ) && self.creative.image_hash.is_none()
+    }
+
     pub fn image_filename(&self) -> Result<String, String> {
+        if !self.needs_image_upload() {
+            return Ok(String::new());
+        }
         let name = self
             .creative
             .image_file

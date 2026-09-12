@@ -1035,9 +1035,10 @@ pub fn supported_adset_pairing(
 /// Website types share `value.link` with the destination URL. Page-click
 /// types send `value.page`. `get_directions` and `install_app` need extra
 /// typed fields (geo link / application + app link) or they fail locally.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkCallToAction {
+    #[default]
     LearnMore,
     ShopNow,
     SignUp,
@@ -1148,6 +1149,8 @@ impl FromStr for LinkCallToAction {
 pub enum AdPreviewFormat {
     DesktopFeedStandard,
     MobileFeedStandard,
+    /// WhatsApp Status placement. Documented on generatepreviews `ad_format`.
+    WhatsappStatusMedia,
 }
 
 impl AdPreviewFormat {
@@ -1155,6 +1158,7 @@ impl AdPreviewFormat {
         match self {
             Self::DesktopFeedStandard => "DESKTOP_FEED_STANDARD",
             Self::MobileFeedStandard => "MOBILE_FEED_STANDARD",
+            Self::WhatsappStatusMedia => "WHATSAPP_STATUS_MEDIA",
         }
     }
 
@@ -1162,6 +1166,7 @@ impl AdPreviewFormat {
         match self {
             Self::DesktopFeedStandard => "desktop_feed_standard",
             Self::MobileFeedStandard => "mobile_feed_standard",
+            Self::WhatsappStatusMedia => "whatsapp_status_media",
         }
     }
 }
@@ -1173,6 +1178,7 @@ impl FromStr for AdPreviewFormat {
         match s {
             "desktop_feed_standard" => Ok(Self::DesktopFeedStandard),
             "mobile_feed_standard" => Ok(Self::MobileFeedStandard),
+            "whatsapp_status_media" => Ok(Self::WhatsappStatusMedia),
             other => Err(format!("unknown_ad_preview_format:{other}")),
         }
     }
@@ -2741,6 +2747,12 @@ mod tests {
         assert_eq!(
             AdPreviewFormat::from_str("instagram_standard").unwrap_err(),
             "unknown_ad_preview_format:instagram_standard"
+        );
+        assert_eq!(
+            AdPreviewFormat::from_str("whatsapp_status_media")
+                .unwrap()
+                .meta_value(),
+            "WHATSAPP_STATUS_MEDIA"
         );
 
         let valid_image = UploadAdImageRequest {

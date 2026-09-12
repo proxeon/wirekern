@@ -510,7 +510,10 @@ fn ads_key(q: &AdsReadQuery) -> Result<AccountKey, Error> {
             reason: "missing_site".into(),
         });
     }
-    Ok(AccountKey::new(site, q.account.as_deref().unwrap_or("default")))
+    Ok(AccountKey::new(
+        site,
+        q.account.as_deref().unwrap_or("default"),
+    ))
 }
 
 async fn ads_accounts(
@@ -525,7 +528,11 @@ async fn ads_accounts(
         Ok(key) => key,
         Err(e) => return wire_response(e),
     };
-    match state.client.ad_accounts(&key, deadline_from(&headers)).await {
+    match state
+        .client
+        .ad_accounts(&key, deadline_from(&headers))
+        .await
+    {
         Ok(reply) => (StatusCode::OK, Json(reply)).into_response(),
         Err(e) => wire_response(e),
     }
@@ -696,10 +703,13 @@ fn insights_from_query(q: &AdsReadQuery) -> Result<InsightsQuery, Error> {
         site: Site::new(site),
         reason: "missing_to".into(),
     })?;
-    let attribution = q.attribution.as_deref().ok_or_else(|| Error::InvalidQuery {
-        site: Site::new(site),
-        reason: "missing_attribution".into(),
-    })?;
+    let attribution = q
+        .attribution
+        .as_deref()
+        .ok_or_else(|| Error::InvalidQuery {
+            site: Site::new(site),
+            reason: "missing_attribution".into(),
+        })?;
     let invalid = |reason: String| Error::InvalidQuery {
         site: Site::new(site),
         reason,
@@ -1306,6 +1316,294 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(post_list.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    struct AdsReadMock {
+        site: Site,
+    }
+
+    #[async_trait]
+    impl Publisher for AdsReadMock {
+        fn site(&self) -> &Site {
+            &self.site
+        }
+        fn capabilities(&self) -> &[Capability] {
+            &[
+                Capability::ReadAdAccounts,
+                Capability::ReadAdsInventory,
+                Capability::ReadAdReviewStatus,
+                Capability::ReadMetrics,
+            ]
+        }
+        fn auth_kind(&self) -> AuthKind {
+            AuthKind::OAuth2AuthCode
+        }
+        async fn publish(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            _intent: postkit::Intent,
+            _deadline: Deadline,
+        ) -> Result<Outcome, Error> {
+            Err(Error::UnsupportedCapability {
+                site: self.site.clone(),
+                need: Capability::PublishText,
+            })
+        }
+        async fn whoami(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+        ) -> Result<WhoAmI, Error> {
+            Ok(WhoAmI {
+                site: self.site.clone(),
+                id: "1".into(),
+                handle: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl postkit::InsightsSource for AdsReadMock {
+        async fn insights(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            _query: &postkit::InsightsQuery,
+            _deadline: Deadline,
+        ) -> Result<postkit::InsightsReply, Error> {
+            Ok(postkit::InsightsReply {
+                site: self.site.clone(),
+                account_id: "act_1".into(),
+                currency: None,
+                rows: vec![],
+            })
+        }
+        async fn ad_accounts(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            _deadline: Deadline,
+        ) -> Result<postkit::AdAccountsReply, Error> {
+            Ok(postkit::AdAccountsReply {
+                site: self.site.clone(),
+                accounts: vec![postkit::AdAccount {
+                    id: "act_1".into(),
+                    name: Some("Test".into()),
+                    currency: None,
+                    timezone: None,
+                    status: None,
+                }],
+            })
+        }
+    }
+
+    #[async_trait]
+    impl postkit::AdsManager for AdsReadMock {
+        async fn create_paused_ad(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            _request: &postkit::CreatePausedAdRequest,
+            _deadline: Deadline,
+        ) -> Result<postkit::CreatedAd, Error> {
+            Err(Error::UnsupportedCapability {
+                site: self.site.clone(),
+                need: Capability::CreatePausedAds,
+            })
+        }
+        async fn upload_ad_image(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            _request: &postkit::UploadAdImageRequest,
+            _deadline: Deadline,
+        ) -> Result<postkit::UploadedAdImage, Error> {
+            Err(Error::UnsupportedCapability {
+                site: self.site.clone(),
+                need: Capability::CreatePausedAds,
+            })
+        }
+        async fn upload_ad_video(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            _request: &postkit::UploadAdVideoRequest,
+            _deadline: Deadline,
+        ) -> Result<postkit::UploadedAdVideo, Error> {
+            Err(Error::UnsupportedCapability {
+                site: self.site.clone(),
+                need: Capability::CreatePausedAds,
+            })
+        }
+        async fn ad_video_status(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            _request: &postkit::AdVideoStatusRequest,
+            _deadline: Deadline,
+        ) -> Result<postkit::AdVideoStatus, Error> {
+            Err(Error::UnsupportedCapability {
+                site: self.site.clone(),
+                need: Capability::CreatePausedAds,
+            })
+        }
+        async fn create_link_ad_creative(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            _request: &postkit::CreateLinkAdCreativeRequest,
+            _deadline: Deadline,
+        ) -> Result<postkit::CreatedAdCreative, Error> {
+            Err(Error::UnsupportedCapability {
+                site: self.site.clone(),
+                need: Capability::CreateAdCreative,
+            })
+        }
+        async fn create_video_ad_creative(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            _request: &postkit::CreateVideoAdCreativeRequest,
+            _deadline: Deadline,
+        ) -> Result<postkit::CreatedAdCreative, Error> {
+            Err(Error::UnsupportedCapability {
+                site: self.site.clone(),
+                need: Capability::CreateAdCreative,
+            })
+        }
+        async fn create_ad_creative(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            _request: &postkit::CreateAdCreativeRequest,
+            _deadline: Deadline,
+        ) -> Result<postkit::CreatedAdCreative, Error> {
+            Err(Error::UnsupportedCapability {
+                site: self.site.clone(),
+                need: Capability::CreateAdCreative,
+            })
+        }
+        async fn preview_ad_creative(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            _request: &postkit::CreativePreviewRequest,
+            _deadline: Deadline,
+        ) -> Result<postkit::CreativePreview, Error> {
+            Err(Error::UnsupportedCapability {
+                site: self.site.clone(),
+                need: Capability::CreateAdCreative,
+            })
+        }
+        async fn ad_review_status(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            request: &postkit::AdReviewStatusRequest,
+            _deadline: Deadline,
+        ) -> Result<postkit::AdReviewStatus, Error> {
+            Ok(postkit::AdReviewStatus {
+                site: self.site.clone(),
+                entity: request.entity,
+                id: request.id.clone(),
+                name: Some("Paused".into()),
+                configured_status: "PAUSED".into(),
+                effective_status: "PAUSED".into(),
+                issues: vec![],
+            })
+        }
+        async fn list_ads_inventory(
+            &self,
+            _app: &postkit::AppConfig,
+            _creds: &AccountCreds,
+            request: &postkit::AdsInventoryRequest,
+            _deadline: Deadline,
+        ) -> Result<postkit::AdsInventoryReply, Error> {
+            Ok(postkit::AdsInventoryReply {
+                site: self.site.clone(),
+                account_id: "act_1".into(),
+                kind: request.kind,
+                items: vec![],
+            })
+        }
+    }
+
+    fn ads_read_router(tmp: &Path) -> (Router, String) {
+        let keys = FileKeyStore::new(tmp).unwrap();
+        let created = keys.create("n8n").unwrap();
+        let mock = Arc::new(AdsReadMock {
+            site: Site::new("meta_ads"),
+        });
+        let mut registry = Registry::new();
+        registry.register_connector(
+            Connector::from_publisher(mock.clone())
+                .ads(mock.clone())
+                .insights(mock.clone()),
+        );
+        let vault = Arc::new(MemoryVault::new());
+        vault
+            .put(
+                &AccountKey::new("meta_ads", "default"),
+                &AccountCreds::OAuth2 {
+                    access_token: "tok".into(),
+                    refresh_token: None,
+                    extra: serde_json::json!({}),
+                },
+            )
+            .unwrap();
+        let client = Arc::new(Client::new(
+            registry,
+            vault,
+            Arc::new(MemoryAppStore::new()),
+        ));
+        (
+            router(client.clone(), client, Arc::new(keys)),
+            created.token,
+        )
+    }
+
+    #[tokio::test]
+    async fn ads_read_routes_succeed_with_a_mock_connector() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (app, token) = ads_read_router(tmp.path());
+        let accounts = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/ads/accounts?site=meta_ads")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accounts.status(), StatusCode::OK);
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/ads/list?site=meta_ads&entity=campaign")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+
+        let status = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/ads/status?site=meta_ads&entity=adset&id=456")
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
     }
 
     #[test]

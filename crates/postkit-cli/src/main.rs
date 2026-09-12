@@ -582,6 +582,98 @@ enum AdsCmd {
         application_id: Option<String>,
         #[arg(long)]
         app_link: Option<String>,
+        /// Wait until the video is encoded before creating the creative.
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Carousel creative (2–10 cards from a JSON file). Always a library
+    /// `create_ad_creative`; cannot deliver by itself.
+    CreateCarouselCreative {
+        site: String,
+        #[arg(long)]
+        ad_account: Option<String>,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        page_id: String,
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        call_to_action: String,
+        /// JSON array of `{image_hash,link,name}` cards.
+        #[arg(long)]
+        cards_file: PathBuf,
+        #[arg(long)]
+        instagram_user_id: Option<String>,
+        #[arg(long)]
+        advantage_plus: bool,
+    },
+    CreateCatalogCreative {
+        site: String,
+        #[arg(long)]
+        ad_account: Option<String>,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        page_id: String,
+        #[arg(long)]
+        product_set_id: String,
+        #[arg(long)]
+        link: String,
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        call_to_action: String,
+        #[arg(long)]
+        instagram_user_id: Option<String>,
+        #[arg(long)]
+        advantage_plus: bool,
+    },
+    CreateLeadFormCreative {
+        site: String,
+        #[arg(long)]
+        ad_account: Option<String>,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        page_id: String,
+        #[arg(long)]
+        image_hash: String,
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        headline: String,
+        #[arg(long)]
+        destination_url: String,
+        #[arg(long)]
+        lead_gen_form_id: String,
+        #[arg(long)]
+        call_to_action: String,
+        #[arg(long)]
+        instagram_user_id: Option<String>,
+        #[arg(long)]
+        advantage_plus: bool,
+    },
+    CreateAppInstallCreative {
+        site: String,
+        #[arg(long)]
+        ad_account: Option<String>,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        page_id: String,
+        #[arg(long)]
+        image_hash: String,
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        application_id: String,
+        #[arg(long)]
+        object_store_url: String,
+        #[arg(long)]
+        instagram_user_id: Option<String>,
+        #[arg(long)]
+        advantage_plus: bool,
     },
     /// Create a Meta campaign with status hard-coded to PAUSED.
     CreateCampaign {
@@ -2571,6 +2663,7 @@ async fn dispatch(
             geo_link,
             application_id,
             app_link,
+            wait,
         }) => {
             let request = build_video_ad_creative_request(
                 &site,
@@ -2590,6 +2683,145 @@ async fn dispatch(
             )
             .map_err(|e| fail(&e, json))?;
             one_video_creative(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                wait,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::CreateCarouselCreative {
+            site,
+            ad_account,
+            name,
+            page_id,
+            message,
+            call_to_action,
+            cards_file,
+            instagram_user_id,
+            advantage_plus,
+        }) => {
+            let request = build_carousel_creative_request(
+                &site,
+                ad_account,
+                name,
+                page_id,
+                message,
+                &call_to_action,
+                &cards_file,
+                instagram_user_id,
+                advantage_plus,
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_extra_creative(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::CreateCatalogCreative {
+            site,
+            ad_account,
+            name,
+            page_id,
+            product_set_id,
+            link,
+            message,
+            call_to_action,
+            instagram_user_id,
+            advantage_plus,
+        }) => {
+            let request = build_catalog_creative_request(
+                &site,
+                ad_account,
+                name,
+                page_id,
+                product_set_id,
+                link,
+                message,
+                &call_to_action,
+                instagram_user_id,
+                advantage_plus,
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_extra_creative(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::CreateLeadFormCreative {
+            site,
+            ad_account,
+            name,
+            page_id,
+            image_hash,
+            message,
+            headline,
+            destination_url,
+            lead_gen_form_id,
+            call_to_action,
+            instagram_user_id,
+            advantage_plus,
+        }) => {
+            let request = build_lead_form_creative_request(
+                &site,
+                ad_account,
+                name,
+                page_id,
+                image_hash,
+                message,
+                headline,
+                destination_url,
+                lead_gen_form_id,
+                &call_to_action,
+                instagram_user_id,
+                advantage_plus,
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_extra_creative(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
+        Commands::Ads(AdsCmd::CreateAppInstallCreative {
+            site,
+            ad_account,
+            name,
+            page_id,
+            image_hash,
+            message,
+            application_id,
+            object_store_url,
+            instagram_user_id,
+            advantage_plus,
+        }) => {
+            let request = build_app_install_creative_request(
+                &site,
+                ad_account,
+                name,
+                page_id,
+                image_hash,
+                message,
+                application_id,
+                object_store_url,
+                instagram_user_id,
+                advantage_plus,
+            )
+            .map_err(|e| fail(&e, json))?;
+            one_extra_creative(
                 &client,
                 &AccountKey::new(&site, &account),
                 request,
@@ -3489,6 +3721,26 @@ mod tests {
         let activate =
             build_ads_activate_request("meta_ads", "adset", "456", "456", Some(500), None).unwrap();
         assert_eq!(activate.entity, AdEntity::Adset);
+        let catalog = build_catalog_creative_request(
+            "meta_ads",
+            None,
+            "Cat".into(),
+            "111".into(),
+            "555".into(),
+            "https://example.com".into(),
+            "Shop".into(),
+            "shop_now",
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(catalog.kind, postkit::AdCreativeKind::Catalog(_)));
+        assert_eq!(
+            AdPreviewFormat::from_str("whatsapp_status_media")
+                .unwrap()
+                .meta_value(),
+            "WHATSAPP_STATUS_MEDIA"
+        );
         let cli = Cli::try_parse_from([
             "postkit", "ads", "pause", "meta_ads", "--entity", "ad", "--id", "700",
         ])

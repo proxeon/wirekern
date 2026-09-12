@@ -91,9 +91,9 @@ pub use bundle::bundled_registry;
 pub use client::{refresh_is_due, Client};
 #[cfg(feature = "draft")]
 pub use draft::{
-    manifest_fingerprint, DraftImage, DraftStage, DraftStatusReply, DraftStep, DraftStore,
-    FileDraftStore, PausedDraftManifest, PausedDraftResult, PausedDraftState, RunPausedDraft,
-    CONFIGURED_PAUSED, MIN_DAILY_BUDGET,
+    manifest_fingerprint, DraftCreativeKind, DraftImage, DraftStage, DraftStatusReply, DraftStep,
+    DraftStore, FileDraftStore, PausedDraftManifest, PausedDraftResult, PausedDraftState,
+    RunPausedDraft, CONFIGURED_PAUSED, MIN_DAILY_BUDGET,
 };
 pub use error::{Error, WireError};
 pub use facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};

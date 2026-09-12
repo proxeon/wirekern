@@ -3,19 +3,21 @@
 use crate::app::fail;
 use crate::output::{emit_ok, emit_raw, human_line};
 use postkit::{
-    AccountKey, AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest,
-    AdReviewWait, AdTargeting, AdsActivateRequest, AdsArchiveRequest, AdsBidUpdateRequest,
-    AdsBudgetUpdateRequest, AdsCreativeSwapRequest, AdsDeleteRequest, AdsDuplicateRequest,
-    AdsEditOutcome, AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryKind,
-    AdsInventoryReply, AdsInventoryRequest, AdsLifecycleCheckpoint, AdsLifecycleOutcome,
-    AdsPauseRequest, AdsPlacementUpdateRequest, AdsScheduleUpdateRequest,
-    AdsTargetingUpdateRequest, AttributionWindow, BidStrategy, Breakdown, CampaignObjective,
-    Client, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
-    CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, Error,
-    FacebookPosition, InsightRow, InsightsLevel, InsightsQuery, InstagramPosition, LinkAdCreative,
-    LinkCallToAction, Metric, PausedAd, PausedAdCreate, PausedAdset, PausedCampaign,
-    PausedDraftManifest, PausedDraftResult, PublishedMedia, PublisherPlatform, Site,
-    UploadAdImageRequest, UploadedAdImage, WhatsAppPosition, ACTIVATE_RECONCILE_GUIDANCE,
+    AccountKey, AdAccount, AdCreativeKind, AdEntity, AdPreviewFormat, AdReviewStatus,
+    AdReviewStatusRequest, AdReviewWait, AdTargeting, AdsActivateRequest, AdsArchiveRequest,
+    AdsBidUpdateRequest, AdsBudgetUpdateRequest, AdsCreativeSwapRequest, AdsDeleteRequest,
+    AdsDuplicateRequest, AdsEditOutcome, AdsInspectReply, AdsInspectRequest, AdsInventoryItem,
+    AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest, AdsLifecycleCheckpoint,
+    AdsLifecycleOutcome, AdsPauseRequest, AdsPlacementUpdateRequest, AdsScheduleUpdateRequest,
+    AdsTargetingUpdateRequest, AppInstallAdCreative, AttributionWindow, BidStrategy, Breakdown,
+    CampaignObjective, CarouselAdCreative, CarouselCard, CatalogAdCreative, Client,
+    CreateAdCreativeRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
+    CreatedAdCreative, CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply,
+    Error, FacebookPosition, InsightRow, InsightsLevel, InsightsQuery, InstagramPosition,
+    LeadFormAdCreative, LinkAdCreative, LinkCallToAction, Metric, PausedAd, PausedAdCreate,
+    PausedAdset, PausedCampaign, PausedDraftManifest, PausedDraftResult, PublishedMedia,
+    PublisherPlatform, Site, UploadAdImageRequest, UploadedAdImage, WhatsAppPosition,
+    ACTIVATE_RECONCILE_GUIDANCE,
 };
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -81,9 +83,43 @@ pub(crate) async fn one_video_creative(
     client: &Client,
     key: &AccountKey,
     request: postkit::CreateVideoAdCreativeRequest,
+    wait: bool,
     deadline: Deadline,
     json: bool,
 ) -> Result<(), i32> {
+    if wait {
+        match client
+            .wait_for_ad_video(
+                key,
+                postkit::AdVideoStatusRequest {
+                    video_id: request.creative.video_id.clone(),
+                },
+                deadline,
+            )
+            .await
+        {
+            Ok(postkit::AdVideoWait::Ready(_)) => {}
+            Ok(postkit::AdVideoWait::Error(status)) => {
+                return Err(fail(
+                    &Error::InvalidQuery {
+                        site: key.site.clone(),
+                        reason: format!("video_encoding_failed:{}", status.video_id),
+                    },
+                    json,
+                ));
+            }
+            Ok(postkit::AdVideoWait::Pending(status)) => {
+                return Err(fail(
+                    &Error::InvalidQuery {
+                        site: key.site.clone(),
+                        reason: format!("video_encoding_pending:{}", status.video_id),
+                    },
+                    json,
+                ));
+            }
+            Err(error) => return Err(fail(&error, json)),
+        }
+    }
     match client
         .create_video_ad_creative(key, request, deadline)
         .await
@@ -595,6 +631,166 @@ pub(crate) fn build_video_ad_creative_request(
         .validate()
         .map_err(|reason| ads_input_error(site, reason))?;
     Ok(request)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_carousel_creative_request(
+    site: &str,
+    ad_account: Option<String>,
+    name: String,
+    page_id: String,
+    message: String,
+    call_to_action: &str,
+    cards_file: &Path,
+    instagram_user_id: Option<String>,
+    advantage_plus: bool,
+) -> Result<CreateAdCreativeRequest, Error> {
+    let call_to_action = LinkCallToAction::from_str(call_to_action)
+        .map_err(|reason| ads_input_error(site, reason))?;
+    let raw = std::fs::read_to_string(cards_file)
+        .map_err(|_| ads_input_error(site, "cards_unreadable"))?;
+    let cards: Vec<CarouselCard> =
+        serde_json::from_str(&raw).map_err(|e| ads_input_error(site, format!("bad_cards:{e}")))?;
+    let request = CreateAdCreativeRequest {
+        account: ad_account,
+        kind: AdCreativeKind::Carousel(CarouselAdCreative {
+            name,
+            page_id,
+            message,
+            call_to_action,
+            cards,
+            instagram_user_id,
+            advantage_plus,
+            whatsapp_identity: None,
+        }),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_catalog_creative_request(
+    site: &str,
+    ad_account: Option<String>,
+    name: String,
+    page_id: String,
+    product_set_id: String,
+    link: String,
+    message: String,
+    call_to_action: &str,
+    instagram_user_id: Option<String>,
+    advantage_plus: bool,
+) -> Result<CreateAdCreativeRequest, Error> {
+    let call_to_action = LinkCallToAction::from_str(call_to_action)
+        .map_err(|reason| ads_input_error(site, reason))?;
+    let request = CreateAdCreativeRequest {
+        account: ad_account,
+        kind: AdCreativeKind::Catalog(CatalogAdCreative {
+            name,
+            page_id,
+            product_set_id,
+            link,
+            message,
+            call_to_action,
+            instagram_user_id,
+            advantage_plus,
+            whatsapp_identity: None,
+        }),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_lead_form_creative_request(
+    site: &str,
+    ad_account: Option<String>,
+    name: String,
+    page_id: String,
+    image_hash: String,
+    message: String,
+    headline: String,
+    destination_url: String,
+    lead_gen_form_id: String,
+    call_to_action: &str,
+    instagram_user_id: Option<String>,
+    advantage_plus: bool,
+) -> Result<CreateAdCreativeRequest, Error> {
+    let call_to_action = LinkCallToAction::from_str(call_to_action)
+        .map_err(|reason| ads_input_error(site, reason))?;
+    let request = CreateAdCreativeRequest {
+        account: ad_account,
+        kind: AdCreativeKind::LeadForm(LeadFormAdCreative {
+            name,
+            page_id,
+            image_hash,
+            message,
+            headline,
+            destination_url,
+            lead_gen_form_id,
+            call_to_action,
+            instagram_user_id,
+            advantage_plus,
+            whatsapp_identity: None,
+        }),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_app_install_creative_request(
+    site: &str,
+    ad_account: Option<String>,
+    name: String,
+    page_id: String,
+    image_hash: String,
+    message: String,
+    application_id: String,
+    object_store_url: String,
+    instagram_user_id: Option<String>,
+    advantage_plus: bool,
+) -> Result<CreateAdCreativeRequest, Error> {
+    let request = CreateAdCreativeRequest {
+        account: ad_account,
+        kind: AdCreativeKind::AppInstall(AppInstallAdCreative {
+            name,
+            page_id,
+            image_hash,
+            message,
+            application_id,
+            object_store_url,
+            instagram_user_id,
+            advantage_plus,
+            whatsapp_identity: None,
+        }),
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+pub(crate) async fn one_extra_creative(
+    client: &Client,
+    key: &AccountKey,
+    request: CreateAdCreativeRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.create_ad_creative(key, request, deadline).await {
+        Ok(created) => {
+            emit_ok(&created, json, || created_creative_line(&created));
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
 }
 
 /// `--ad-format` stays a CLI string only until this builder. Converting to a
