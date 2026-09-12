@@ -113,6 +113,8 @@ pub enum Capability {
     ReadAdPreviews,
     #[serde(rename = "read.ad_review_status")]
     ReadAdReviewStatus,
+    #[serde(rename = "read.ads_inventory")]
+    ReadAdsInventory,
     #[serde(rename = "create.paused_ads")]
     CreatePausedAds,
     #[serde(rename = "create.ad_creative")]
@@ -154,6 +156,7 @@ impl Capability {
             Self::ReadMedia => "read.media",
             Self::ReadAdPreviews => "read.ad_previews",
             Self::ReadAdReviewStatus => "read.ad_review_status",
+            Self::ReadAdsInventory => "read.ads_inventory",
             Self::CreatePausedAds => "create.paused_ads",
             Self::CreateAdCreative => "create.ad_creative",
         }

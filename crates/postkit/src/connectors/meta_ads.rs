@@ -7,7 +7,8 @@
 //! `fb_exchange_token` grant (~60 days).
 
 use crate::ads::{
-    AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdsTokenInspection, AdsTokenKind,
+    AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdsInventoryItem, AdsInventoryKind,
+    AdsInventoryReply, AdsInventoryRequest, AdsTokenInspection, AdsTokenKind,
     CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
     CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, MarketingApiAccessTierKind,
     PausedAdCreate, UploadAdImageRequest, UploadedAdImage, MARKETING_API_ACCESS_TIER_DASHBOARD,
@@ -106,6 +107,7 @@ impl Publisher for MetaAds {
             Capability::ReadAdAccounts,
             Capability::ReadAdPreviews,
             Capability::ReadAdReviewStatus,
+            Capability::ReadAdsInventory,
             Capability::CreatePausedAds,
             Capability::CreateAdCreative,
         ]
@@ -599,6 +601,27 @@ impl AdsManager for MetaAds {
     ) -> Result<AdReviewStatus, Error> {
         let token = access_token(creds)?;
         read_ad_review_status(&self.http, &self.base, &self.site, token, request, deadline).await
+    }
+
+    async fn list_ads_inventory(
+        &self,
+        _app: &AppConfig,
+        creds: &AccountCreds,
+        request: &AdsInventoryRequest,
+        deadline: Deadline,
+    ) -> Result<AdsInventoryReply, Error> {
+        let token = access_token(creds)?;
+        let account = account_id(creds, request.account.as_deref())?;
+        list_ads_inventory(
+            &self.http,
+            &self.base,
+            &self.site,
+            &account,
+            token,
+            request.kind,
+            deadline,
+        )
+        .await
     }
 }
 
@@ -1325,6 +1348,131 @@ fn review_issue_from(value: &Value) -> AdReviewIssue {
         message: nonempty_value_string(value.get("error_message")),
         level: nonempty_value_string(value.get("level")),
     }
+}
+
+/// Meta's documented campaign default already omits archived/deleted. The
+/// example `["ACTIVE","PAUSED"]` would hide paused drafts still in
+/// `IN_PROCESS` / `WITH_ISSUES`. Ad set and ad edges do not promise that
+/// default, so every delivery kind sends the same live-ish list.
+const LIVE_EFFECTIVE_STATUS: &str = "[\"ACTIVE\",\"PAUSED\",\"IN_PROCESS\",\"WITH_ISSUES\",\"PENDING_REVIEW\",\"DISAPPROVED\",\"PREAPPROVED\",\"PENDING_BILLING_INFO\",\"CAMPAIGN_PAUSED\",\"ADSET_PAUSED\"]";
+const INVENTORY_PAGE_LIMIT: &str = "25";
+
+/// Page one account-scoped inventory edge. Follows only Meta's opaque
+/// `paging.next`, caps at `MAX_PAGES`, then sorts by id so CLI/MCP order
+/// does not follow cursor arrival.
+async fn list_ads_inventory(
+    http: &Http,
+    base: &str,
+    site: &Site,
+    account: &str,
+    token: &str,
+    kind: AdsInventoryKind,
+    deadline: Deadline,
+) -> Result<AdsInventoryReply, Error> {
+    let fields = inventory_list_fields(kind);
+    let mut pairs = vec![
+        ("fields", fields),
+        ("limit", INVENTORY_PAGE_LIMIT),
+        ("access_token", token),
+    ];
+    // Creatives: the adcreatives edge documents no parameters. Filter
+    // DELETED locally after the GET instead of sending `effective_status`.
+    if kind != AdsInventoryKind::Creative {
+        pairs.push(("effective_status", LIVE_EFFECTIVE_STATUS));
+    }
+    let q = form(&pairs);
+    let mut next = Some(format!("{base}/act_{account}/{}?{q}", kind.graph_edge()));
+    let mut pages = 0usize;
+    let mut items = Vec::new();
+    while let Some(url) = next {
+        deadline.check(site)?;
+        pages += 1;
+        if pages > MAX_PAGES {
+            return Err(Error::Platform {
+                site: site.clone(),
+                code: "paging_exceeded".into(),
+                message: format!("ads inventory paging exceeded {MAX_PAGES} pages"),
+            });
+        }
+        let resp = http.send(http.get(&url), deadline, site).await?;
+        let body = read_json(resp, site).await?;
+        if let Some(data) = body.get("data").and_then(|data| data.as_array()) {
+            for object in data {
+                if let Some(item) = inventory_item_from(kind, object)? {
+                    items.push(item);
+                }
+            }
+        }
+        next = body
+            .get("paging")
+            .and_then(|paging| paging.get("next"))
+            .and_then(|next| next.as_str())
+            .map(str::to_owned);
+    }
+    items.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(AdsInventoryReply {
+        site: site.clone(),
+        account_id: format!("act_{account}"),
+        kind,
+        items,
+    })
+}
+
+fn inventory_list_fields(kind: AdsInventoryKind) -> &'static str {
+    match kind {
+        AdsInventoryKind::Campaign => "id,name,configured_status,effective_status,objective",
+        AdsInventoryKind::Adset => "id,name,campaign_id,configured_status,effective_status",
+        AdsInventoryKind::Ad => "id,name,adset_id,campaign_id,configured_status,effective_status",
+        AdsInventoryKind::Creative => "id,name,status,object_type",
+    }
+}
+
+fn inventory_item_from(
+    kind: AdsInventoryKind,
+    value: &Value,
+) -> Result<Option<AdsInventoryItem>, Error> {
+    let id = nonempty_value_string(value.get("id")).ok_or_else(|| Error::Platform {
+        site: Site::new(SITE),
+        code: "missing_inventory_id".into(),
+        message: "ads inventory object returned no id".into(),
+    })?;
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+        return Err(Error::Platform {
+            site: Site::new(SITE),
+            code: "bad_inventory_id".into(),
+            message: "ads inventory object returned a non-numeric id".into(),
+        });
+    }
+    if kind == AdsInventoryKind::Creative {
+        let status = nonempty_value_string(value.get("status"));
+        // The creative edge has no status filter. A deleted library entry
+        // is not inventory of something an operator could later activate.
+        if status.as_deref() == Some("DELETED") {
+            return Ok(None);
+        }
+        return Ok(Some(AdsInventoryItem {
+            id,
+            name: nonempty_value_string(value.get("name")),
+            configured_status: None,
+            effective_status: None,
+            status,
+            campaign_id: None,
+            adset_id: None,
+            objective: None,
+            object_type: nonempty_value_string(value.get("object_type")),
+        }));
+    }
+    Ok(Some(AdsInventoryItem {
+        id,
+        name: nonempty_value_string(value.get("name")),
+        configured_status: nonempty_value_string(value.get("configured_status")),
+        effective_status: nonempty_value_string(value.get("effective_status")),
+        status: None,
+        campaign_id: nonempty_value_string(value.get("campaign_id")),
+        adset_id: nonempty_value_string(value.get("adset_id")),
+        objective: nonempty_value_string(value.get("objective")),
+        object_type: None,
+    }))
 }
 
 /// Map a metric to its Graph insights field name; `None` for metrics that
@@ -2237,9 +2385,9 @@ fn map_graph_error(http_status: u16, body: &str) -> Error {
 mod tests {
     use super::*;
     use crate::ads::{
-        AdEntity, AdPreviewFormat, AdReviewStatusRequest, CampaignObjective,
-        CreateLinkAdCreativeRequest, CreativePreviewRequest, LinkAdCreative, LinkCallToAction,
-        PausedAd, PausedAdset, PausedCampaign, UploadAdImageRequest,
+        AdEntity, AdPreviewFormat, AdReviewStatusRequest, AdsInventoryKind, AdsInventoryRequest,
+        CampaignObjective, CreateLinkAdCreativeRequest, CreativePreviewRequest, LinkAdCreative,
+        LinkCallToAction, PausedAd, PausedAdset, PausedCampaign, UploadAdImageRequest,
     };
     use crate::facets::{AdsManager, InsightsSource};
     use crate::insights::{AttributionWindow, InsightsLevel, InsightsQuery, Metric};
@@ -3091,6 +3239,150 @@ mod tests {
             .unwrap_err();
         missing_status.assert();
         assert!(matches!(err, Error::Platform { code, .. } if code == "missing_configured_status"));
+    }
+
+    #[tokio::test]
+    async fn ads_inventory_pages_sorts_by_id_and_omits_deleted_creatives() {
+        let server = MockServer::start();
+        let base = server.base_url();
+        let next_base = base.clone();
+        let second = server.mock(move |when, then| {
+            when.method(GET)
+                .path("/v26.0/act_123/campaigns")
+                .query_param("after", "next");
+            then.status(200).json_body(json!({
+                "data": [{
+                    "id": "100",
+                    "name": "First",
+                    "configured_status": "PAUSED",
+                    "effective_status": "PAUSED",
+                    "objective": "OUTCOME_TRAFFIC"
+                }]
+            }));
+        });
+        server.mock(move |when, then| {
+            when.method(GET)
+                .path("/v26.0/act_123/campaigns")
+                .query_param(
+                    "fields",
+                    "id,name,configured_status,effective_status,objective",
+                )
+                .query_param("limit", "25")
+                .query_param("effective_status", LIVE_EFFECTIVE_STATUS);
+            then.status(200).json_body(json!({
+                "data": [{
+                    "id": "200",
+                    "name": "Second",
+                    "configured_status": "PAUSED",
+                    "effective_status": "IN_PROCESS"
+                }],
+                "paging": { "next": format!("{next_base}/v26.0/act_123/campaigns?after=next") }
+            }));
+        });
+        let connector = MetaAds::with_base(format!("{base}/v26.0")).unwrap();
+        let reply = connector
+            .list_ads_inventory(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsInventoryRequest {
+                    account: None,
+                    kind: AdsInventoryKind::Campaign,
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        second.assert();
+        assert_eq!(reply.account_id, "act_123");
+        assert_eq!(reply.kind, AdsInventoryKind::Campaign);
+        assert_eq!(reply.items.len(), 2);
+        assert_eq!(reply.items[0].id, "100");
+        assert_eq!(reply.items[0].name.as_deref(), Some("First"));
+        assert_eq!(reply.items[1].id, "200");
+
+        let creatives = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v26.0/act_123/adcreatives")
+                .query_param("fields", "id,name,status,object_type")
+                .query_param("limit", "25");
+            then.status(200).json_body(json!({
+                "data": [
+                    { "id": "9", "name": "Gone", "status": "DELETED", "object_type": "SHARE" },
+                    { "id": "8", "name": "Hero", "status": "ACTIVE", "object_type": "SHARE" }
+                ]
+            }));
+        });
+        let creative_reply = connector
+            .list_ads_inventory(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsInventoryRequest {
+                    account: None,
+                    kind: AdsInventoryKind::Creative,
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        creatives.assert();
+        assert_eq!(creative_reply.items.len(), 1);
+        assert_eq!(creative_reply.items[0].id, "8");
+        assert_eq!(creative_reply.items[0].status.as_deref(), Some("ACTIVE"));
+        assert!(creative_reply.items[0].configured_status.is_none());
+    }
+
+    #[tokio::test]
+    async fn ads_inventory_paging_is_capped() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v26.0/act_123/adsets");
+            let base = server.base_url();
+            then.status(200).json_body(json!({
+                "data": [],
+                "paging": { "next": format!("{base}/v26.0/act_123/adsets?after=x") }
+            }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let err = connector
+            .list_ads_inventory(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsInventoryRequest {
+                    account: None,
+                    kind: AdsInventoryKind::Adset,
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Platform { ref code, .. } if code == "paging_exceeded"));
+    }
+
+    #[tokio::test]
+    async fn ads_inventory_refuses_a_non_numeric_account_before_http() {
+        let server = MockServer::start();
+        let sink = server.mock(|when, then| {
+            when.method(GET).path("/v26.0/act_nope/campaigns");
+            then.status(200).json_body(json!({ "data": [] }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let err = connector
+            .list_ads_inventory(
+                &empty_app(),
+                &token_creds("act_123"),
+                &AdsInventoryRequest {
+                    account: Some("nope".into()),
+                    kind: AdsInventoryKind::Campaign,
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidQuery { reason, .. } if reason == "bad_ad_account:nope")
+        );
+        assert_eq!(sink.hits(), 0);
     }
 
     #[tokio::test]

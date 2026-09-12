@@ -41,6 +41,100 @@ impl FromStr for AdEntity {
     }
 }
 
+/// Account-scoped inventory kinds. Creatives belong here because they are
+/// listed under `act_{id}/adcreatives`; they are not `AdEntity` because
+/// review-status and paused creates have no creative delivery state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdsInventoryKind {
+    Campaign,
+    Adset,
+    Ad,
+    Creative,
+}
+
+impl AdsInventoryKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Campaign => "campaign",
+            Self::Adset => "adset",
+            Self::Ad => "ad",
+            Self::Creative => "creative",
+        }
+    }
+
+    /// Marketing API edge under `act_{id}`. Historical names (`adsets`,
+    /// `adcreatives`) are the documented paths, not Postkit aliases.
+    pub fn graph_edge(self) -> &'static str {
+        match self {
+            Self::Campaign => "campaigns",
+            Self::Adset => "adsets",
+            Self::Ad => "ads",
+            Self::Creative => "adcreatives",
+        }
+    }
+}
+
+impl FromStr for AdsInventoryKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "campaign" => Ok(Self::Campaign),
+            "adset" => Ok(Self::Adset),
+            "ad" => Ok(Self::Ad),
+            "creative" => Ok(Self::Creative),
+            other => Err(format!("unknown_ads_inventory_kind:{other}")),
+        }
+    }
+}
+
+/// One kind of object in a selected ad account. `--ad-account` overrides the
+/// credential default the same way insights and paused creates do.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsInventoryRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    pub kind: AdsInventoryKind,
+}
+
+impl AdsInventoryRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_account(self.account.as_deref())
+    }
+}
+
+/// One inventory row. Delivery objects carry configured/effective status;
+/// creatives carry library `status` and have no delivery pair.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsInventoryItem {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configured_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adset_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_type: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdsInventoryReply {
+    pub site: Site,
+    pub account_id: String,
+    pub kind: AdsInventoryKind,
+    pub items: Vec<AdsInventoryItem>,
+}
+
 /// Meta's outcome-based campaign objectives. Keeping this closed prevents a
 /// misspelled command-line objective from becoming an opaque Graph error
 /// after a write has already been attempted.
@@ -2213,6 +2307,30 @@ mod tests {
             .unwrap_err(),
             "bad_ad_entity_id:campaign-789"
         );
+        assert_eq!(
+            AdsInventoryKind::from_str("creative").unwrap(),
+            AdsInventoryKind::Creative
+        );
+        assert_eq!(AdsInventoryKind::Adset.graph_edge(), "adsets");
+        assert_eq!(
+            AdsInventoryKind::from_str("campaigns").unwrap_err(),
+            "unknown_ads_inventory_kind:campaigns"
+        );
+        assert!(AdsInventoryRequest {
+            account: Some("act_123".into()),
+            kind: AdsInventoryKind::Ad,
+        }
+        .validate()
+        .is_ok());
+        assert_eq!(
+            AdsInventoryRequest {
+                account: Some("nope".into()),
+                kind: AdsInventoryKind::Campaign,
+            }
+            .validate()
+            .unwrap_err(),
+            "bad_ad_account:nope"
+        );
         // The raw iframe is intentionally available in-process for a caller
         // to write to a file, but its derived JSON form must never become a
         // surprise terminal/log payload.
@@ -2440,10 +2558,8 @@ mod tests {
             targeting.validate().unwrap_err(),
             "whatsapp_status_requires_instagram_story"
         );
-        targeting.publisher_platforms = vec![
-            PublisherPlatform::Whatsapp,
-            PublisherPlatform::Instagram,
-        ];
+        targeting.publisher_platforms =
+            vec![PublisherPlatform::Whatsapp, PublisherPlatform::Instagram];
         targeting.instagram_positions = vec![InstagramPosition::Story];
         assert_eq!(
             targeting.validate().unwrap_err(),

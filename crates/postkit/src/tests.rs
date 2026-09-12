@@ -1,8 +1,9 @@
 use crate::ads::{
     AdEntity, AdPreviewFormat, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest,
-    CampaignObjective, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
-    CreatedAdCreative, CreativePreview, CreativePreviewRequest, PausedAdCreate, PausedCampaign,
-    UploadAdImageRequest, UploadedAdImage,
+    AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest, CampaignObjective,
+    CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
+    CreativePreview, CreativePreviewRequest, PausedAdCreate, PausedCampaign, UploadAdImageRequest,
+    UploadedAdImage,
 };
 use crate::apps::{AppStore, MemoryAppStore};
 use crate::client::Client;
@@ -151,6 +152,13 @@ impl MockPub {
         Self {
             caps: vec![Capability::ReadAdReviewStatus],
             review_status_pending_reads: pending_reads,
+            ..Self::text(site)
+        }
+    }
+
+    fn ads_inventory(site: &str) -> Self {
+        Self {
+            caps: vec![Capability::ReadAdsInventory],
             ..Self::text(site)
         }
     }
@@ -504,6 +512,31 @@ impl AdsManager for MockPub {
             creative_id: request.creative_id.clone(),
             ad_format: request.ad_format,
             body: format!("<iframe data-preview=\"{n}\"></iframe>"),
+        })
+    }
+
+    async fn list_ads_inventory(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        request: &AdsInventoryRequest,
+        _deadline: Deadline,
+    ) -> Result<AdsInventoryReply, Error> {
+        Ok(AdsInventoryReply {
+            site: self.site.clone(),
+            account_id: request.account.clone().unwrap_or_else(|| "act_1".into()),
+            kind: request.kind,
+            items: vec![AdsInventoryItem {
+                id: "100".into(),
+                name: Some("Paused draft".into()),
+                configured_status: Some("PAUSED".into()),
+                effective_status: Some("PAUSED".into()),
+                status: None,
+                campaign_id: None,
+                adset_id: None,
+                objective: Some("OUTCOME_TRAFFIC".into()),
+                object_type: None,
+            }],
         })
     }
 
@@ -2495,6 +2528,61 @@ async fn client_ad_review_status_routes_validates_and_checks_capability() {
     assert!(
         matches!(err, Error::InvalidQuery { reason, .. } if reason == "bad_ad_entity_id:bad-id")
     );
+}
+
+/// Inventory is a separately declared GET-only capability. It validates the
+/// account override before vault access so a typo cannot become a Graph call.
+#[tokio::test]
+async fn client_list_ads_inventory_routes_validates_and_checks_capability() {
+    let (client, key) = setup(MockPub::ads_inventory("meta_ads"));
+    let reply = client
+        .list_ads_inventory(
+            &key,
+            AdsInventoryRequest {
+                account: None,
+                kind: AdsInventoryKind::Campaign,
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.kind, AdsInventoryKind::Campaign);
+    assert_eq!(reply.items[0].id, "100");
+    assert_eq!(reply.items[0].configured_status.as_deref(), Some("PAUSED"));
+
+    let (no_inventory, key) = setup(MockPub::text("meta_ads"));
+    let err = no_inventory
+        .list_ads_inventory(
+            &key,
+            AdsInventoryRequest {
+                account: None,
+                kind: AdsInventoryKind::Ad,
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedCapability { need, .. } if need == Capability::ReadAdsInventory)
+    );
+
+    let empty = Client::new(
+        Registry::new(),
+        Arc::new(MemoryVault::new()),
+        Arc::new(MemoryAppStore::new()),
+    );
+    let err = empty
+        .list_ads_inventory(
+            &AccountKey::new("meta_ads", "default"),
+            AdsInventoryRequest {
+                account: Some("nope".into()),
+                kind: AdsInventoryKind::Creative,
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidQuery { reason, .. } if reason == "bad_ad_account:nope"));
 }
 
 /// A poller is useful only if it stops on the platform's final state. The

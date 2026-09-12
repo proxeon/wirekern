@@ -263,6 +263,17 @@ enum InsightsJobCmd {
 enum AdsCmd {
     /// List Meta ad accounts visible to the selected credential.
     Accounts { site: String },
+    /// List campaigns, ad sets, ads, or creatives in one ad account.
+    /// Capped pages, sorted by id. GET-only; cannot activate.
+    List {
+        site: String,
+        /// campaign | adset | ad | creative.
+        #[arg(long)]
+        entity: String,
+        /// Override the stored ad account (123 or act_123).
+        #[arg(long)]
+        ad_account: Option<String>,
+    },
     /// Async Insights Ad Report Run: status, result, or cancel. Jobs expire
     /// in ~30 days and are not stored in the vault.
     #[command(name = "insights-job", subcommand)]
@@ -1879,6 +1890,22 @@ async fn dispatch(
                 Err(e) => Err(fail(&e, json)),
             }
         }
+        Commands::Ads(AdsCmd::List {
+            site,
+            entity,
+            ad_account,
+        }) => {
+            let request = build_ads_inventory_request(&site, &entity, ad_account)
+                .map_err(|e| fail(&e, json))?;
+            one_ads_inventory(
+                &client,
+                &AccountKey::new(&site, &account),
+                request,
+                deadline,
+                json,
+            )
+            .await
+        }
         Commands::Ads(AdsCmd::Status {
             site,
             entity,
@@ -2719,10 +2746,10 @@ mod tests {
     use clap::CommandFactory;
     use postkit::connectors::instagram::MAX_CAROUSEL_IMAGES;
     use postkit::{
-        AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewWait, Breakdown,
-        CampaignObjective, CreatedAd, CreatedAdCreative, Image, InboundMessages, InsightRow,
-        InsightsLevel, LinkCallToAction, Metric, PausedAdCreate, PausedAdset, PausedCampaign,
-        PausedDraftManifest, UploadedAdImage,
+        AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewWait, AdsInventoryItem,
+        AdsInventoryKind, Breakdown, CampaignObjective, CreatedAd, CreatedAdCreative, Image,
+        InboundMessages, InsightRow, InsightsLevel, LinkCallToAction, Metric, PausedAdCreate,
+        PausedAdset, PausedCampaign, PausedDraftManifest, UploadedAdImage,
     };
     use std::path::Path;
 
@@ -2876,8 +2903,51 @@ mod tests {
             Commands::Ads(AdsCmd::AccessTier { site }) if site == "meta_ads"
         ));
         let cli = Cli::try_parse_from(["postkit", "ads", "accounts", "meta_ads"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ads(AdsCmd::Accounts { site }) if site == "meta_ads"
+        ));
+        let cli = Cli::try_parse_from([
+            "postkit",
+            "ads",
+            "list",
+            "meta_ads",
+            "--entity",
+            "creative",
+            "--ad-account",
+            "act_123",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ads(AdsCmd::List { site, entity, ad_account })
+                if site == "meta_ads"
+                    && entity == "creative"
+                    && ad_account.as_deref() == Some("act_123")
+        ));
+        let request = build_ads_inventory_request("meta_ads", "adset", None).unwrap();
+        assert_eq!(request.kind, AdsInventoryKind::Adset);
+        let bad = build_ads_inventory_request("meta_ads", "insight", None).unwrap_err();
         assert!(
-            matches!(cli.command, Commands::Ads(AdsCmd::Accounts { site }) if site == "meta_ads")
+            matches!(bad, Error::InvalidQuery { reason, .. } if reason == "unknown_ads_inventory_kind:insight")
+        );
+        let line = inventory_item_line(
+            AdsInventoryKind::Campaign,
+            &AdsInventoryItem {
+                id: "100".into(),
+                name: Some("Paused".into()),
+                configured_status: Some("PAUSED".into()),
+                effective_status: Some("PAUSED".into()),
+                status: None,
+                campaign_id: None,
+                adset_id: None,
+                objective: Some("OUTCOME_TRAFFIC".into()),
+                object_type: None,
+            },
+        );
+        assert_eq!(
+            line,
+            "campaign 100 name=Paused configured=PAUSED effective=PAUSED objective=OUTCOME_TRAFFIC"
         );
     }
 

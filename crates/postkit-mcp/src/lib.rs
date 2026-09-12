@@ -183,6 +183,7 @@ impl Server {
             "whatsapp_send" => tools::whatsapp_send(&self.whatsapp, arguments).await,
             "insights" => tools::insights(&self.client, arguments).await,
             "ads_accounts" => tools::ads_accounts(&self.client, arguments).await,
+            "ads_list" => tools::ads_list(&self.client, arguments).await,
             "pages_accounts" => tools::pages_accounts(&self.client, arguments).await,
             "media_list" => tools::media_list(&self.client, arguments).await,
             other => {
@@ -381,6 +382,7 @@ mod tests {
                 "whatsapp_send",
                 "insights",
                 "ads_accounts",
+                "ads_list",
                 "pages_accounts",
                 "media_list"
             ]
@@ -742,6 +744,16 @@ mod tests {
         let ads = call(&server, "ads_accounts", json!({ "site": "meta_ads" })).await;
         assert_eq!(
             ads["result"]["structuredContent"]["error"],
+            "unknown_account"
+        );
+        let listed = call(
+            &server,
+            "ads_list",
+            json!({ "site": "meta_ads", "entity": "campaign" }),
+        )
+        .await;
+        assert_eq!(
+            listed["result"]["structuredContent"]["error"],
             "unknown_account"
         );
         let bad_attr = call(

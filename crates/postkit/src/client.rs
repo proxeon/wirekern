@@ -1,9 +1,10 @@
 #[cfg(feature = "meta-ads")]
 use crate::ads::AdReviewWait;
 use crate::ads::{
-    AdReviewStatus, AdReviewStatusRequest, AdsTokenInspection, CreateLinkAdCreativeRequest,
-    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
-    MarketingApiAccessTier, UploadAdImageRequest, UploadedAdImage, SYSTEM_USER_TOKEN_KIND,
+    AdReviewStatus, AdReviewStatusRequest, AdsInventoryReply, AdsInventoryRequest,
+    AdsTokenInspection, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
+    CreatedAdCreative, CreativePreview, CreativePreviewRequest, MarketingApiAccessTier,
+    UploadAdImageRequest, UploadedAdImage, SYSTEM_USER_TOKEN_KIND,
 };
 use crate::apps::AppStore;
 use crate::error::Error;
@@ -1545,6 +1546,32 @@ impl Client {
             let request = request.clone();
             Box::pin(async move {
                 ads.preview_ad_creative(&app, &creds, &request, deadline)
+                    .await
+            })
+        })
+        .await
+    }
+
+    /// List one kind of advertising object in a selected account. GET-only
+    /// and outside `AdsPolicy`: paging through paused drafts cannot activate
+    /// them or change a budget.
+    pub async fn list_ads_inventory(
+        &self,
+        key: &AccountKey,
+        request: AdsInventoryRequest,
+        deadline: Deadline,
+    ) -> Result<AdsInventoryReply, Error> {
+        request.validate().map_err(|reason| Error::InvalidQuery {
+            site: key.site.clone(),
+            reason,
+        })?;
+        self.require_capability(&key.site, Capability::ReadAdsInventory)?;
+        let ads = self.ads_manager(&key.site, Capability::ReadAdsInventory)?;
+        self.with_creds(key, deadline, move |app, creds| {
+            let ads = ads.clone();
+            let request = request.clone();
+            Box::pin(async move {
+                ads.list_ads_inventory(&app, &creds, &request, deadline)
                     .await
             })
         })

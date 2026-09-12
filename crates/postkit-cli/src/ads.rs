@@ -4,7 +4,8 @@ use crate::app::fail;
 use crate::output::{emit_ok, emit_raw, human_line};
 use postkit::{
     AccountKey, AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewStatusRequest,
-    AdReviewWait, AttributionWindow, BidStrategy, Breakdown, CampaignObjective, Client,
+    AdReviewWait, AdsInventoryItem, AdsInventoryKind, AdsInventoryReply, AdsInventoryRequest,
+    AttributionWindow, BidStrategy, Breakdown, CampaignObjective, Client,
     CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd, CreatedAdCreative,
     CreativePreviewRequest, DateRange, Deadline, DraftImage, DraftStatusReply, Error, InsightRow,
     InsightsLevel, InsightsQuery, LinkAdCreative, LinkCallToAction, Metric, PausedAd,
@@ -604,6 +605,89 @@ pub(crate) fn build_creative_preview_request(
     let request = CreativePreviewRequest {
         creative_id: creative_id.into(),
         ad_format,
+    };
+    request
+        .validate()
+        .map_err(|reason| ads_input_error(site, reason))?;
+    Ok(request)
+}
+
+/// Inventory listing is GET-only. Human output names the kind, id, and the
+/// status fields that kind actually has so a creative row cannot be read as
+/// a delivery object.
+pub(crate) async fn one_ads_inventory(
+    client: &Client,
+    key: &AccountKey,
+    request: AdsInventoryRequest,
+    deadline: Deadline,
+    json: bool,
+) -> Result<(), i32> {
+    match client.list_ads_inventory(key, request, deadline).await {
+        Ok(reply) => {
+            if json {
+                emit_raw(&serde_json::to_value(&reply).expect("json"));
+            } else {
+                emit_ads_inventory(&reply);
+            }
+            Ok(())
+        }
+        Err(error) => Err(fail(&error, json)),
+    }
+}
+
+pub(crate) fn emit_ads_inventory(reply: &AdsInventoryReply) {
+    if reply.items.is_empty() {
+        human_line(format!(
+            "{} {} empty",
+            reply.account_id,
+            reply.kind.as_str()
+        ));
+        return;
+    }
+    for item in &reply.items {
+        human_line(inventory_item_line(reply.kind, item));
+    }
+}
+
+pub(crate) fn inventory_item_line(kind: AdsInventoryKind, item: &AdsInventoryItem) -> String {
+    let mut line = format!("{} {}", kind.as_str(), item.id);
+    if let Some(name) = item.name.as_deref() {
+        line.push_str(&format!(" name={name}"));
+    }
+    if let Some(status) = item.configured_status.as_deref() {
+        line.push_str(&format!(" configured={status}"));
+    }
+    if let Some(status) = item.effective_status.as_deref() {
+        line.push_str(&format!(" effective={status}"));
+    }
+    if let Some(status) = item.status.as_deref() {
+        line.push_str(&format!(" status={status}"));
+    }
+    if let Some(id) = item.campaign_id.as_deref() {
+        line.push_str(&format!(" campaign={id}"));
+    }
+    if let Some(id) = item.adset_id.as_deref() {
+        line.push_str(&format!(" adset={id}"));
+    }
+    if let Some(objective) = item.objective.as_deref() {
+        line.push_str(&format!(" objective={objective}"));
+    }
+    if let Some(object_type) = item.object_type.as_deref() {
+        line.push_str(&format!(" object_type={object_type}"));
+    }
+    line
+}
+
+pub(crate) fn build_ads_inventory_request(
+    site: &str,
+    entity: &str,
+    ad_account: Option<String>,
+) -> Result<AdsInventoryRequest, Error> {
+    let kind =
+        AdsInventoryKind::from_str(entity).map_err(|reason| ads_input_error(site, reason))?;
+    let request = AdsInventoryRequest {
+        account: ad_account,
+        kind,
     };
     request
         .validate()

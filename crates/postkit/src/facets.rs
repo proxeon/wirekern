@@ -7,11 +7,11 @@
 //! trait by accident.
 
 use crate::ads::{
-    AdReviewStatus, AdReviewStatusRequest, AdVideoStatus, AdVideoStatusRequest, AdsTokenInspection,
-    CreateAdCreativeRequest, CreateLinkAdCreativeRequest, CreatePausedAdRequest,
-    CreateVideoAdCreativeRequest, CreatedAd, CreatedAdCreative, CreativePreview,
-    CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest, UploadAdVideoRequest,
-    UploadedAdImage, UploadedAdVideo,
+    AdReviewStatus, AdReviewStatusRequest, AdVideoStatus, AdVideoStatusRequest, AdsInventoryReply,
+    AdsInventoryRequest, AdsTokenInspection, CreateAdCreativeRequest, CreateLinkAdCreativeRequest,
+    CreatePausedAdRequest, CreateVideoAdCreativeRequest, CreatedAd, CreatedAdCreative,
+    CreativePreview, CreativePreviewRequest, MarketingApiAccessTier, UploadAdImageRequest,
+    UploadAdVideoRequest, UploadedAdImage, UploadedAdVideo,
 };
 use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsJob, InsightsQuery, InsightsReply};
@@ -178,6 +178,21 @@ pub trait AdsManager: Send + Sync {
         request: &AdReviewStatusRequest,
         deadline: Deadline,
     ) -> Result<AdReviewStatus, Error>;
+
+    /// Account-scoped inventory of one object kind. Default refuses so a
+    /// paused-create mock cannot accidentally grow a Graph list path.
+    async fn list_ads_inventory(
+        &self,
+        _app: &AppConfig,
+        _creds: &AccountCreds,
+        _request: &AdsInventoryRequest,
+        _deadline: Deadline,
+    ) -> Result<AdsInventoryReply, Error> {
+        Err(Error::UnsupportedCapability {
+            site: Site::new(""),
+            need: Capability::ReadAdsInventory,
+        })
+    }
 
     /// Store a Business Manager System User token. Default refuses so a
     /// paused-create mock cannot accidentally grow an auth path.

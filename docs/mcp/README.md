@@ -57,6 +57,7 @@ and no calendar.
 | `whatsapp_send` | `Client::send_whatsapp_from` | Requires `allow_send: true` |
 | `insights` | `Client::insights` | Explicit attribution window |
 | `ads_accounts` | `Client::ad_accounts` | Remote `act_` ids, not vault aliases |
+| `ads_list` | `Client::list_ads_inventory` | Campaigns, ad sets, ads, or creatives; capped pages |
 | `pages_accounts` | `Client::pages` | Page identities, never Page tokens |
 | `media_list` | `Client::media` | First page, limit 1–25 |
 

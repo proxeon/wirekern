@@ -35,6 +35,7 @@ stays **1.80**.
 
 - [x] `insights`
 - [x] `ads_accounts`
+- [x] `ads_list`
 - [x] `pages_accounts`
 - [x] `media_list`
 
