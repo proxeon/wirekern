@@ -559,10 +559,8 @@ async fn create_paused_ad(
     deadline: Deadline,
 ) -> Result<CreatedAd, Error> {
     let (path, entity, mut fields) = match create {
-        PausedAdCreate::Campaign(campaign) => (
-            "campaigns",
-            crate::ads::AdEntity::Campaign,
-            vec![
+        PausedAdCreate::Campaign(campaign) => {
+            let mut fields = vec![
                 ("name", campaign.name.clone()),
                 ("objective", campaign.objective.meta_value().into()),
                 (
@@ -570,33 +568,64 @@ async fn create_paused_ad(
                     serde_json::to_string(&campaign.special_ad_categories)
                         .expect("Vec<String> serializes"),
                 ),
-                // Tier B always puts the daily budget on the ad set. Meta now
-                // requires this campaign-level choice to be explicit; `false`
-                // keeps each paused ad set's budget independent rather than
-                // enabling Meta's campaign-level budget sharing behaviour.
-                ("is_adset_budget_sharing_enabled", "false".into()),
-            ],
-        ),
-        PausedAdCreate::Adset(adset) => (
-            "adsets",
-            crate::ads::AdEntity::Adset,
-            vec![
+                (
+                    // Always explicit: Meta requires the campaign-level
+                    // choice. `false` keeps independent ad-set budgets;
+                    // `true` is Meta's up-to-20% child-share flag and is
+                    // only valid with a campaign budget (checked locally).
+                    "is_adset_budget_sharing_enabled",
+                    if campaign.is_adset_budget_sharing_enabled {
+                        "true".into()
+                    } else {
+                        "false".into()
+                    },
+                ),
+            ];
+            // CBO: Meta's campaign create takes daily XOR lifetime. Sending
+            // neither leaves budget on the ad set (Advantage campaign budget
+            // off). Sending both is refused before HTTP.
+            if let Some(daily) = campaign.daily_budget {
+                fields.push(("daily_budget", daily.to_string()));
+            }
+            if let Some(lifetime) = campaign.lifetime_budget {
+                fields.push(("lifetime_budget", lifetime.to_string()));
+            }
+            ("campaigns", crate::ads::AdEntity::Campaign, fields)
+        }
+        PausedAdCreate::Adset(adset) => {
+            let mut fields = vec![
                 ("name", adset.name.clone()),
                 ("campaign_id", adset.campaign_id.clone()),
-                ("daily_budget", adset.daily_budget.to_string()),
-                // Bid strategy is explicit because Meta rejects an ad set
-                // that inherits a cap/ROAS strategy without its required
-                // constraint. The closed model only permits the strategy
-                // whose sole spend limit remains `daily_budget`.
                 ("bid_strategy", adset.bid_strategy.meta_value().into()),
                 ("billing_event", adset.billing_event.meta_value().into()),
-                ("optimization_goal", adset.optimization_goal.meta_value().into()),
+                (
+                    "optimization_goal",
+                    adset.optimization_goal.meta_value().into(),
+                ),
                 (
                     "targeting",
                     serde_json::to_string(&adset.targeting).expect("AdTargeting serializes"),
                 ),
-            ],
-        ),
+            ];
+            // Ad-set daily XOR lifetime. Both omitted is a CBO child: the
+            // parent campaign already posted the shared budget.
+            if let Some(daily) = adset.daily_budget {
+                fields.push(("daily_budget", daily.to_string()));
+            }
+            if let Some(lifetime) = adset.lifetime_budget {
+                fields.push(("lifetime_budget", lifetime.to_string()));
+            }
+            if let Some(amount) = adset.bid_amount {
+                fields.push(("bid_amount", amount.to_string()));
+            }
+            if let Some(floor) = adset.roas_average_floor {
+                fields.push((
+                    "bid_constraints",
+                    serde_json::json!({ "roas_average_floor": floor }).to_string(),
+                ));
+            }
+            ("adsets", crate::ads::AdEntity::Adset, fields)
+        }
         PausedAdCreate::Ad(ad) => (
             "ads",
             crate::ads::AdEntity::Ad,
@@ -1994,6 +2023,9 @@ mod tests {
                         name: "paused campaign".into(),
                         objective: CampaignObjective::Sales,
                         special_ad_categories: vec![],
+                        daily_budget: None,
+                        lifetime_budget: None,
+                        is_adset_budget_sharing_enabled: false,
                     }),
                 },
                 Deadline::from_secs(30),
@@ -2009,8 +2041,11 @@ mod tests {
                     create: PausedAdCreate::Adset(PausedAdset {
                         name: "paused ad set".into(),
                         campaign_id: "100".into(),
-                        daily_budget: 2500,
+                        daily_budget: Some(2500),
+                        lifetime_budget: None,
                         bid_strategy: crate::ads::BidStrategy::LowestCostWithoutCap,
+                        bid_amount: None,
+                        roas_average_floor: None,
                         billing_event: crate::ads::BillingEvent::Impressions,
                         optimization_goal: crate::ads::OptimizationGoal::Reach,
                         targeting: crate::ads::AdTargeting {
@@ -2052,6 +2087,83 @@ mod tests {
         assert_eq!(campaign_out.id, "100");
         assert_eq!(adset_out.entity, crate::ads::AdEntity::Adset);
         assert_eq!(ad_out.status, "PAUSED");
+    }
+
+    #[tokio::test]
+    async fn cbo_and_lifetime_budgets_are_posted_as_form_fields() {
+        let server = MockServer::start();
+        let campaign = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/campaigns")
+                .body_contains("daily_budget=5000")
+                .body_contains("is_adset_budget_sharing_enabled=true")
+                .body_contains("status=PAUSED");
+            then.status(200).json_body(json!({ "id": "100" }));
+        });
+        let adset = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v26.0/act_123/adsets")
+                .body_contains("lifetime_budget=20000")
+                .body_contains("status=PAUSED");
+            then.status(200).json_body(json!({ "id": "200" }));
+        });
+        let connector = MetaAds::with_base(format!("{}/v26.0", server.base_url())).unwrap();
+        let creds = token_creds("123");
+
+        connector
+            .create_paused_ad(
+                &empty_app(),
+                &creds,
+                &CreatePausedAdRequest {
+                    account: None,
+                    create: PausedAdCreate::Campaign(PausedCampaign {
+                        name: "cbo campaign".into(),
+                        objective: CampaignObjective::Awareness,
+                        special_ad_categories: vec![],
+                        daily_budget: Some(5000),
+                        lifetime_budget: None,
+                        is_adset_budget_sharing_enabled: true,
+                    }),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+        connector
+            .create_paused_ad(
+                &empty_app(),
+                &creds,
+                &CreatePausedAdRequest {
+                    account: None,
+                    create: PausedAdCreate::Adset(PausedAdset {
+                        name: "lifetime ad set".into(),
+                        campaign_id: "100".into(),
+                        daily_budget: None,
+                        lifetime_budget: Some(20_000),
+                        bid_strategy: crate::ads::BidStrategy::LowestCostWithoutCap,
+                        bid_amount: None,
+                        roas_average_floor: None,
+                        billing_event: crate::ads::BillingEvent::Impressions,
+                        optimization_goal: crate::ads::OptimizationGoal::Reach,
+                        targeting: crate::ads::AdTargeting {
+                            geo_locations: crate::ads::GeoLocations {
+                                countries: vec!["MY".into()],
+                            },
+                            age_min: None,
+                            age_max: None,
+                            publisher_platforms: vec![],
+                            facebook_positions: vec![],
+                            instagram_positions: vec![],
+                        },
+                    }),
+                },
+                Deadline::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        campaign.assert();
+        adset.assert();
     }
 
     #[tokio::test]

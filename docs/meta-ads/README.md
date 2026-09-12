@@ -166,8 +166,12 @@ postkit --deadline 30 ads status meta_ads --entity ad --id <AD_ID> --wait --json
 - `--status` does not exist. A request cannot opt out of `PAUSED`.
 - `--ad-account` accepts `123` or canonical `act_123`; omitting it uses the
   account stored during OAuth.
-- `--daily-budget` must be a positive integer in account minor units. It does
-  not spend while the ad set is paused, but it is still reviewed policy input
+- `--daily-budget` and `--lifetime-budget` are mutually exclusive positive
+  integers in account minor units. Put the budget on the campaign (`--daily-budget`
+  / `--lifetime-budget` on `create-campaign`) for CBO and omit it on the ad set,
+  or put it on the ad set and omit it on the campaign. `--adset-budget-sharing`
+  is Meta's child-share flag and requires a campaign budget. Amounts do not
+  spend while every object is paused, but they are still reviewed policy input
   for a future activation workflow.
 - `--bid-strategy lowest_cost_without_cap` is required. It leaves the ad set's
   explicit daily budget as its only bid limit; cost-cap, bid-cap, and ROAS

@@ -347,6 +347,15 @@ enum AdsCmd {
         /// Comma-separated Meta special-ad categories; blank means none.
         #[arg(long, default_value = "")]
         special_ad_categories: String,
+        /// Campaign-level daily budget (CBO). XOR with `--lifetime-budget`.
+        #[arg(long)]
+        daily_budget: Option<u64>,
+        /// Campaign-level lifetime budget (CBO). XOR with `--daily-budget`.
+        #[arg(long)]
+        lifetime_budget: Option<u64>,
+        /// Meta `is_adset_budget_sharing_enabled`. Requires a campaign budget.
+        #[arg(long)]
+        adset_budget_sharing: bool,
     },
     /// Create a Meta ad set with status hard-coded to PAUSED.
     CreateAdset {
@@ -357,9 +366,13 @@ enum AdsCmd {
         name: String,
         #[arg(long)]
         campaign_id: String,
-        /// Daily budget in the ad account's minor currency unit.
+        /// Daily budget in the ad account's minor currency unit. XOR with
+        /// `--lifetime-budget`. Omit both for a CBO child.
         #[arg(long)]
-        daily_budget: u64,
+        daily_budget: Option<u64>,
+        /// Lifetime budget in minor units. XOR with `--daily-budget`.
+        #[arg(long)]
+        lifetime_budget: Option<u64>,
         /// `lowest_cost_without_cap`; required so Meta cannot inherit a
         /// bid-cap or ROAS strategy whose constraint is absent.
         #[arg(long)]
@@ -1868,13 +1881,21 @@ async fn dispatch(
             name,
             objective,
             special_ad_categories,
+            daily_budget,
+            lifetime_budget,
+            adset_budget_sharing,
         }) => {
             let request = build_paused_campaign_request(
                 &site,
-                ad_account,
-                &name,
-                &objective,
-                &special_ad_categories,
+                PausedCampaignOptions {
+                    ad_account,
+                    name,
+                    objective,
+                    special_ad_categories,
+                    daily_budget,
+                    lifetime_budget,
+                    is_adset_budget_sharing_enabled: adset_budget_sharing,
+                },
             )
             .map_err(|e| fail(&e, json))?;
             one_paused_create(
@@ -1892,6 +1913,7 @@ async fn dispatch(
             name,
             campaign_id,
             daily_budget,
+            lifetime_budget,
             bid_strategy,
             billing_event,
             optimization_goal,
@@ -1909,6 +1931,7 @@ async fn dispatch(
                     name,
                     campaign_id,
                     daily_budget,
+                    lifetime_budget,
                     bid_strategy,
                     billing_event,
                     optimization_goal,
@@ -2474,7 +2497,7 @@ mod tests {
     use postkit::{
         AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewWait, Breakdown,
         CampaignObjective, CreatedAd, CreatedAdCreative, Image, InboundMessages, InsightRow,
-        InsightsLevel, LinkCallToAction, Metric, PausedAdCreate, PausedCampaign,
+        InsightsLevel, LinkCallToAction, Metric, PausedAdCreate, PausedAdset, PausedCampaign,
         PausedDraftManifest, UploadedAdImage,
     };
     use std::path::Path;
@@ -3066,10 +3089,15 @@ mod tests {
 
         let campaign = build_paused_campaign_request(
             "meta_ads",
-            Some("act_123".into()),
-            "Paused validation",
-            "sales",
-            "HOUSING, EMPLOYMENT",
+            PausedCampaignOptions {
+                ad_account: Some("act_123".into()),
+                name: "Paused validation".into(),
+                objective: "sales".into(),
+                special_ad_categories: "HOUSING, EMPLOYMENT".into(),
+                daily_budget: None,
+                lifetime_budget: None,
+                is_adset_budget_sharing_enabled: false,
+            },
         )
         .unwrap();
         assert!(matches!(
@@ -3078,13 +3106,51 @@ mod tests {
                 if special_ad_categories == ["HOUSING", "EMPLOYMENT"]
         ));
 
+        let cbo = build_paused_campaign_request(
+            "meta_ads",
+            PausedCampaignOptions {
+                ad_account: None,
+                name: "CBO".into(),
+                objective: "awareness".into(),
+                special_ad_categories: String::new(),
+                daily_budget: Some(5000),
+                lifetime_budget: None,
+                is_adset_budget_sharing_enabled: true,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            cbo.create,
+            PausedAdCreate::Campaign(PausedCampaign {
+                daily_budget: Some(5000),
+                is_adset_budget_sharing_enabled: true,
+                ..
+            })
+        ));
+        let both_budgets = build_paused_campaign_request(
+            "meta_ads",
+            PausedCampaignOptions {
+                ad_account: None,
+                name: "x".into(),
+                objective: "awareness".into(),
+                special_ad_categories: String::new(),
+                daily_budget: Some(100),
+                lifetime_budget: Some(200),
+                is_adset_budget_sharing_enabled: false,
+            },
+        );
+        assert!(
+            matches!(both_budgets, Err(Error::InvalidQuery { reason, .. }) if reason == "daily_and_lifetime_budget_mutually_exclusive")
+        );
+
         let adset = build_paused_adset_request(
             "meta_ads",
             PausedAdsetOptions {
                 ad_account: None,
                 name: "Paused ad set".into(),
                 campaign_id: "100".into(),
-                daily_budget: 2500,
+                daily_budget: Some(2500),
+                lifetime_budget: None,
                 bid_strategy: "lowest_cost_without_cap".into(),
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
@@ -3099,13 +3165,43 @@ mod tests {
         .unwrap();
         assert!(matches!(adset.create, PausedAdCreate::Adset(_)));
 
+        let lifetime = build_paused_adset_request(
+            "meta_ads",
+            PausedAdsetOptions {
+                ad_account: None,
+                name: "Lifetime set".into(),
+                campaign_id: "100".into(),
+                daily_budget: None,
+                lifetime_budget: Some(20_000),
+                bid_strategy: "lowest_cost_without_cap".into(),
+                billing_event: "IMPRESSIONS".into(),
+                optimization_goal: "REACH".into(),
+                countries: vec!["MY".into()],
+                age_min: None,
+                age_max: None,
+                publisher_platforms: vec![],
+                facebook_positions: vec![],
+                instagram_positions: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            lifetime.create,
+            PausedAdCreate::Adset(PausedAdset {
+                lifetime_budget: Some(20_000),
+                daily_budget: None,
+                ..
+            })
+        ));
+
         let bad_bid_strategy = build_paused_adset_request(
             "meta_ads",
             PausedAdsetOptions {
                 ad_account: None,
                 name: "x".into(),
                 campaign_id: "100".into(),
-                daily_budget: 1,
+                daily_budget: Some(1),
+                lifetime_budget: None,
                 bid_strategy: "cost_cap".into(),
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),
@@ -3118,10 +3214,21 @@ mod tests {
             },
         );
         assert!(
-            matches!(bad_bid_strategy, Err(Error::InvalidQuery { reason, .. }) if reason == "unknown_bid_strategy:cost_cap")
+            matches!(bad_bid_strategy, Err(Error::InvalidQuery { reason, .. }) if reason == "missing_bid_amount")
         );
 
-        let clicks = build_paused_campaign_request("meta_ads", None, "x", "clicks", "");
+        let clicks = build_paused_campaign_request(
+            "meta_ads",
+            PausedCampaignOptions {
+                ad_account: None,
+                name: "x".into(),
+                objective: "clicks".into(),
+                special_ad_categories: String::new(),
+                daily_budget: None,
+                lifetime_budget: None,
+                is_adset_budget_sharing_enabled: false,
+            },
+        );
         assert!(
             matches!(clicks, Err(Error::InvalidQuery { reason, .. }) if reason == "unknown_objective:clicks")
         );
@@ -3131,7 +3238,8 @@ mod tests {
                 ad_account: None,
                 name: "x".into(),
                 campaign_id: "100".into(),
-                daily_budget: 1,
+                daily_budget: Some(1),
+                lifetime_budget: None,
                 bid_strategy: "lowest_cost_without_cap".into(),
                 billing_event: "IMPRESSIONS".into(),
                 optimization_goal: "REACH".into(),

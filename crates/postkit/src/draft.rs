@@ -80,16 +80,28 @@ pub struct DraftCampaign {
     /// Meta requires the field on every create; `[]` means "none apply".
     #[serde(default)]
     pub special_ad_categories: Vec<String>,
+    /// Campaign-level daily budget (CBO). XOR with `lifetime_budget`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime_budget: Option<u64>,
+    /// Meta `is_adset_budget_sharing_enabled`. Requires a campaign budget.
+    #[serde(default)]
+    pub is_adset_budget_sharing_enabled: bool,
 }
 
 /// Budget is the ad account's minor currency unit (e.g. sen for MYR),
-/// matching Meta's integer `daily_budget` wire field exactly. It configures
-/// future delivery but cannot spend while every delivery object is paused.
+/// matching Meta's integer `daily_budget` / `lifetime_budget` wire fields.
+/// It configures future delivery but cannot spend while every object is paused.
+/// Omit both when the campaign holds the budget (CBO).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DraftAdset {
     pub name: String,
-    pub daily_budget: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime_budget: Option<u64>,
     pub bid_strategy: crate::ads::BidStrategy,
     pub billing_event: crate::ads::BillingEvent,
     pub optimization_goal: crate::ads::OptimizationGoal,
@@ -135,13 +147,29 @@ impl PausedDraftManifest {
                 return Err("empty_special_ad_category".into());
             }
         }
+        validate_draft_budget(
+            self.campaign.daily_budget,
+            self.campaign.lifetime_budget,
+            true,
+        )?;
+        if self.campaign.is_adset_budget_sharing_enabled
+            && self.campaign.daily_budget.is_none()
+            && self.campaign.lifetime_budget.is_none()
+        {
+            return Err("budget_sharing_requires_campaign_budget".into());
+        }
         // Ad set
         require_name(&self.adset.name)?;
-        if self.adset.daily_budget == 0 {
-            return Err("daily_budget_must_be_positive".into());
-        }
-        if self.adset.daily_budget < MIN_DAILY_BUDGET {
-            return Err(format!("daily_budget_below_minimum:{MIN_DAILY_BUDGET}"));
+        validate_draft_budget(self.adset.daily_budget, self.adset.lifetime_budget, true)?;
+        let campaign_has_budget =
+            self.campaign.daily_budget.is_some() || self.campaign.lifetime_budget.is_some();
+        let adset_has_budget =
+            self.adset.daily_budget.is_some() || self.adset.lifetime_budget.is_some();
+        // Meta: budget at campaign XOR ad set, never both, never neither.
+        match (campaign_has_budget, adset_has_budget) {
+            (true, true) => return Err("campaign_and_adset_budget_mutually_exclusive".into()),
+            (false, false) => return Err("missing_budget".into()),
+            (true, false) | (false, true) => {}
         }
         if !crate::ads::supported_adset_pairing(
             self.campaign.objective,
@@ -196,7 +224,6 @@ impl PausedDraftManifest {
         }
         Ok(name.to_string())
     }
-
 }
 
 /// One draft run handed to [`Client::run_paused_draft`](crate::Client::run_paused_draft):
@@ -696,6 +723,29 @@ fn require_name(name: &str) -> Result<(), String> {
     }
 }
 
+/// Daily XOR lifetime, both optional here so CBO/ABO can be checked by the
+/// caller. Meta's documented minimum is expressed as a daily amount and also
+/// applies to lifetime budgets of the same magnitude.
+fn validate_draft_budget(
+    daily: Option<u64>,
+    lifetime: Option<u64>,
+    allow_none: bool,
+) -> Result<(), String> {
+    match (daily, lifetime) {
+        (None, None) if allow_none => Ok(()),
+        (None, None) => Err("missing_budget".into()),
+        (Some(0), _) | (_, Some(0)) => Err("budget_must_be_positive".into()),
+        (Some(_), Some(_)) => Err("daily_and_lifetime_budget_mutually_exclusive".into()),
+        (Some(v), None) if v < MIN_DAILY_BUDGET => {
+            Err(format!("daily_budget_below_minimum:{MIN_DAILY_BUDGET}"))
+        }
+        (None, Some(v)) if v < MIN_DAILY_BUDGET => {
+            Err(format!("lifetime_budget_below_minimum:{MIN_DAILY_BUDGET}"))
+        }
+        (Some(_), None) | (None, Some(_)) => Ok(()),
+    }
+}
+
 fn require_numeric_id(field: &str, id: &str) -> Result<(), String> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
         Err(format!("bad_{field}:{id}"))
@@ -841,17 +891,41 @@ mod tests {
     #[test]
     fn budget_floor_is_enforced_locally() {
         let mut manifest = example_manifest();
-        manifest.adset.daily_budget = 0;
-        assert_eq!(
-            manifest.validate().unwrap_err(),
-            "daily_budget_must_be_positive"
-        );
-        manifest.adset.daily_budget = 50; // RM0.50: below Meta's practical floor
+        manifest.adset.daily_budget = Some(0);
+        assert_eq!(manifest.validate().unwrap_err(), "budget_must_be_positive");
+        manifest.adset.daily_budget = Some(50); // RM0.50: below Meta's practical floor
         assert_eq!(
             manifest.validate().unwrap_err(),
             "daily_budget_below_minimum:100"
         );
-        manifest.adset.daily_budget = MIN_DAILY_BUDGET;
+        manifest.adset.daily_budget = Some(MIN_DAILY_BUDGET);
+        manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn draft_budget_is_campaign_xor_adset() {
+        let mut manifest = example_manifest();
+        manifest.campaign.daily_budget = Some(5000);
+        assert_eq!(
+            manifest.validate().unwrap_err(),
+            "campaign_and_adset_budget_mutually_exclusive"
+        );
+        manifest.adset.daily_budget = None;
+        manifest.validate().unwrap();
+
+        manifest.campaign.daily_budget = None;
+        manifest.campaign.is_adset_budget_sharing_enabled = true;
+        assert_eq!(
+            manifest.validate().unwrap_err(),
+            "budget_sharing_requires_campaign_budget"
+        );
+
+        manifest.campaign.is_adset_budget_sharing_enabled = false;
+        manifest.adset.daily_budget = None;
+        manifest.adset.lifetime_budget = None;
+        assert_eq!(manifest.validate().unwrap_err(), "missing_budget");
+
+        manifest.adset.lifetime_budget = Some(20_000);
         manifest.validate().unwrap();
     }
 
@@ -873,7 +947,7 @@ mod tests {
 
         // Any semantic change — the budget — must block resume.
         let mut pricier = manifest.clone();
-        pricier.adset.daily_budget += 1;
+        pricier.adset.daily_budget = Some(pricier.adset.daily_budget.unwrap() + 1);
         assert_ne!(manifest_fingerprint(&pricier), base);
     }
 

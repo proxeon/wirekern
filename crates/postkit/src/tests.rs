@@ -1895,6 +1895,9 @@ fn paused_campaign_request(name: &str) -> CreatePausedAdRequest {
             name: name.into(),
             objective: CampaignObjective::Sales,
             special_ad_categories: vec![],
+            daily_budget: None,
+            lifetime_budget: None,
+            is_adset_budget_sharing_enabled: false,
         }),
     }
 }
@@ -3372,7 +3375,7 @@ mod draft_tests {
             .unwrap();
 
         // A semantic manifest change can never inherit the old hierarchy.
-        manifest.adset.daily_budget += 1;
+        manifest.adset.daily_budget = Some(manifest.adset.daily_budget.unwrap() + 1);
         let err = client
             .run_paused_draft(RunPausedDraft {
                 key: &key,

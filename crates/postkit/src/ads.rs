@@ -104,13 +104,36 @@ impl FromStr for CampaignObjective {
 #[serde(rename_all = "snake_case")]
 pub enum BidStrategy {
     LowestCostWithoutCap,
+    LowestCostWithBidCap,
+    CostCap,
+    LowestCostWithMinRoas,
 }
 
 impl BidStrategy {
     pub fn meta_value(self) -> &'static str {
         match self {
             Self::LowestCostWithoutCap => "LOWEST_COST_WITHOUT_CAP",
+            Self::LowestCostWithBidCap => "LOWEST_COST_WITH_BID_CAP",
+            Self::CostCap => "COST_CAP",
+            Self::LowestCostWithMinRoas => "LOWEST_COST_WITH_MIN_ROAS",
         }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LowestCostWithoutCap => "lowest_cost_without_cap",
+            Self::LowestCostWithBidCap => "lowest_cost_with_bid_cap",
+            Self::CostCap => "cost_cap",
+            Self::LowestCostWithMinRoas => "lowest_cost_with_min_roas",
+        }
+    }
+
+    pub fn requires_bid_amount(self) -> bool {
+        matches!(self, Self::LowestCostWithBidCap | Self::CostCap)
+    }
+
+    pub fn requires_roas_floor(self) -> bool {
+        matches!(self, Self::LowestCostWithMinRoas)
     }
 }
 
@@ -120,6 +143,9 @@ impl FromStr for BidStrategy {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "lowest_cost_without_cap" => Ok(Self::LowestCostWithoutCap),
+            "lowest_cost_with_bid_cap" => Ok(Self::LowestCostWithBidCap),
+            "cost_cap" => Ok(Self::CostCap),
+            "lowest_cost_with_min_roas" => Ok(Self::LowestCostWithMinRoas),
             other => Err(format!("unknown_bid_strategy:{other}")),
         }
     }
@@ -243,7 +269,10 @@ impl FromStr for OptimizationGoal {
 pub fn billing_event_allowed(goal: OptimizationGoal, billing: BillingEvent) -> bool {
     match goal {
         OptimizationGoal::LinkClicks => {
-            matches!(billing, BillingEvent::Impressions | BillingEvent::LinkClicks)
+            matches!(
+                billing,
+                BillingEvent::Impressions | BillingEvent::LinkClicks
+            )
         }
         _ => matches!(billing, BillingEvent::Impressions),
     }
@@ -262,15 +291,33 @@ pub fn supported_adset_pairing(
     matches!(
         (objective, goal),
         (CampaignObjective::Awareness, OptimizationGoal::Reach)
-            | (CampaignObjective::Awareness, OptimizationGoal::BrandAwareness)
+            | (
+                CampaignObjective::Awareness,
+                OptimizationGoal::BrandAwareness
+            )
             | (CampaignObjective::Traffic, OptimizationGoal::LinkClicks)
-            | (CampaignObjective::Traffic, OptimizationGoal::LandingPageViews)
-            | (CampaignObjective::Engagement, OptimizationGoal::PostEngagement)
+            | (
+                CampaignObjective::Traffic,
+                OptimizationGoal::LandingPageViews
+            )
+            | (
+                CampaignObjective::Engagement,
+                OptimizationGoal::PostEngagement
+            )
             | (CampaignObjective::Engagement, OptimizationGoal::PageLikes)
             | (CampaignObjective::Leads, OptimizationGoal::LeadGeneration)
-            | (CampaignObjective::Leads, OptimizationGoal::OffsiteConversions)
-            | (CampaignObjective::AppPromotion, OptimizationGoal::AppInstalls)
-            | (CampaignObjective::Sales, OptimizationGoal::OffsiteConversions)
+            | (
+                CampaignObjective::Leads,
+                OptimizationGoal::OffsiteConversions
+            )
+            | (
+                CampaignObjective::AppPromotion,
+                OptimizationGoal::AppInstalls
+            )
+            | (
+                CampaignObjective::Sales,
+                OptimizationGoal::OffsiteConversions
+            )
             | (CampaignObjective::Sales, OptimizationGoal::Value)
     )
 }
@@ -344,12 +391,28 @@ impl FromStr for AdPreviewFormat {
 
 /// A campaign draft. Status is intentionally absent: the connector adds the
 /// only allowed value, `PAUSED`, rather than trusting a caller-provided flag.
+///
+/// Budget lives at **either** this campaign (Advantage campaign budget / CBO)
+/// **or** each child ad set, never both: Meta's create docs say you can set
+/// `daily_budget` / `lifetime_budget` at one level. `None`/`None` keeps the
+/// historical ad-set-budget path. Sharing (`is_adset_budget_sharing_enabled`)
+/// is Meta's up-to-20% child-share flag and needs a campaign budget first.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PausedCampaign {
     pub name: String,
     pub objective: CampaignObjective,
     #[serde(default)]
     pub special_ad_categories: Vec<String>,
+    /// Campaign-level daily budget in account minor units. XOR with
+    /// `lifetime_budget`. Setting either makes this a CBO campaign.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime_budget: Option<u64>,
+    /// Meta `is_adset_budget_sharing_enabled`. Default `false` matches
+    /// independent ad-set budgets. `true` is refused without a campaign budget.
+    #[serde(default)]
+    pub is_adset_budget_sharing_enabled: bool,
 }
 
 /// ISO 3166-1 alpha-2 countries plus optional age and placement lists.
@@ -475,9 +538,7 @@ impl AdTargeting {
             return Err("targeting_missing_country".into());
         }
         for country in &self.geo_locations.countries {
-            if country.len() != 2
-                || !country.chars().all(|c| c.is_ascii_uppercase())
-            {
+            if country.len() != 2 || !country.chars().all(|c| c.is_ascii_uppercase()) {
                 return Err(format!("bad_country_code:{country}"));
             }
         }
@@ -514,14 +575,26 @@ impl AdTargeting {
     }
 }
 
-/// An ad-set draft. `daily_budget` is the ad account's minor currency unit
-/// (for ILS, agorot), matching Meta's integer Marketing API field exactly.
+/// An ad-set draft. Budgets are the ad account's minor currency unit
+/// (for ILS, agorot), matching Meta's integer Marketing API fields exactly.
+///
+/// `daily_budget` XOR `lifetime_budget`. Both omitted is valid only as a CBO
+/// child (the parent campaign holds the budget). Lifetime still needs an
+/// `end_time`; that check lands with the typed schedule fields.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PausedAdset {
     pub name: String,
     pub campaign_id: String,
-    pub daily_budget: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime_budget: Option<u64>,
     pub bid_strategy: BidStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid_amount: Option<u64>,
+    /// Meta `bid_constraints.roas_average_floor`. 10000 = 1.0 ROAS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roas_average_floor: Option<u64>,
     pub billing_event: BillingEvent,
     pub optimization_goal: OptimizationGoal,
     pub targeting: AdTargeting,
@@ -632,6 +705,23 @@ impl AdReviewStatusRequest {
     }
 }
 
+/// Meta accepts `daily_budget` or `lifetime_budget`, never both, at one
+/// object. `allow_none` is true for campaigns (ABO: budget lives on the ad
+/// set) and for ad sets (CBO: budget lives on the campaign).
+fn validate_budget_xor(
+    daily: Option<u64>,
+    lifetime: Option<u64>,
+    allow_none: bool,
+) -> Result<(), String> {
+    match (daily, lifetime) {
+        (None, None) if allow_none => Ok(()),
+        (None, None) => Err("missing_budget".into()),
+        (Some(0), _) | (_, Some(0)) => Err("budget_must_be_positive".into()),
+        (Some(_), Some(_)) => Err("daily_and_lifetime_budget_mutually_exclusive".into()),
+        (Some(_), None) | (None, Some(_)) => Ok(()),
+    }
+}
+
 /// A management request is structurally paused: no enum variant represents
 /// an active create. Future activation work must add a new type and cross the
 /// policy boundary intentionally.
@@ -665,12 +755,33 @@ impl PausedAdCreate {
                         return Err("empty_special_ad_category".into());
                     }
                 }
+                validate_budget_xor(campaign.daily_budget, campaign.lifetime_budget, true)?;
+                if campaign.is_adset_budget_sharing_enabled
+                    && campaign.daily_budget.is_none()
+                    && campaign.lifetime_budget.is_none()
+                {
+                    return Err("budget_sharing_requires_campaign_budget".into());
+                }
             }
             Self::Adset(adset) => {
                 require_name(&adset.name)?;
                 require_numeric_id("campaign_id", &adset.campaign_id)?;
-                if adset.daily_budget == 0 {
-                    return Err("daily_budget_must_be_positive".into());
+                validate_budget_xor(adset.daily_budget, adset.lifetime_budget, true)?;
+                if adset.bid_strategy.requires_bid_amount() {
+                    match adset.bid_amount {
+                        Some(amount) if amount > 0 => {}
+                        _ => return Err("missing_bid_amount".into()),
+                    }
+                } else if adset.bid_amount.is_some() {
+                    return Err("bid_amount_without_cap_strategy".into());
+                }
+                if adset.bid_strategy.requires_roas_floor() {
+                    match adset.roas_average_floor {
+                        Some(floor) if floor > 0 => {}
+                        _ => return Err("missing_roas_average_floor".into()),
+                    }
+                } else if adset.roas_average_floor.is_some() {
+                    return Err("roas_floor_without_min_roas_strategy".into());
                 }
                 if !billing_event_allowed(adset.optimization_goal, adset.billing_event) {
                     return Err(format!(
@@ -980,9 +1091,7 @@ mod tests {
     #[test]
     fn objective_is_closed_and_maps_to_meta_outcomes() {
         assert_eq!(
-            BillingEvent::from_str("impressions")
-                .unwrap()
-                .meta_value(),
+            BillingEvent::from_str("impressions").unwrap().meta_value(),
             "IMPRESSIONS"
         );
         assert_eq!(
@@ -1183,8 +1292,11 @@ mod tests {
             create: PausedAdCreate::Adset(PausedAdset {
                 name: "Test".into(),
                 campaign_id: "12".into(),
-                daily_budget: 0,
+                daily_budget: Some(0),
+                lifetime_budget: None,
                 bid_strategy: BidStrategy::LowestCostWithoutCap,
+                bid_amount: None,
+                roas_average_floor: None,
                 billing_event: BillingEvent::Impressions,
                 optimization_goal: OptimizationGoal::Reach,
                 targeting: AdTargeting {
@@ -1201,7 +1313,7 @@ mod tests {
         };
         assert_eq!(
             bad_budget.validate().unwrap_err(),
-            "daily_budget_must_be_positive"
+            "budget_must_be_positive"
         );
 
         let bad_targeting = CreatePausedAdRequest {
@@ -1209,8 +1321,11 @@ mod tests {
             create: PausedAdCreate::Adset(PausedAdset {
                 name: "Test".into(),
                 campaign_id: "12".into(),
-                daily_budget: 100,
+                daily_budget: Some(100),
+                lifetime_budget: None,
                 bid_strategy: BidStrategy::LowestCostWithoutCap,
+                bid_amount: None,
+                roas_average_floor: None,
                 billing_event: BillingEvent::Impressions,
                 optimization_goal: OptimizationGoal::Reach,
                 targeting: AdTargeting {
@@ -1242,5 +1357,117 @@ mod tests {
             .unwrap_err(),
             "bad_country_code:my"
         );
+    }
+
+    fn sample_targeting() -> AdTargeting {
+        AdTargeting {
+            geo_locations: GeoLocations {
+                countries: vec!["MY".into()],
+            },
+            age_min: None,
+            age_max: None,
+            publisher_platforms: vec![],
+            facebook_positions: vec![],
+            instagram_positions: vec![],
+        }
+    }
+
+    fn sample_adset() -> PausedAdset {
+        PausedAdset {
+            name: "Test".into(),
+            campaign_id: "12".into(),
+            daily_budget: Some(100),
+            lifetime_budget: None,
+            bid_strategy: BidStrategy::LowestCostWithoutCap,
+            bid_amount: None,
+            roas_average_floor: None,
+            billing_event: BillingEvent::Impressions,
+            optimization_goal: OptimizationGoal::Reach,
+            targeting: sample_targeting(),
+        }
+    }
+
+    fn sample_campaign() -> PausedCampaign {
+        PausedCampaign {
+            name: "Test".into(),
+            objective: CampaignObjective::Awareness,
+            special_ad_categories: vec![],
+            daily_budget: None,
+            lifetime_budget: None,
+            is_adset_budget_sharing_enabled: false,
+        }
+    }
+
+    #[test]
+    fn budget_xor_and_campaign_sharing_are_local() {
+        let both = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Campaign(PausedCampaign {
+                daily_budget: Some(100),
+                lifetime_budget: Some(200),
+                ..sample_campaign()
+            }),
+        };
+        assert_eq!(
+            both.validate().unwrap_err(),
+            "daily_and_lifetime_budget_mutually_exclusive"
+        );
+
+        let sharing = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Campaign(PausedCampaign {
+                is_adset_budget_sharing_enabled: true,
+                ..sample_campaign()
+            }),
+        };
+        assert_eq!(
+            sharing.validate().unwrap_err(),
+            "budget_sharing_requires_campaign_budget"
+        );
+
+        let cbo = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Campaign(PausedCampaign {
+                daily_budget: Some(5000),
+                is_adset_budget_sharing_enabled: true,
+                ..sample_campaign()
+            }),
+        };
+        assert!(cbo.validate().is_ok());
+
+        let adset_both = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                daily_budget: Some(100),
+                lifetime_budget: Some(200),
+                ..sample_adset()
+            }),
+        };
+        assert_eq!(
+            adset_both.validate().unwrap_err(),
+            "daily_and_lifetime_budget_mutually_exclusive"
+        );
+
+        // CBO child: the campaign holds the budget, so the ad set may omit
+        // both fields. Meta still requires one level to have a budget.
+        let cbo_child = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                daily_budget: None,
+                lifetime_budget: None,
+                ..sample_adset()
+            }),
+        };
+        assert!(cbo_child.validate().is_ok());
+
+        let lifetime = CreatePausedAdRequest {
+            account: Some("123".into()),
+            create: PausedAdCreate::Adset(PausedAdset {
+                daily_budget: None,
+                lifetime_budget: Some(20_000),
+                ..sample_adset()
+            }),
+        };
+        assert!(lifetime.validate().is_ok());
     }
 }

@@ -320,26 +320,37 @@ pub(crate) fn emit_draft_status(reply: &DraftStatusReply, json: bool) {
     }
 }
 
+pub(crate) struct PausedCampaignOptions {
+    pub(crate) ad_account: Option<String>,
+    pub(crate) name: String,
+    pub(crate) objective: String,
+    pub(crate) special_ad_categories: String,
+    pub(crate) daily_budget: Option<u64>,
+    pub(crate) lifetime_budget: Option<u64>,
+    pub(crate) is_adset_budget_sharing_enabled: bool,
+}
+
 pub(crate) fn build_paused_campaign_request(
     site: &str,
-    ad_account: Option<String>,
-    name: &str,
-    objective: &str,
-    special_ad_categories: &str,
+    options: PausedCampaignOptions,
 ) -> Result<CreatePausedAdRequest, Error> {
-    let objective =
-        CampaignObjective::from_str(objective).map_err(|reason| ads_input_error(site, reason))?;
+    let objective = CampaignObjective::from_str(&options.objective)
+        .map_err(|reason| ads_input_error(site, reason))?;
     let request = CreatePausedAdRequest {
-        account: ad_account,
+        account: options.ad_account,
         create: PausedAdCreate::Campaign(PausedCampaign {
-            name: name.into(),
+            name: options.name,
             objective,
-            special_ad_categories: special_ad_categories
+            special_ad_categories: options
+                .special_ad_categories
                 .split(',')
                 .map(str::trim)
                 .filter(|category| !category.is_empty())
                 .map(str::to_owned)
                 .collect(),
+            daily_budget: options.daily_budget,
+            lifetime_budget: options.lifetime_budget,
+            is_adset_budget_sharing_enabled: options.is_adset_budget_sharing_enabled,
         }),
     };
     request
@@ -488,6 +499,9 @@ pub(crate) fn build_paused_adset_request(
             name: options.name,
             campaign_id: options.campaign_id,
             daily_budget: options.daily_budget,
+            lifetime_budget: options.lifetime_budget,
+            bid_amount: None,
+            roas_average_floor: None,
             bid_strategy,
             billing_event,
             optimization_goal,
@@ -507,7 +521,8 @@ pub(crate) struct PausedAdsetOptions {
     pub(crate) ad_account: Option<String>,
     pub(crate) name: String,
     pub(crate) campaign_id: String,
-    pub(crate) daily_budget: u64,
+    pub(crate) daily_budget: Option<u64>,
+    pub(crate) lifetime_budget: Option<u64>,
     pub(crate) bid_strategy: String,
     pub(crate) billing_event: String,
     pub(crate) optimization_goal: String,

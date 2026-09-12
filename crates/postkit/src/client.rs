@@ -2076,6 +2076,11 @@ mod draft_run {
                                     .campaign
                                     .special_ad_categories
                                     .clone(),
+                                daily_budget: manifest.campaign.daily_budget,
+                                lifetime_budget: manifest.campaign.lifetime_budget,
+                                is_adset_budget_sharing_enabled: manifest
+                                    .campaign
+                                    .is_adset_budget_sharing_enabled,
                             }),
                         };
                         self.create_paused_ad(key, request, deadline)
@@ -2094,7 +2099,10 @@ mod draft_run {
                                     .clone()
                                     .expect("lattice guarantees the campaign"),
                                 daily_budget: manifest.adset.daily_budget,
+                                lifetime_budget: manifest.adset.lifetime_budget,
                                 bid_strategy: manifest.adset.bid_strategy,
+                                bid_amount: None,
+                                roas_average_floor: None,
                                 billing_event: manifest.adset.billing_event,
                                 optimization_goal: manifest.adset.optimization_goal,
                                 targeting: manifest.adset.targeting.clone(),
