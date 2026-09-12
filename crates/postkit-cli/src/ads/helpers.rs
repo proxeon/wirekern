@@ -1,4 +1,4 @@
-//! Ads, insights, and paused-draft CLI verbs.
+//! Request builders and human output for ads CLI verbs.
 
 use crate::app::fail;
 use crate::output::{emit_ok, emit_raw, human_line};

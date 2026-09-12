@@ -1,4 +1,4 @@
-//! WhatsApp Cloud CLI: typed sends, configure, signed webhook parse.
+//! WhatsApp Cloud CLI helpers: typed sends, configure, signed webhook parse.
 
 use crate::app::fail;
 use crate::output::{emit_ok, emit_raw, human_line};

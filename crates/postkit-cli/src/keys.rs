@@ -6,6 +6,7 @@
 
 use crate::app::fail;
 use crate::output::{emit_raw, human_line};
+use clap::Subcommand;
 use postkit::FileKeyStore;
 use std::path::Path;
 
@@ -50,4 +51,28 @@ pub fn revoke(home: &Path, name: &str, yes: bool, json: bool) -> Result<(), i32>
         eprintln!("revoked {name}");
     }
     Ok(())
+}
+
+pub(crate) fn run(cmd: KeysCmd, home: &Path, json: bool) -> Result<(), i32> {
+    match cmd {
+        KeysCmd::Create { name } => create(home, &name, json),
+        KeysCmd::List => list(home, json),
+        KeysCmd::Revoke { name, yes } => revoke(home, &name, yes, json),
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum KeysCmd {
+    /// Print a `pk_live_` key once; store only its SHA-256.
+    Create {
+        #[arg(long)]
+        name: String,
+    },
+    List,
+    Revoke {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }

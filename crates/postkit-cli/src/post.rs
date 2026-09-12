@@ -1,9 +1,10 @@
 //! `postkit post` — flags compile to Client::publish / probe.
 
-use crate::app::{fail, invalid_post, print_results};
+use crate::app::{fail, invalid_post, parse_params, print_results};
 use crate::output::emit_ok;
 use postkit::connectors::instagram::MAX_CAROUSEL_IMAGES;
-use postkit::{AccountKey, Body, Client, Deadline, Error, Image, Intent, Site};
+use postkit::connectors::threads::validate_text;
+use postkit::{AccountKey, Body, Client, Deadline, Error, Image, Intent, PostRequest, Site};
 use std::io::{self, Read};
 
 pub(crate) fn stdin_conflict(
@@ -362,5 +363,195 @@ pub(crate) async fn one_post(
             Ok(())
         }
         Err(e) => Err(fail(&e, json)),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run(
+    client: &Client,
+    site: Option<String>,
+    text: Vec<String>,
+    to: Option<String>,
+    param: Vec<String>,
+    reply_to: Option<String>,
+    idempotency: Option<String>,
+    stdin: bool,
+    dry_run: bool,
+    image: Vec<String>,
+    alt: String,
+    json: bool,
+    account: String,
+    deadline: Deadline,
+) -> Result<(), i32> {
+    if let Some(e) = dry_run_conflict(dry_run, idempotency.as_deref(), text.len()) {
+        return Err(fail(&e, json));
+    }
+    // --reply-to is sugar for --param reply_to_id=…: refuse the
+    // empty and dual-source shapes, then fold it in so every later
+    // check — image guard, stdin exclusivity, fan-out, chain
+    // anchor — sees exactly one spelling of the intent.
+    if let Some(reason) = reply_to_conflict(reply_to.as_deref(), &param) {
+        return Err(fail(&invalid_post(&site_or_to(&site, &to), reason), json));
+    }
+    let mut param = param;
+    if let Some(id) = reply_to.as_deref() {
+        param.push(format!("reply_to_id={id}"));
+    }
+    // Image exclusions fire before any parsing or I/O: each
+    // combination names a wire contract postkit has not verified
+    // (015 D4), and half-honoring it is the 022 failure mode.
+    if let Some(err) = image_input_conflict(image.len(), text.len(), dry_run, &alt, &param) {
+        return Err(fail(&invalid_post(&site_or_to(&site, &to), err), json));
+    }
+    // 025: --stdin is a complete request in itself; any other
+    // content-carrying flag would be silently ignored by the stdin
+    // branch — refuse the combination before stdin is even read.
+    if let Some(e) = stdin_conflict(
+        stdin,
+        &text,
+        &image,
+        &alt,
+        to.as_deref(),
+        &param,
+        site.as_deref(),
+    ) {
+        return Err(fail(&e, json));
+    }
+    if stdin {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf).map_err(|_| 5)?;
+        let req: PostRequest = serde_json::from_str(&buf).map_err(|e| {
+            fail(
+                &Error::InvalidPost {
+                    site: Site::new(""),
+                    reason: format!("json:{e}"),
+                    limit: None,
+                },
+                json,
+            )
+        })?;
+        let (key, mut intent) = req.into_key_intent().map_err(|e| fail(&e, json))?;
+        intent.idempotency_key = idempotency;
+        if dry_run && matches!(intent.body, Body::Image { .. } | Body::Carousel { .. }) {
+            return Err(fail(
+                &invalid_post(key.site.as_str(), "dry_run_image_unsupported"),
+                json,
+            ));
+        }
+        // --stdin has no dry_run field of its own; the CLI flag is
+        // the single switch, so both input paths stay in parity.
+        if dry_run {
+            return one_probe(client, &key, intent, deadline, json).await;
+        }
+        return one_post(client, &key, intent, deadline, json).await;
+    }
+    // With --image the caption is optional (zero or one --text);
+    // without it the existing text rules apply unchanged.
+    let texts = if !image.is_empty() {
+        if text.iter().any(|t| t == "-") {
+            return Err(fail(
+                &invalid_post(&site_or_to(&site, &to), "image_chain_unsupported"),
+                json,
+            ));
+        }
+        text
+    } else {
+        resolve_texts(text)?
+    };
+    let params = parse_params(&param, json)?;
+    let sites = collect_post_sites(site.as_deref(), to.as_deref())?;
+    if let Some(reason) = reply_to_fanout_conflict(reply_to.as_deref(), &sites) {
+        return Err(fail(&invalid_post(&site_or_to(&site, &to), reason), json));
+    }
+    if texts.len() > 1 {
+        if let Some(bad) = chain_blocked_site(&sites) {
+            return Err(fail(
+                &Error::InvalidPost {
+                    site: Site::new(bad),
+                    reason: "thread_unsupported".into(),
+                    limit: None,
+                },
+                json,
+            ));
+        }
+        for t in &texts {
+            validate_text(t).map_err(|e| fail(&e, json))?;
+        }
+        return chain_threads(
+            client,
+            &account,
+            &texts,
+            params,
+            idempotency,
+            deadline,
+            json,
+        )
+        .await;
+    }
+    // Option: Some = caption (image) or the post text; None is
+    // only possible with --image and zero --text flags.
+    let text = texts.into_iter().next();
+    if let Some(to) = to {
+        let mut results = Vec::new();
+        let mut code = 0i32;
+        for raw in to.split(',') {
+            let s = raw.trim();
+            if s.is_empty() {
+                continue;
+            }
+            let key = AccountKey::new(s, &account);
+            // Bytes are cloned per target: each connector gets its
+            // own copy and a per-target failure (e.g. a URL image
+            // on Bluesky) is isolated in the fan-out results.
+            let body =
+                build_post_body(&image, text.clone(), &alt, s).map_err(|e| fail(&e, json))?;
+            let intent = Intent {
+                site: Site::new(s),
+                params: params.clone(),
+                body,
+                idempotency_key: idempotency.clone(),
+            };
+            let attempt = if dry_run {
+                client
+                    .probe(&key, intent, deadline)
+                    .await
+                    .map(|p| serde_json::to_value(&p).unwrap())
+            } else {
+                client
+                    .publish(&key, intent, deadline)
+                    .await
+                    .map(|o| serde_json::to_value(&o).unwrap())
+            };
+            match attempt {
+                Ok(v) => results.push(v),
+                Err(e) => {
+                    if code == 0 {
+                        code = e.exit_code();
+                    }
+                    results.push(serde_json::to_value(postkit::WireError::from(&e)).unwrap());
+                }
+            }
+        }
+        print_results(&results, json);
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(code)
+        }
+    } else {
+        let site = sites.into_iter().next().expect("collect_post_sites");
+        let key = AccountKey::new(&site, &account);
+        let body = build_post_body(&image, text, &alt, &site).map_err(|e| fail(&e, json))?;
+        let intent = Intent {
+            site: Site::new(&site),
+            params,
+            body,
+            idempotency_key: idempotency,
+        };
+        if dry_run {
+            one_probe(client, &key, intent, deadline, json).await
+        } else {
+            one_post(client, &key, intent, deadline, json).await
+        }
     }
 }
