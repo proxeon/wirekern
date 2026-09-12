@@ -66,6 +66,9 @@ pub struct Client {
     #[cfg(feature = "whatsapp-cloud")]
     whatsapp_consent: Option<Arc<dyn crate::whatsapp_ops::WhatsAppConsent>>,
     #[cfg(feature = "whatsapp-cloud")]
+    whatsapp_replay_dead_letters:
+        Option<Arc<dyn crate::whatsapp_ops::WhatsAppReplayableDeadLetters>>,
+    #[cfg(feature = "whatsapp-cloud")]
     // Pacing belongs to the Client, not an individual batch. Otherwise two
     // callers can both believe they own the next process-local send slot.
     whatsapp_throughput:
@@ -96,6 +99,8 @@ impl Client {
             whatsapp_ledger: None,
             #[cfg(feature = "whatsapp-cloud")]
             whatsapp_consent: None,
+            #[cfg(feature = "whatsapp-cloud")]
+            whatsapp_replay_dead_letters: None,
             #[cfg(feature = "whatsapp-cloud")]
             whatsapp_throughput: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -132,6 +137,18 @@ impl Client {
         consent: Arc<dyn crate::whatsapp_ops::WhatsAppConsent>,
     ) -> Self {
         self.whatsapp_consent = Some(consent);
+        self
+    }
+
+    /// Attach an explicit encrypted replay store. Leaving it unset preserves
+    /// the privacy-first default: malformed signed callbacks retain only a
+    /// hash audit entry in the normal delivery ledger.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn with_whatsapp_replay_dead_letters(
+        mut self,
+        dead_letters: Arc<dyn crate::whatsapp_ops::WhatsAppReplayableDeadLetters>,
+    ) -> Self {
+        self.whatsapp_replay_dead_letters = Some(dead_letters);
         self
     }
 
@@ -289,7 +306,8 @@ impl Client {
         // Do this before registry/vault lookup. A denied send must reveal
         // neither whether an account is configured nor a bearer token to the
         // connector's HTTP path.
-        self.whatsapp_policy.authorize(&key.site, action)?;
+        self.whatsapp_policy
+            .authorize_request(&key.site, action, &request)?;
         let publisher = self.publisher(&key.site)?;
         let need = request.required_capability();
         if !publisher.capabilities().contains(&need) {
@@ -412,22 +430,33 @@ impl Client {
                 Ok(parsed)
             }
             Err(error) => {
-                // Unsigned junk must not fill the dead-letter log. Only
-                // payloads that passed HMAC (or failed later) are recorded.
-                let hmac_fail = matches!(
+                // Unsigned/oversized junk must not fill the dead-letter log.
+                // The parser bounds size before it can verify an HMAC, so all
+                // three early failures are intentionally non-auditable.
+                let unauthenticated_or_oversized = matches!(
                     &error,
                     Error::InvalidQuery { reason, .. }
                         if reason == "webhook_signature_invalid"
                             || reason == "missing_webhook_app_secret"
+                            || reason == "webhook_body_too_large"
                 );
-                if !hmac_fail {
+                if !unauthenticated_or_oversized {
+                    let reason = match &error {
+                        Error::InvalidQuery { reason, .. } => reason.as_str(),
+                        _ => "webhook_ingest_failed",
+                    };
                     if let Some(ledger) = &self.whatsapp_ledger {
                         let sha = crate::whatsapp_ops::sha256_hex(raw_body);
-                        let reason = match &error {
-                            Error::InvalidQuery { reason, .. } => reason.as_str(),
-                            _ => "webhook_ingest_failed",
-                        };
                         let _ = ledger.put_dead_letter(reason, &sha);
+                    }
+                    // Replay is a deliberate privacy opt-in. The original
+                    // parse error remains authoritative even if local capture
+                    // fails; a webhook host can still ACK a valid signature
+                    // and avoid Meta retry storms.
+                    if raw_body.len() <= crate::connectors::whatsapp_cloud::MAX_WEBHOOK_BYTES {
+                        if let Some(dead_letters) = &self.whatsapp_replay_dead_letters {
+                            let _ = dead_letters.capture(reason, signature, raw_body);
+                        }
                     }
                 }
                 Err(error)
@@ -461,19 +490,77 @@ impl Client {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        let wa_id =
+            crate::whatsapp::normalize_recipient(wa_id).map_err(|reason| Error::InvalidPost {
+                site: Site::new("whatsapp_cloud"),
+                reason,
+                limit: None,
+            })?;
+        let wa_id = wa_id.trim_start_matches('+');
         Ok(ledger
             .last_inbound_at(wa_id)?
             .is_some_and(|at| crate::whatsapp_ops::customer_window_open(at, now)))
     }
 
+    /// List only metadata for encrypted, replayable signed callback failures.
+    /// Raw callback bodies never leave the local store through this API.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn list_whatsapp_replay_dead_letters(
+        &self,
+    ) -> Result<Vec<crate::whatsapp_ops::WhatsAppDeadLetterSummary>, Error> {
+        match &self.whatsapp_replay_dead_letters {
+            Some(store) => store.list(),
+            None => Err(Error::InvalidQuery {
+                site: Site::new("whatsapp_cloud"),
+                reason: "whatsapp_replay_dlq_disabled".into(),
+            }),
+        }
+    }
+
+    /// Re-run one encrypted raw callback through the current HMAC and typed
+    /// parser. Successful reduction deletes the ciphertext; a still-unknown
+    /// event remains queued so an operator can retry only after upgrading.
+    #[cfg(feature = "whatsapp-cloud")]
+    pub fn replay_whatsapp_dead_letter(
+        &self,
+        id: &str,
+        options: crate::whatsapp::WebhookParseOptions,
+    ) -> Result<crate::whatsapp::InboundMessages, Error> {
+        let store =
+            self.whatsapp_replay_dead_letters
+                .as_ref()
+                .ok_or_else(|| Error::InvalidQuery {
+                    site: Site::new("whatsapp_cloud"),
+                    reason: "whatsapp_replay_dlq_disabled".into(),
+                })?;
+        let event = store.load(id)?.ok_or_else(|| Error::InvalidQuery {
+            site: Site::new("whatsapp_cloud"),
+            reason: "whatsapp_replay_dlq_not_found".into(),
+        })?;
+        let parsed = self.parse_whatsapp_webhook(&event.signature, &event.raw_body, options)?;
+        if let Some(ledger) = &self.whatsapp_ledger {
+            crate::whatsapp_ops::ingest_parsed(ledger.as_ref(), &parsed)?;
+        }
+        store.delete(&event.summary.id)?;
+        Ok(parsed)
+    }
+
     #[cfg(feature = "whatsapp-cloud")]
     pub fn put_whatsapp_consent(
         &self,
-        record: crate::whatsapp_ops::ConsentRecord,
+        mut record: crate::whatsapp_ops::ConsentRecord,
     ) -> Result<(), Error> {
-        // This is an operator-owned audit signal, not a surrogate for Meta's
-        // consent/window decision. `AllowWhatsAppSendsPolicy` stays explicit
-        // so incomplete local callback history cannot become a false deny.
+        // Consent keys use the same canonical digits as webhook `from` and
+        // Cloud API `to`. Without this, an operator recording `+60 11…`
+        // could not protect a later send addressed as `6011…`.
+        record.wa_id = crate::whatsapp::normalize_recipient(&record.wa_id)
+            .map_err(|reason| Error::InvalidPost {
+                site: Site::new("whatsapp_cloud"),
+                reason,
+                limit: None,
+            })?
+            .trim_start_matches('+')
+            .to_string();
         match &self.whatsapp_consent {
             Some(store) => store.put(&record),
             None => Err(Error::InvalidQuery {
@@ -488,6 +575,13 @@ impl Client {
         &self,
         wa_id: &str,
     ) -> Result<Option<crate::whatsapp_ops::ConsentRecord>, Error> {
+        let wa_id =
+            crate::whatsapp::normalize_recipient(wa_id).map_err(|reason| Error::InvalidPost {
+                site: Site::new("whatsapp_cloud"),
+                reason,
+                limit: None,
+            })?;
+        let wa_id = wa_id.trim_start_matches('+');
         match &self.whatsapp_consent {
             Some(store) => store.get(wa_id),
             None => Err(Error::InvalidQuery {
@@ -505,7 +599,13 @@ impl Client {
     #[cfg(feature = "whatsapp-cloud")]
     pub fn purge_whatsapp_ledger_before(&self, before_unix: u64) -> Result<usize, Error> {
         match &self.whatsapp_ledger {
-            Some(ledger) => ledger.purge_before(before_unix),
+            Some(ledger) => {
+                let removed = ledger.purge_before(before_unix)?;
+                if let Some(dead_letters) = &self.whatsapp_replay_dead_letters {
+                    let _ = dead_letters.purge_before(before_unix)?;
+                }
+                Ok(removed)
+            }
             None => Err(Error::InvalidQuery {
                 site: Site::new("whatsapp_cloud"),
                 reason: "whatsapp_ledger_disabled".into(),

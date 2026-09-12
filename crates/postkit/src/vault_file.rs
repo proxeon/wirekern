@@ -4,6 +4,7 @@ use crate::types::{valid_name, AccountCreds, AccountKey, AppConfig, Outcome, Sit
 use crate::vault::{Claim, Vault};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -15,6 +16,12 @@ use std::os::unix::fs::PermissionsExt;
 /// quarter hour errs far on the safe side while bounding how long a
 /// crashed holder can block a key.
 const CLAIM_STALE_AFTER: Duration = Duration::from_secs(15 * 60);
+
+// A PID plus wall-clock timestamp can collide between two threads on a coarse
+// clock. A collision in `exclusive_atomic_write` lets one caller link bytes
+// written by another caller while returning its own secret. Keep the suffix
+// process-unique without relying on clock resolution.
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct FileVault {
     root: PathBuf,
@@ -347,10 +354,7 @@ pub(crate) fn exclusive_atomic_write(path: &Path, bytes: &[u8]) -> Result<(), Er
     let tmp = path.with_extension(format!(
         "json.tmp.{}.{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     #[cfg(unix)]
     let mut f = {

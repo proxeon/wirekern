@@ -23,9 +23,10 @@ subscription.
    is never accepted in a send request. The resolved phone number namespaces
    local pacing and idempotency, preventing a result from one business number
    from replaying for another.
-5. Live tests are ignored by default and read-only. They must be explicitly
-   requested with local credentials; they do not send a customer message,
-   create templates/Flows, or change account settings.
+5. Live tests are ignored by default. Read-only Graph contracts require an
+   explicit environment switch; a separate media upload/delete contract needs
+   a second write switch and a disposable local fixture. Neither test sends a
+   customer message, creates templates/Flows, or changes account settings.
 
 ## Implementation sequence
 
@@ -41,10 +42,14 @@ subscription.
 4. Add mocked wire/validation tests plus an opt-in, credential-gated,
    read-only live contract suite. Document how to run it and what it proves.
 
-## Explicitly deferred
+## Safety hardening completed after the operating release
 
-This is not a distributed rate limiter, a hosted inbox, a billing product, or
-a replayable dead-letter queue. Consent/customer-window records remain
-operator signals rather than automatic authorization. A separate release can
-add a durable, encrypted event archive and replay protocol after its privacy
-and operations contract is reviewed.
+The follow-up safety release adds a concrete Caddy/TLS deployment runbook,
+strict file-backed consent/window authorization, and an opt-in encrypted
+dead-letter replay queue. The replay key is supplied only through
+`POSTKIT_WHATSAPP_REPLAY_DLQ_KEY`; normal operation retains a hash-only audit
+record and does not archive customer content.
+
+Postkit remains intentionally outside the scope of a distributed rate limiter,
+hosted inbox, billing product, or campaign/broadcast system. Those require a
+separate operational ownership model rather than a local connector feature.

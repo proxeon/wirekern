@@ -12,7 +12,8 @@ templates, catalog/order, Flows) and parses **signed inbound webhooks**.
 local delivery ledger; it is not a conversation inbox. The server is plain
 HTTP and must sit behind your own public HTTPS reverse proxy or tunnel before
 Meta can reach it. Every customer send still needs `--allow-send` and an
-idempotency key.
+idempotency key. File-backed CLI/HTTP sends additionally enforce the local
+consent and customer-service-window rules described below.
 
 Meta's current Cloud API requirements and message examples are in its
 [official WhatsApp Cloud API collection](https://www.postman.com/meta/whatsapp-business-platform/documentation/wlk6lh4/whatsapp-cloud-api?entity=request-13382743-f2eb9575-f109-4767-ab47-4cf74c14444f).
@@ -64,6 +65,9 @@ the Postkit vault.
 export POSTKIT_WHATSAPP_PHONE_NUMBER_ID=123456789012345
 export POSTKIT_WHATSAPP_APP_SECRET='<META_APP_SECRET>' # only needed for webhook parsing
 export POSTKIT_WHATSAPP_VERIFY_TOKEN='<RANDOM_CALLBACK_VERIFY_TOKEN>'
+# Optional: 64 hex characters. Enables encrypted replay of signed callbacks
+# that a future Postkit parser learns to understand; never commit this value.
+export POSTKIT_WHATSAPP_REPLAY_DLQ_KEY='<64_HEX_CHARACTERS>'
 # Optional: enables paged owned-WABA and system-user reads.
 export POSTKIT_WHATSAPP_BUSINESS_ID=123456789012345
 postkit auth whatsapp_cloud --token '<SYSTEM_USER_ACCESS_TOKEN>'
@@ -100,9 +104,10 @@ postkit --json whatsapp reply \
 
 `--allow-send` is required on every private send. Without it the default
 policy rejects the command **before** vault/network access. Meta, not Postkit,
-enforces whether the reply is inside the customer-service window and otherwise
-permitted. Do not bypass that requirement by pretending an arbitrary old ID is
-a reply context.
+remains the final delivery authority. Postkit's file-backed CLI/HTTP clients
+also refuse free-form content when no verified inbound callback has opened a
+local 24-hour customer-service window; do not bypass that by pretending an
+arbitrary old ID is a reply context.
 
 The returned `id` is Meta's accepted outbound `wamid`, **not** proof of
 delivery or read. Keep it to correlate the later status webhook.
@@ -114,7 +119,8 @@ send can be a second private message.
 
 In-window follow-ups that are not quoting a specific inbound `wamid` use
 `whatsapp text` (Meta `type=text` with no `context`). Meta still requires an
-open customer-service window; Postkit does not track that clock.
+open customer-service window; Postkit computes a conservative local check
+from verified callbacks before it sends.
 
 ```bash
 postkit --json whatsapp text \
@@ -213,6 +219,24 @@ postkit keys create --name whatsapp-callback-read
 postkit serve --bind 127.0.0.1:8788
 ```
 
+### Minimal HTTPS deployment: Caddy
+
+Use a domain that resolves to the host running Postkit and allow inbound TCP
+443. Keep Postkit bound to loopback; Caddy owns the public certificate and
+forwards the unchanged request locally.
+
+```caddyfile
+whatsapp.example.com {
+    reverse_proxy 127.0.0.1:8788
+}
+```
+
+Run Caddy with that file, then set Meta's callback URL to
+`https://whatsapp.example.com/v1/whatsapp/callback`. Do **not** configure a
+CDN/body-transforming proxy in front of this route: the signature covers the
+exact bytes Meta sent. Health-check the local process separately; Postkit does
+not issue certificates, redirect HTTP, or bind a public interface for you.
+
 Configure the public `https://…/v1/whatsapp/callback` URL in Meta. The GET
 request validates `hub.verify_token` and returns the raw challenge; the POST
 request verifies `X-Hub-Signature-256`, records correlation state, and returns
@@ -265,14 +289,60 @@ purges message/status/window records and hashed dead-letter audit entries, but
 deliberately does not erase consent records, which can have a separate
 legal-retention basis.
 
+### Encrypted replay for signed parser failures
+
+The default dead-letter audit contains only a reason, body hash, and timestamp.
+To retain a signed raw callback for replay after a Postkit parser upgrade, set
+`POSTKIT_WHATSAPP_REPLAY_DLQ_KEY` to exactly 64 random hexadecimal characters
+before starting Postkit. Generate and store it in your secret manager, not the
+repository or the Postkit home directory:
+
+```bash
+openssl rand -hex 32
+export POSTKIT_WHATSAPP_REPLAY_DLQ_KEY='…generated value…'
+```
+
+The bounded (at most 1 MiB) body and HMAC are XChaCha20-Poly1305 encrypted at
+rest; list output shows only metadata. After upgrading, inspect and replay
+deliberately:
+
+```bash
+postkit --json whatsapp ledger dead-letters
+postkit --json whatsapp ledger replay --id dlq-… --yes
+```
+
+A successful replay verifies the original signature again, reduces the event
+into the ordinary privacy-minimal ledger, then deletes its ciphertext. A still
+unsupported event remains queued. Losing or rotating the key without draining
+the queue makes those retained events unrecoverable by design.
+
 ## Consent, window, and pacing boundaries
 
-Postkit stores opt-in/opt-out records and computes a 24-hour window from its
-local callback history, but neither is automatic permission to send or a
-replacement for Meta's policy decision. Incomplete callback history must not
-be mistaken for a complete customer record. Review consent, template approval,
-pricing, and the customer-service window before passing `--allow-send`; Meta
-remains the delivery authority.
+File-backed CLI and HTTP send paths enforce a conservative local decision after
+the explicit `--allow-send` acknowledgement:
+
+- A recorded `opt_out` refuses every customer-visible send.
+- An approved template requires a recorded `opt_in` for that individual.
+- Free-form text, replies, media, interactive, catalog, and Flow messages need
+  an observed inbound callback within the last 24 hours. A missing callback is
+  treated as closed, not as permission.
+- Read/typing acknowledgements act on an inbound `wamid` and carry no `to`, so
+  their final validation remains with Meta. Group sends are refused by this
+  strict local policy because Postkit has no individual consent record to
+  evaluate.
+
+Record consent using a normalized WhatsApp ID before sending a template:
+
+```bash
+postkit whatsapp consent set --wa-id 60123456789 --kind opt_in --yes
+```
+
+An explicit `opt_out` is always stronger than an open customer-service window.
+These checks are an additional safety control, not proof that the stored local
+history is complete or that a template meets Meta policy; Meta remains the
+delivery authority. Library embeddings can intentionally install
+`AllowWhatsAppSendsPolicy` instead when they provide their own compliance
+service.
 
 Postkit paces outbound Cloud API requests at a process-local default of roughly
 80 messages/second per configured phone number. Batches are capped at 10 items and
@@ -295,12 +365,15 @@ an intentional operational decision.
 | `missing_phone_number_id` | Run `whatsapp configure …`, or set `POSTKIT_WHATSAPP_PHONE_NUMBER_ID`. Use the numeric Phone number ID, not the display number/WABA ID. |
 | `token_invalid` | Create/renew the authorised System User token, then re-run `auth whatsapp_cloud --token …`. |
 | `policy_denied` / `explicit_whatsapp_send_required` | Review consent, window, template and pricing, then repeat the exact typed command with `--allow-send`. |
+| `whatsapp_consent_missing` | Record a verified `opt_in` before a template send. |
+| `whatsapp_consent_opted_out` | Do not send customer-visible content; honor the local opt-out. |
+| `whatsapp_customer_window_closed` | Wait for a verified inbound message or use an approved template after recording opt-in. |
 | `recipient_must_be_whatsapp_id` | Use country code + 7–15 digits. A leading `+` and spaces, hyphens, or parentheses are stripped; Postkit does not invent a country code. Letters and other punctuation are refused. |
 | `template_name_invalid` | V1 accepts lowercase letters, digits and underscores only; use the approved name exactly. |
 | Meta template/window error | Postkit sent a valid wire shape; correct the template approval, customer opt-in, recipient, or policy in WhatsApp Manager. |
 | `webhook_signature_invalid` | Pass the unchanged body and exact `X-Hub-Signature-256` value; check the configured app secret. |
 | `webhook_phone_number_mismatch` | The signed event belongs to another phone number. Route it to the Postkit configuration for that sender. |
-| `webhook_status_unsupported` | Meta sent a delivery state this version does not model. Preserve the raw signed payload in your own webhook system and upgrade Postkit after reviewing it. |
+| `webhook_status_unsupported` | Meta sent a delivery state this version does not model. With the replay key configured, inspect `whatsapp ledger dead-letters` after upgrading. |
 
 ## Current boundaries
 
@@ -310,9 +383,12 @@ supports typed sends and the same optional configured `sender` alias; it does
 not expose management endpoints. Use the CLI or library for management until
 an HTTP-management authorization contract is separately designed.
 
-Postkit does not terminate TLS, run distributed rate limits, replay dead
-letters, or provide a hosted inbox/billing dashboard. A successful send is
-still only Meta acceptance; use signed statuses for the final delivery result.
+Postkit does not terminate TLS itself, run distributed rate limits, or provide
+a hosted inbox/billing dashboard. It documents a TLS deployment and provides
+an opt-in encrypted local replay queue, but the operator still owns the domain,
+secret manager, process supervision, and retention choice. A successful send
+is still only Meta acceptance; use signed statuses for the final delivery
+result.
 
 ## Opt-in live contract reads
 
@@ -331,5 +407,18 @@ and phone health. It does not send, upload, create, publish, subscribe, or
 change account settings. Omit the environment flag to keep the suite refused.
 See [product-completion.md](./product-completion.md) for the implementation
 and safety plan.
+
+To validate the media upload/delete wire contract without addressing a
+customer, provide a disposable supported fixture and explicitly authorize the
+ignored test. It uploads once, then deletes the returned media ID:
+
+```bash
+POSTKIT_LIVE_WHATSAPP_WRITE_TESTS=1 \
+POSTKIT_HOME="$HOME/.postkit" \
+POSTKIT_LIVE_WHATSAPP_MEDIA_FILE=/absolute/path/to/disposable.png \
+POSTKIT_LIVE_WHATSAPP_MEDIA_MIME=image/png \
+cargo test -p postkit --features whatsapp-cloud,vault-file \
+  tests::live_whatsapp_cloud_media_upload_delete -- --ignored --exact
+```
 
 Track remaining work as checkboxes in [checklist.md](./checklist.md).

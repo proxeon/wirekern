@@ -1215,6 +1215,17 @@ enum WhatsAppLedgerCmd {
         #[arg(long)]
         wa_id: String,
     },
+    /// List metadata for encrypted signed callbacks that failed local parsing.
+    /// This is available only when POSTKIT_WHATSAPP_REPLAY_DLQ_KEY is set.
+    DeadLetters,
+    /// Re-parse one encrypted callback after upgrading Postkit. A successful
+    /// reduction deletes the ciphertext; a failure leaves it queued.
+    Replay {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        yes: bool,
+    },
     Purge {
         #[arg(long)]
         before_unix: u64,
@@ -1232,8 +1243,8 @@ enum WhatsAppConsentCmd {
     Set {
         #[arg(long)]
         wa_id: String,
-        /// opt_in or opt_out. This records an operator signal; it never
-        /// bypasses Meta's policy checks.
+        /// opt_in or opt_out. File-backed sends use this local record for
+        /// conservative authorization; it never bypasses Meta's checks.
         #[arg(long)]
         kind: String,
         #[arg(long)]
@@ -2027,6 +2038,27 @@ async fn dispatch(
                 }
                 Err(error) => Err(fail(&error, json)),
             },
+            WhatsAppLedgerCmd::DeadLetters => match client.list_whatsapp_replay_dead_letters() {
+                Ok(reply) => {
+                    emit_whatsapp_value(&reply, json, "replayable dead-letter list");
+                    Ok(())
+                }
+                Err(error) => Err(fail(&error, json)),
+            },
+            WhatsAppLedgerCmd::Replay { id, yes } => {
+                require_whatsapp_yes(yes, "replay and remove a signed WhatsApp callback", json)?;
+                match client
+                    .replay_whatsapp_dead_letter(&id, postkit::WebhookParseOptions::default())
+                {
+                    Ok(reply) => {
+                        // Human output remains count-only; callers choosing
+                        // --json are explicitly asking for parsed event data.
+                        emit_whatsapp_value(&reply, json, "replayed callback");
+                        Ok(())
+                    }
+                    Err(error) => Err(fail(&error, json)),
+                }
+            }
             WhatsAppLedgerCmd::Purge { before_unix, yes } => {
                 require_whatsapp_yes(yes, "purge local WhatsApp ledger records", json)?;
                 match client.purge_whatsapp_ledger_before(before_unix) {

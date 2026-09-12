@@ -1417,6 +1417,129 @@ fn parse_whatsapp_webhook_reads_app_store_not_a_listener() {
     assert!(reply.messages.is_empty());
 }
 
+/// A signed payload that this build cannot model is hash-audited as before
+/// and, only when the caller attached the explicit replay store, encrypted
+/// for a future parser upgrade. Retrying before that upgrade must retain it.
+#[cfg(feature = "whatsapp-cloud")]
+#[test]
+fn signed_unmodeled_webhook_is_captured_for_safe_replay() {
+    use crate::{
+        MemoryWhatsAppLedger, MemoryWhatsAppReplayableDeadLetters, WhatsAppReplayableDeadLetters,
+    };
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let mut registry = Registry::new();
+    register_mock(&mut registry, Arc::new(MockPub::whatsapp("whatsapp_cloud")));
+    let apps = Arc::new(MemoryAppStore::new());
+    apps.put(&AppConfig {
+        site: Site::new("whatsapp_cloud"),
+        oauth: None,
+        extra: serde_json::json!({
+            "phone_number_id": "123456789",
+            "app_secret": "webhook-secret",
+        }),
+    })
+    .unwrap();
+    let ledger = Arc::new(MemoryWhatsAppLedger::new());
+    let replay = Arc::new(MemoryWhatsAppReplayableDeadLetters::new());
+    let client = Client::new(registry, Arc::new(MemoryVault::new()), apps)
+        .with_whatsapp_ledger(ledger.clone())
+        .with_whatsapp_replay_dead_letters(replay.clone());
+    let raw = br#"{"object":"whatsapp_business_account","entry":[{"changes":[{"field":"messages","value":{"metadata":{"phone_number_id":"123456789"},"statuses":[{"id":"wamid.unknown","status":"future_state"}]}}]}]}"#;
+    let mut mac = Hmac::<Sha256>::new_from_slice(b"webhook-secret").unwrap();
+    mac.update(raw);
+    let signature = format!(
+        "sha256={}",
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+
+    let error = client
+        .ingest_whatsapp_webhook(
+            &signature,
+            raw,
+            crate::whatsapp::WebhookParseOptions::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidQuery { reason, .. } if reason == "webhook_status_unsupported")
+    );
+    assert_eq!(ledger.dead_letters().len(), 1);
+    let saved = client.list_whatsapp_replay_dead_letters().unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].reason, "webhook_status_unsupported");
+    assert!(!serde_json::to_string(&saved)
+        .unwrap()
+        .contains("future_state"));
+
+    // No parser upgrade occurred, so retrying fails and leaves the encrypted
+    // event available for a deliberate retry after the upgrade.
+    assert!(client
+        .replay_whatsapp_dead_letter(
+            &saved[0].id,
+            crate::whatsapp::WebhookParseOptions::default(),
+        )
+        .is_err());
+    assert_eq!(client.list_whatsapp_replay_dead_letters().unwrap().len(), 1);
+
+    // A parser upgrade is represented here by a valid signed callback placed
+    // in the explicit replay store. Successful replay reduces it and removes
+    // only that ciphertext; the still-unsupported event remains for later.
+    let valid = br#"{"object":"whatsapp_business_account","entry":[{"changes":[{"field":"messages","value":{"metadata":{"phone_number_id":"123456789"},"messages":[]}}]}]}"#;
+    let mut mac = Hmac::<Sha256>::new_from_slice(b"webhook-secret").unwrap();
+    mac.update(valid);
+    let valid_signature = format!(
+        "sha256={}",
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let valid_entry = replay
+        .capture("webhook_parser_upgraded", &valid_signature, valid)
+        .unwrap();
+    let parsed = client
+        .replay_whatsapp_dead_letter(
+            &valid_entry.id,
+            crate::whatsapp::WebhookParseOptions::default(),
+        )
+        .unwrap();
+    assert!(parsed.messages.is_empty());
+    assert_eq!(client.list_whatsapp_replay_dead_letters().unwrap().len(), 1);
+
+    // The parser rejects oversized bodies before it can prove the signature.
+    // Even a syntactically valid HMAC header must not turn that input into a
+    // durable archive or permit a storage-exhaustion route.
+    let oversized = vec![b'x'; crate::connectors::whatsapp_cloud::MAX_WEBHOOK_BYTES + 1];
+    let mut mac = Hmac::<Sha256>::new_from_slice(b"webhook-secret").unwrap();
+    mac.update(&oversized);
+    let oversized_signature = format!(
+        "sha256={}",
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let error = client
+        .ingest_whatsapp_webhook(
+            &oversized_signature,
+            &oversized,
+            crate::whatsapp::WebhookParseOptions::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidQuery { reason, .. } if reason == "webhook_body_too_large")
+    );
+    assert_eq!(ledger.dead_letters().len(), 1);
+    assert_eq!(client.list_whatsapp_replay_dead_letters().unwrap().len(), 1);
+}
+
 #[cfg(feature = "whatsapp-cloud")]
 fn whatsapp_request(key: &str) -> WhatsAppSendRequest {
     WhatsAppSendRequest {
@@ -1788,6 +1911,53 @@ async fn live_whatsapp_cloud_reads() {
             .await
             .expect("media metadata contract");
     }
+}
+
+/// Opt-in live mutation contract for the isolated media lifecycle. It never
+/// addresses a customer: the test uploads an operator-provided fixture and
+/// deletes that exact media ID before it returns. Keep it separate from the
+/// read suite because Graph credentials alone must never turn CI into writes.
+#[cfg(all(feature = "whatsapp-cloud", feature = "vault-file"))]
+#[tokio::test]
+#[ignore = "requires POSTKIT_LIVE_WHATSAPP_WRITE_TESTS=1 and POSTKIT_LIVE_WHATSAPP_MEDIA_FILE"]
+async fn live_whatsapp_cloud_media_upload_delete() {
+    assert_eq!(
+        std::env::var("POSTKIT_LIVE_WHATSAPP_WRITE_TESTS").as_deref(),
+        Ok("1"),
+        "set POSTKIT_LIVE_WHATSAPP_WRITE_TESTS=1 to explicitly authorize the upload/delete contract"
+    );
+    let home = std::env::var_os("POSTKIT_HOME")
+        .map(std::path::PathBuf::from)
+        .expect("set POSTKIT_HOME to the local Postkit test vault");
+    let media_file = std::env::var_os("POSTKIT_LIVE_WHATSAPP_MEDIA_FILE")
+        .map(std::path::PathBuf::from)
+        .expect("set POSTKIT_LIVE_WHATSAPP_MEDIA_FILE to a disposable supported media fixture");
+    let mime_type =
+        std::env::var("POSTKIT_LIVE_WHATSAPP_MEDIA_MIME").unwrap_or_else(|_| "image/png".into());
+    let bytes = std::fs::read(&media_file).expect("read disposable media fixture");
+    let filename = media_file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("postkit-live-media")
+        .to_string();
+    let client = Client::from_home(&home, false).expect("build file-backed test client");
+    let key = AccountKey::new("whatsapp_cloud", "default");
+    let uploaded = client
+        .upload_whatsapp_media(
+            &key,
+            crate::whatsapp::WhatsAppMediaUpload {
+                bytes,
+                mime_type,
+                filename,
+            },
+            Deadline::from_secs(30),
+        )
+        .await
+        .expect("media upload contract");
+    client
+        .delete_whatsapp_media(&key, &uploaded.id, Deadline::from_secs(30))
+        .await
+        .expect("delete uploaded contract fixture");
 }
 
 /// 023: while one publish under a key is in flight, a second caller with

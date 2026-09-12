@@ -8,6 +8,15 @@
 use crate::ads::PausedAdCreate;
 use crate::error::Error;
 use crate::types::Site;
+#[cfg(feature = "whatsapp-cloud")]
+use crate::{
+    customer_window_open, normalize_recipient, ConsentKind, WhatsAppConsent, WhatsAppLedger,
+    WhatsAppMessage, WhatsAppSendRequest,
+};
+#[cfg(feature = "whatsapp-cloud")]
+use std::sync::Arc;
+#[cfg(feature = "whatsapp-cloud")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Every spend-shaped ads action has a named policy decision. When a future
 /// variant is added, Rust requires every policy implementation to decide
@@ -195,6 +204,20 @@ impl WhatsAppAction {
 #[cfg(feature = "whatsapp-cloud")]
 pub trait WhatsAppPolicy: Send + Sync {
     fn authorize(&self, site: &Site, action: WhatsAppAction) -> Result<(), Error>;
+
+    /// Policies that only distinguish message classes can implement
+    /// [`Self::authorize`] alone. The stricter file-backed policy receives
+    /// the closed request too, which is necessary to make consent and the
+    /// 24-hour service window an actual authorization decision rather than
+    /// a dashboard hint.
+    fn authorize_request(
+        &self,
+        site: &Site,
+        action: WhatsAppAction,
+        _request: &WhatsAppSendRequest,
+    ) -> Result<(), Error> {
+        self.authorize(site, action)
+    }
 }
 
 /// Production default: no private message leaves the process merely because
@@ -226,6 +249,250 @@ pub struct AllowWhatsAppSendsPolicy;
 impl WhatsAppPolicy for AllowWhatsAppSendsPolicy {
     fn authorize(&self, _site: &Site, _action: WhatsAppAction) -> Result<(), Error> {
         Ok(())
+    }
+}
+
+/// Compliance policy used by Postkit's file-backed CLI and HTTP products.
+///
+/// It is intentionally conservative but does not pretend that local state is
+/// a complete Meta compliance system:
+///
+/// * a recorded opt-out always refuses customer-visible content;
+/// * templates require an explicit, local opt-in record;
+/// * non-template customer messages require an observed inbound message in
+///   the last 24 hours; and
+/// * mark-read and typing acknowledgements are not customer content and are
+///   left to Meta's inbound-wamid validation.
+///
+/// Library embedding remains opt-in: callers that install
+/// [`AllowWhatsAppSendsPolicy`] retain the documented operator-managed model.
+/// The concrete CLI/server path installs this policy when a caller has also
+/// supplied the explicit `--allow-send` acknowledgement.
+#[cfg(feature = "whatsapp-cloud")]
+pub struct EnforceWhatsAppCompliancePolicy {
+    ledger: Arc<dyn WhatsAppLedger>,
+    consent: Arc<dyn WhatsAppConsent>,
+}
+
+#[cfg(feature = "whatsapp-cloud")]
+impl EnforceWhatsAppCompliancePolicy {
+    pub fn new(ledger: Arc<dyn WhatsAppLedger>, consent: Arc<dyn WhatsAppConsent>) -> Self {
+        Self { ledger, consent }
+    }
+
+    fn denied(site: &Site, action: WhatsAppAction, reason: &str) -> Error {
+        Error::PolicyDenied {
+            site: site.clone(),
+            action: action.as_str().into(),
+            reason: reason.into(),
+        }
+    }
+}
+
+#[cfg(feature = "whatsapp-cloud")]
+impl WhatsAppPolicy for EnforceWhatsAppCompliancePolicy {
+    fn authorize(&self, _site: &Site, _action: WhatsAppAction) -> Result<(), Error> {
+        // Account/Flow/template administration has its own explicit `--yes`
+        // acknowledgement. This policy only adds context-sensitive checks to
+        // customer-addressed Cloud API requests.
+        Ok(())
+    }
+
+    fn authorize_request(
+        &self,
+        site: &Site,
+        action: WhatsAppAction,
+        request: &WhatsAppSendRequest,
+    ) -> Result<(), Error> {
+        if request.recipient_type != crate::RecipientType::Individual {
+            // A group ID cannot be matched to one person's consent/window
+            // record. Refuse rather than treating an opaque group as opted in.
+            return Err(Self::denied(
+                site,
+                action,
+                "whatsapp_compliance_group_recipient_unsupported",
+            ));
+        }
+
+        let Some(raw_recipient) = request.message.recipient() else {
+            return Ok(());
+        };
+        // The request was structurally validated before this hook. Normalize
+        // once more for the storage lookup so `+60 11…` and `6011…` cannot
+        // accidentally create two different local consent records.
+        let recipient = normalize_recipient(raw_recipient)
+            .map_err(|_| Self::denied(site, action, "whatsapp_recipient_invalid"))?;
+        let recipient = recipient.trim_start_matches('+');
+
+        match self.consent.get(recipient)? {
+            Some(record) if record.kind == ConsentKind::OptOut => {
+                return Err(Self::denied(site, action, "whatsapp_consent_opted_out"));
+            }
+            Some(_) | None => {}
+        }
+
+        if matches!(request.message, WhatsAppMessage::Template { .. }) {
+            return match self.consent.get(recipient)? {
+                Some(record) if record.kind == ConsentKind::OptIn => Ok(()),
+                // A missing local record is not evidence of consent. Meta
+                // still independently validates template policy/approval.
+                _ => Err(Self::denied(site, action, "whatsapp_consent_missing")),
+            };
+        }
+
+        if request.message.requires_customer_service_window() {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|value| value.as_secs())
+                .unwrap_or(0);
+            let open = self
+                .ledger
+                .last_inbound_at(recipient)?
+                .is_some_and(|at| customer_window_open(at, now));
+            if !open {
+                return Err(Self::denied(
+                    site,
+                    action,
+                    "whatsapp_customer_window_closed",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "whatsapp-cloud"))]
+mod whatsapp_compliance_tests {
+    use super::*;
+    use crate::{
+        ConsentRecord, MemoryWhatsAppConsent, MemoryWhatsAppLedger, RecipientType, WhatsAppLedger,
+    };
+
+    fn text(to: &str) -> WhatsAppSendRequest {
+        WhatsAppSendRequest {
+            message: WhatsAppMessage::Text {
+                to: to.into(),
+                text: "hello".into(),
+                preview_url: false,
+            },
+            idempotency_key: "compliance-1".into(),
+            recipient_type: RecipientType::Individual,
+        }
+    }
+
+    fn template(to: &str) -> WhatsAppSendRequest {
+        WhatsAppSendRequest {
+            message: WhatsAppMessage::Template {
+                to: to.into(),
+                name: "order_update".into(),
+                language: "en_US".into(),
+                body_parameters: vec![],
+                named_body_parameters: vec![],
+                header: None,
+                buttons: vec![],
+                limited_time_offer: None,
+            },
+            idempotency_key: "compliance-2".into(),
+            recipient_type: RecipientType::Individual,
+        }
+    }
+
+    fn policy() -> (
+        EnforceWhatsAppCompliancePolicy,
+        Arc<MemoryWhatsAppLedger>,
+        Arc<MemoryWhatsAppConsent>,
+    ) {
+        let ledger = Arc::new(MemoryWhatsAppLedger::new());
+        let consent = Arc::new(MemoryWhatsAppConsent::new());
+        (
+            EnforceWhatsAppCompliancePolicy::new(ledger.clone(), consent.clone()),
+            ledger,
+            consent,
+        )
+    }
+
+    #[test]
+    fn strict_policy_allows_in_window_customer_service_without_template_opt_in() {
+        let (policy, ledger, _) = policy();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        ledger.remember_inbound_from("60123456789", now).unwrap();
+
+        policy
+            .authorize_request(
+                &Site::new("whatsapp_cloud"),
+                WhatsAppAction::SendText,
+                &text("+60 123456789"),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn strict_policy_refuses_out_of_window_free_form_content() {
+        let (policy, ledger, _) = policy();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        ledger
+            .remember_inbound_from("60123456789", now - crate::CUSTOMER_WINDOW_SECS)
+            .unwrap();
+
+        let error = policy
+            .authorize_request(
+                &Site::new("whatsapp_cloud"),
+                WhatsAppAction::SendText,
+                &text("60123456789"),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::PolicyDenied { reason, .. } if reason == "whatsapp_customer_window_closed")
+        );
+    }
+
+    #[test]
+    fn strict_policy_requires_an_opt_in_for_templates() {
+        let (policy, _, _) = policy();
+        let error = policy
+            .authorize_request(
+                &Site::new("whatsapp_cloud"),
+                WhatsAppAction::SendTemplate,
+                &template("60123456789"),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::PolicyDenied { reason, .. } if reason == "whatsapp_consent_missing")
+        );
+    }
+
+    #[test]
+    fn strict_policy_honours_opt_out_even_inside_the_customer_window() {
+        let (policy, ledger, consent) = policy();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        ledger.remember_inbound_from("60123456789", now).unwrap();
+        consent
+            .put(&ConsentRecord {
+                wa_id: "60123456789".into(),
+                kind: ConsentKind::OptOut,
+                at: now,
+            })
+            .unwrap();
+
+        let error = policy
+            .authorize_request(
+                &Site::new("whatsapp_cloud"),
+                WhatsAppAction::SendText,
+                &text("60123456789"),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::PolicyDenied { reason, .. } if reason == "whatsapp_consent_opted_out")
+        );
     }
 }
 

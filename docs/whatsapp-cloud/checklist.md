@@ -92,7 +92,7 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 
 ### Webhook transport
 
-- [ ] Public HTTPS termination/deployment runbook (Postkit serves loopback HTTP; use a reverse proxy or tunnel)
+- [x] Public HTTPS termination/deployment runbook (Caddy reverse-proxy example; Postkit remains loopback HTTP)
 - [x] GET webhook challenge (hub.verify_token)
 - [x] HTTP 200 ACK to Meta
 - [x] Subscribe WABA to `messages` via API (dashboard works today)
@@ -100,7 +100,7 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 - [x] Durable minimal message + status store (“what happened to `wamid X`?”)
 - [x] Final-state reduction (sent → delivered → read / failed)
 - [x] Hash-only dead-letter audit record for signed parse failures
-- [ ] Replayable dead-letter workflow (raw bodies are intentionally not retained)
+- [x] Opt-in encrypted replayable dead-letter workflow (key stays outside Postkit home; default remains hash-only)
 - [x] Process-local pacing (default ~80 msg/s per configured phone; batches wait within deadline)
 - [x] Delivery-ledger retention purge (caller selects the cutoff; consent is separate)
 - [x] Opt-in read-only live Graph contract suite (ignored unless explicitly invoked)
@@ -117,11 +117,11 @@ Meta has **no** GET-by-`wamid`. History only exists if something stores webhooks
 - [x] Multiple Phone Number IDs accepted for a shared webhook
 - [x] Selectable outbound sender (configured alias; per-phone pacing/idempotency)
 
-### Compliance and billing (operator signals; Meta still enforces delivery/window/pricing)
+### Compliance and billing (local safety checks; Meta still enforces delivery/window/pricing)
 
 - [x] Opt-in / opt-out records
 - [x] 24h customer-service window clock
-- [ ] Consent/window enforcement policy (records are deliberately query-only)
+- [x] File-backed strict consent/window enforcement (opt-out deny; template opt-in; 24h free-form window)
 - [x] Template category / pacing visibility
 - [x] Conversation / pricing visibility from status webhooks
 - [x] Usage metrics / template-quality reporting (phone health + template quality reads; no billing dashboard)

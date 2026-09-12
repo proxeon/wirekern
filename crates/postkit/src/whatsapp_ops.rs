@@ -14,6 +14,13 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "vault-file")]
+use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+#[cfg(feature = "vault-file")]
+use chacha20poly1305::{
+    aead::{Aead, Payload},
+    KeyInit, XChaCha20Poly1305, XNonce,
+};
+#[cfg(feature = "vault-file")]
 use std::fs;
 #[cfg(feature = "vault-file")]
 use std::path::{Path, PathBuf};
@@ -51,8 +58,8 @@ fn constant_eq(a: &str, b: &str) -> bool {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     type H = Hmac<Sha256>;
-    let mut left = H::new_from_slice(b"postkit-verify-token").expect("hmac key");
-    let mut right = H::new_from_slice(b"postkit-verify-token").expect("hmac key");
+    let mut left = <H as Mac>::new_from_slice(b"postkit-verify-token").expect("hmac key");
+    let mut right = <H as Mac>::new_from_slice(b"postkit-verify-token").expect("hmac key");
     left.update(a.as_bytes());
     right.update(b.as_bytes());
     left.finalize().into_bytes() == right.finalize().into_bytes()
@@ -91,6 +98,45 @@ pub trait WhatsAppLedger: Send + Sync {
     /// return the number of wamid rows removed. This never touches consent
     /// because an opt-out can require separate storage.
     fn purge_before(&self, before_unix: u64) -> Result<usize, Error>;
+}
+
+/// Safe-to-display metadata for a signed webhook that Postkit could verify
+/// but could not reduce into its current typed event model. The body and its
+/// HMAC are intentionally absent: a list command must never become a PII
+/// export endpoint.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WhatsAppDeadLetterSummary {
+    pub id: String,
+    pub reason: String,
+    pub body_sha256: String,
+    pub at: u64,
+}
+
+/// An opt-in store for encrypted raw signed webhooks. The normal ledger keeps
+/// only a hash audit record. Operators who need to replay a newly supported
+/// event after upgrading can configure this separate store with a key that is
+/// never written below the Postkit home directory.
+pub trait WhatsAppReplayableDeadLetters: Send + Sync {
+    fn capture(
+        &self,
+        reason: &str,
+        signature: &str,
+        raw_body: &[u8],
+    ) -> Result<WhatsAppDeadLetterSummary, Error>;
+    fn list(&self) -> Result<Vec<WhatsAppDeadLetterSummary>, Error>;
+    fn load(&self, id: &str) -> Result<Option<WhatsAppDeadLetter>, Error>;
+    fn delete(&self, id: &str) -> Result<(), Error>;
+    fn purge_before(&self, before_unix: u64) -> Result<usize, Error>;
+}
+
+/// Private replay payload. It is only ever returned inside the library so
+/// [`crate::Client::replay_whatsapp_dead_letter`] can verify it again before
+/// reduction; neither CLI JSON nor the HTTP server serializes this value.
+#[derive(Clone, Debug)]
+pub struct WhatsAppDeadLetter {
+    pub summary: WhatsAppDeadLetterSummary,
+    pub signature: String,
+    pub raw_body: Vec<u8>,
 }
 
 /// Apply one signed parse into the ledger. Duplicate inbound `wamid`s are
@@ -229,8 +275,9 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// 24h customer-service window as a computed hint from last inbound
-/// timestamp. Meta enforces the window; we do not store policy state.
+/// 24h customer-service window from the last verified inbound timestamp.
+/// Meta remains authoritative, while the file-backed strict send policy uses
+/// this conservative local result to refuse free-form sends before Graph.
 pub fn customer_window_open(last_inbound_unix: u64, now_unix: u64) -> bool {
     now_unix.saturating_sub(last_inbound_unix) < CUSTOMER_WINDOW_SECS
 }
@@ -364,6 +411,79 @@ impl WhatsAppConsent for MemoryWhatsAppConsent {
             .expect("consent")
             .insert(record.wa_id.clone(), record.clone());
         Ok(())
+    }
+}
+
+/// In-memory replay store for tests and library embedding. Unlike the file
+/// implementation it is process-private by construction, so encryption is
+/// unnecessary; production persistence uses [`EncryptedFileWhatsAppDeadLetters`].
+#[derive(Default)]
+pub struct MemoryWhatsAppReplayableDeadLetters {
+    inner: Mutex<HashMap<String, WhatsAppDeadLetter>>,
+    next: Mutex<u64>,
+}
+
+impl MemoryWhatsAppReplayableDeadLetters {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl WhatsAppReplayableDeadLetters for MemoryWhatsAppReplayableDeadLetters {
+    fn capture(
+        &self,
+        reason: &str,
+        signature: &str,
+        raw_body: &[u8],
+    ) -> Result<WhatsAppDeadLetterSummary, Error> {
+        let mut next = self.next.lock().expect("replay dlq");
+        *next += 1;
+        let summary = WhatsAppDeadLetterSummary {
+            id: format!("dlq-{}-{next}", now_secs()),
+            reason: reason.into(),
+            body_sha256: sha256_hex(raw_body),
+            at: now_secs(),
+        };
+        self.inner.lock().expect("replay dlq").insert(
+            summary.id.clone(),
+            WhatsAppDeadLetter {
+                summary: summary.clone(),
+                signature: signature.into(),
+                raw_body: raw_body.to_vec(),
+            },
+        );
+        Ok(summary)
+    }
+
+    fn list(&self) -> Result<Vec<WhatsAppDeadLetterSummary>, Error> {
+        let mut entries = self
+            .inner
+            .lock()
+            .expect("replay dlq")
+            .values()
+            .map(|entry| entry.summary.clone())
+            .collect::<Vec<_>>();
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(entries)
+    }
+
+    fn load(&self, id: &str) -> Result<Option<WhatsAppDeadLetter>, Error> {
+        Ok(self.inner.lock().expect("replay dlq").get(id).cloned())
+    }
+
+    fn delete(&self, id: &str) -> Result<(), Error> {
+        self.inner.lock().expect("replay dlq").remove(id);
+        Ok(())
+    }
+
+    fn purge_before(&self, before_unix: u64) -> Result<usize, Error> {
+        let mut removed = 0;
+        self.inner.lock().expect("replay dlq").retain(|_, entry| {
+            let keep = entry.summary.at >= before_unix;
+            removed += usize::from(!keep);
+            keep
+        });
+        Ok(removed)
     }
 }
 
@@ -507,6 +627,236 @@ impl WhatsAppLedger for FileWhatsAppLedger {
         let _ = purge_json_before(&self.root.join("inbound"), "at", before_unix)?;
         let _ = purge_json_before(&self.root.join("dlq"), "at", before_unix)?;
         Ok(ledger)
+    }
+}
+
+/// Durable, encrypted raw-event store for the explicit replay workflow.
+///
+/// The 32-byte key comes from `POSTKIT_WHATSAPP_REPLAY_DLQ_KEY` and is never
+/// generated or persisted by Postkit. Losing it makes the captured events
+/// intentionally unrecoverable; rotating it requires draining/replaying the
+/// old queue first. This is a safer contract than silently retaining customer
+/// content in the normal delivery ledger.
+#[cfg(feature = "vault-file")]
+pub struct EncryptedFileWhatsAppDeadLetters {
+    root: PathBuf,
+    key: [u8; 32],
+}
+
+#[cfg(feature = "vault-file")]
+#[derive(Serialize, Deserialize)]
+struct StoredDeadLetter {
+    #[serde(flatten)]
+    summary: WhatsAppDeadLetterSummary,
+    nonce: String,
+    ciphertext: String,
+}
+
+#[cfg(feature = "vault-file")]
+#[derive(Serialize, Deserialize)]
+struct DeadLetterPlaintext {
+    signature: String,
+    raw_body: Vec<u8>,
+}
+
+#[cfg(feature = "vault-file")]
+impl EncryptedFileWhatsAppDeadLetters {
+    pub fn new(home: impl AsRef<Path>, key_hex: &str) -> Result<Self, Error> {
+        let root = home.as_ref().join("whatsapp").join("replay-dlq");
+        crate::vault_file::ensure_dir(&root)?;
+        Ok(Self {
+            root,
+            key: parse_replay_key(key_hex)?,
+        })
+    }
+
+    /// Return `None` unless the operator explicitly supplied a key. A bad
+    /// configured key is an error: quietly disabling replay after an operator
+    /// opted in would make the durability promise misleading.
+    pub fn from_env(home: impl AsRef<Path>) -> Result<Option<Self>, Error> {
+        match std::env::var("POSTKIT_WHATSAPP_REPLAY_DLQ_KEY") {
+            Ok(key) => Self::new(home, &key).map(Some),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(_) => Err(replay_error("whatsapp_replay_dlq_key_invalid")),
+        }
+    }
+
+    fn path(&self, id: &str) -> Result<PathBuf, Error> {
+        if !valid_dead_letter_id(id) {
+            return Err(Error::InvalidName(id.into()));
+        }
+        Ok(self.root.join(format!("{id}.json")))
+    }
+
+    fn aad(summary: &WhatsAppDeadLetterSummary) -> Vec<u8> {
+        // Metadata stays visible so operators can triage without decrypting.
+        // Authenticate it too, so a substituted reason/hash cannot be paired
+        // with a legitimate ciphertext during replay.
+        format!(
+            "postkit-whatsapp-replay-dlq/v1|{}|{}|{}|{}",
+            summary.id, summary.reason, summary.body_sha256, summary.at
+        )
+        .into_bytes()
+    }
+
+    fn decode(&self, stored: StoredDeadLetter) -> Result<WhatsAppDeadLetter, Error> {
+        let nonce = STANDARD_NO_PAD
+            .decode(stored.nonce)
+            .map_err(|_| replay_error("whatsapp_replay_dlq_corrupt"))?;
+        if nonce.len() != 24 {
+            return Err(replay_error("whatsapp_replay_dlq_corrupt"));
+        }
+        let ciphertext = STANDARD_NO_PAD
+            .decode(stored.ciphertext)
+            .map_err(|_| replay_error("whatsapp_replay_dlq_corrupt"))?;
+        let cipher = XChaCha20Poly1305::new((&self.key).into());
+        let plaintext = cipher
+            .decrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: &ciphertext,
+                    aad: &Self::aad(&stored.summary),
+                },
+            )
+            .map_err(|_| replay_error("whatsapp_replay_dlq_auth_failed"))?;
+        let plain: DeadLetterPlaintext = serde_json::from_slice(&plaintext)
+            .map_err(|_| replay_error("whatsapp_replay_dlq_corrupt"))?;
+        if sha256_hex(&plain.raw_body) != stored.summary.body_sha256 {
+            return Err(replay_error("whatsapp_replay_dlq_hash_mismatch"));
+        }
+        Ok(WhatsAppDeadLetter {
+            summary: stored.summary,
+            signature: plain.signature,
+            raw_body: plain.raw_body,
+        })
+    }
+}
+
+#[cfg(feature = "vault-file")]
+impl WhatsAppReplayableDeadLetters for EncryptedFileWhatsAppDeadLetters {
+    fn capture(
+        &self,
+        reason: &str,
+        signature: &str,
+        raw_body: &[u8],
+    ) -> Result<WhatsAppDeadLetterSummary, Error> {
+        if reason.is_empty() || reason.len() > 128 || reason.contains('/') || reason.contains('\\')
+        {
+            return Err(replay_error("whatsapp_replay_dlq_reason_invalid"));
+        }
+        let mut nonce = [0u8; 24];
+        getrandom::fill(&mut nonce)
+            .map_err(|_| replay_error("whatsapp_replay_dlq_random_failed"))?;
+        let at = now_secs();
+        let summary = WhatsAppDeadLetterSummary {
+            // The random nonce makes same-second identical callback bodies
+            // distinct without leaking a recipient or message identifier in
+            // the file name.
+            id: format!("dlq-{at}-{}", &sha256_hex(&nonce)[..16]),
+            reason: reason.into(),
+            body_sha256: sha256_hex(raw_body),
+            at,
+        };
+        let plain = serde_json::to_vec(&DeadLetterPlaintext {
+            signature: signature.into(),
+            raw_body: raw_body.to_vec(),
+        })?;
+        let cipher = XChaCha20Poly1305::new((&self.key).into());
+        let ciphertext = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                Payload {
+                    msg: &plain,
+                    aad: &Self::aad(&summary),
+                },
+            )
+            .map_err(|_| replay_error("whatsapp_replay_dlq_encrypt_failed"))?;
+        let stored = StoredDeadLetter {
+            summary: summary.clone(),
+            nonce: STANDARD_NO_PAD.encode(nonce),
+            ciphertext: STANDARD_NO_PAD.encode(ciphertext),
+        };
+        write_private(&self.path(&summary.id)?, &serde_json::to_vec(&stored)?)?;
+        Ok(summary)
+    }
+
+    fn list(&self) -> Result<Vec<WhatsAppDeadLetterSummary>, Error> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file()
+                || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+            {
+                continue;
+            }
+            let stored: StoredDeadLetter = serde_json::from_slice(&fs::read(entry.path())?)?;
+            if valid_dead_letter_id(&stored.summary.id) {
+                entries.push(stored.summary);
+            }
+        }
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(entries)
+    }
+
+    fn load(&self, id: &str) -> Result<Option<WhatsAppDeadLetter>, Error> {
+        let path = self.path(id)?;
+        match fs::read(path) {
+            Ok(bytes) => self.decode(serde_json::from_slice(&bytes)?).map(Some),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn delete(&self, id: &str) -> Result<(), Error> {
+        let path = self.path(id)?;
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn purge_before(&self, before_unix: u64) -> Result<usize, Error> {
+        let mut removed = 0;
+        for summary in self.list()? {
+            if summary.at < before_unix {
+                self.delete(&summary.id)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+}
+
+#[cfg(feature = "vault-file")]
+fn valid_dead_letter_id(id: &str) -> bool {
+    id.starts_with("dlq-")
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+#[cfg(feature = "vault-file")]
+fn parse_replay_key(value: &str) -> Result<[u8; 32], Error> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(replay_error("whatsapp_replay_dlq_key_invalid"));
+    }
+    let mut out = [0u8; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        out[index] = std::str::from_utf8(chunk)
+            .ok()
+            .and_then(|part| u8::from_str_radix(part, 16).ok())
+            .ok_or_else(|| replay_error("whatsapp_replay_dlq_key_invalid"))?;
+    }
+    Ok(out)
+}
+
+#[cfg(feature = "vault-file")]
+fn replay_error(reason: &str) -> Error {
+    Error::InvalidQuery {
+        site: crate::types::Site::new("whatsapp_cloud"),
+        reason: reason.into(),
     }
 }
 
@@ -911,6 +1261,48 @@ mod tests {
         assert_eq!(ledger.purge_before(20).unwrap(), 1);
         assert!(ledger.get("wamid.old").unwrap().is_none());
         assert!(ledger.last_inbound_at("60123456789").unwrap().is_none());
+    }
+
+    #[cfg(feature = "vault-file")]
+    #[test]
+    fn encrypted_replay_dlq_hides_raw_customer_body_and_round_trips() {
+        let temp = tempfile::tempdir().unwrap();
+        let key = "ab".repeat(32);
+        let store = EncryptedFileWhatsAppDeadLetters::new(temp.path(), &key).unwrap();
+        let raw = br#"{"customer":"private message body","id":"wamid.private"}"#;
+        let summary = store
+            .capture("webhook_status_unsupported", "sha256=signature", raw)
+            .unwrap();
+
+        // The on-disk envelope has triage metadata, but never the raw body
+        // or signature. A replay key is required to decrypt either value.
+        let path = temp
+            .path()
+            .join("whatsapp/replay-dlq")
+            .join(format!("{}.json", summary.id));
+        let stored = std::fs::read_to_string(path).unwrap();
+        assert!(!stored.contains("private message body"));
+        assert!(!stored.contains("sha256=signature"));
+        assert_eq!(store.list().unwrap(), vec![summary.clone()]);
+
+        let replay = store.load(&summary.id).unwrap().unwrap();
+        assert_eq!(replay.raw_body, raw);
+        assert_eq!(replay.signature, "sha256=signature");
+        store.delete(&summary.id).unwrap();
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    #[cfg(feature = "vault-file")]
+    #[test]
+    fn replay_dlq_rejects_malformed_operator_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = match EncryptedFileWhatsAppDeadLetters::new(temp.path(), "not-a-32-byte-key") {
+            Ok(_) => panic!("malformed replay key must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, Error::InvalidQuery { reason, .. } if reason == "whatsapp_replay_dlq_key_invalid")
+        );
     }
 
     #[test]

@@ -68,16 +68,33 @@ impl Client {
                 Ok(ledger) => client.with_whatsapp_ledger(Arc::new(ledger)),
                 Err(_) => client,
             };
-            match crate::whatsapp_ops::FileWhatsAppConsent::new(home) {
+            let client = match crate::whatsapp_ops::FileWhatsAppConsent::new(home) {
                 Ok(consent) => client.with_whatsapp_consent(Arc::new(consent)),
                 Err(_) => client,
+            };
+            // Raw callbacks stay hash-only unless the operator supplies a
+            // separate process secret. This avoids silently turning webhook
+            // parsing into a plaintext customer-content archive.
+            match crate::whatsapp_ops::EncryptedFileWhatsAppDeadLetters::from_env(home)? {
+                Some(store) => client.with_whatsapp_replay_dead_letters(Arc::new(store)),
+                None => client,
             }
         };
         #[cfg(feature = "whatsapp-cloud")]
         if allow_whatsapp_send {
-            return Ok(
-                client.with_whatsapp_policy(Arc::new(crate::policy::AllowWhatsAppSendsPolicy))
-            );
+            // The CLI/server surface is deliberately stricter than a library
+            // embedding: sending after `--allow-send` must consult durable
+            // local consent and inbound-window state. If either store cannot
+            // be opened, refuse to construct a sending client instead of
+            // silently falling back to the old operator-only policy.
+            let ledger = Arc::new(crate::whatsapp_ops::FileWhatsAppLedger::new(home)?);
+            let consent = Arc::new(crate::whatsapp_ops::FileWhatsAppConsent::new(home)?);
+            return Ok(client
+                .with_whatsapp_ledger(ledger.clone())
+                .with_whatsapp_consent(consent.clone())
+                .with_whatsapp_policy(Arc::new(
+                    crate::policy::EnforceWhatsAppCompliancePolicy::new(ledger, consent),
+                )));
         }
         let _ = allow_whatsapp_send;
         Ok(client)

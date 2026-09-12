@@ -111,7 +111,10 @@ pub use media::{MediaQuery, MediaReply, PublishedMedia, DEFAULT_MEDIA_LIMIT, MAX
 pub use pages::{PageAccount, PagesReply};
 pub use policy::{AdsAction, AdsPolicy, AllowAdsActionPolicy, PausedOnlyAdsPolicy};
 #[cfg(feature = "whatsapp-cloud")]
-pub use policy::{AllowWhatsAppSendsPolicy, NoWhatsAppSendsPolicy, WhatsAppAction, WhatsAppPolicy};
+pub use policy::{
+    AllowWhatsAppSendsPolicy, EnforceWhatsAppCompliancePolicy, NoWhatsAppSendsPolicy,
+    WhatsAppAction, WhatsAppPolicy,
+};
 pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 pub use registry::{Connector, Registry};
 pub use types::{
@@ -121,26 +124,28 @@ pub use types::{
 pub use vault::{MemoryVault, Vault};
 #[cfg(feature = "whatsapp-cloud")]
 pub use whatsapp::{
-    embedded_signup_url, validate_two_step_pin, DeliveryConversation, DeliveryError,
-    DeliveryPricing, DeliveryStatus, DeliveryStatusKind, InboundContact, InboundInteractive,
-    InboundLocation, InboundMedia, InboundMessage, InboundMessages, InboundOrder, InboundReaction,
-    InboundReferral, InboundUnsupported, LimitedTimeOffer, MediaRef, NamedBodyParameter,
-    ParameterFormat, ProductSection, RecipientType, TemplateButton, TemplateCreateButton,
-    TemplateCreateComponent, TemplateHeader, WebhookParseOptions, WhatsAppFlowDraft,
-    WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppMediaMeta, WhatsAppMediaUpload, WhatsAppMessage,
-    WhatsAppOutboundSender, WhatsAppPageQuery, WhatsAppPhoneNumber, WhatsAppPhoneNumberList,
-    WhatsAppSendRequest, WhatsAppSystemUser, WhatsAppSystemUserList, WhatsAppTemplateDraft,
-    WhatsAppTemplateList, WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia,
-    WhatsAppWaba, WhatsAppWabaList, MAX_REPLY_TEXT,
+    embedded_signup_url, normalize_recipient, validate_two_step_pin, DeliveryConversation,
+    DeliveryError, DeliveryPricing, DeliveryStatus, DeliveryStatusKind, InboundContact,
+    InboundInteractive, InboundLocation, InboundMedia, InboundMessage, InboundMessages,
+    InboundOrder, InboundReaction, InboundReferral, InboundUnsupported, LimitedTimeOffer, MediaRef,
+    NamedBodyParameter, ParameterFormat, ProductSection, RecipientType, TemplateButton,
+    TemplateCreateButton, TemplateCreateComponent, TemplateHeader, WebhookParseOptions,
+    WhatsAppFlowDraft, WhatsAppFlowList, WhatsAppFlowRecord, WhatsAppMediaMeta,
+    WhatsAppMediaUpload, WhatsAppMessage, WhatsAppOutboundSender, WhatsAppPageQuery,
+    WhatsAppPhoneNumber, WhatsAppPhoneNumberList, WhatsAppSendRequest, WhatsAppSystemUser,
+    WhatsAppSystemUserList, WhatsAppTemplateDraft, WhatsAppTemplateList, WhatsAppTemplateQuery,
+    WhatsAppTemplateRecord, WhatsAppUploadedMedia, WhatsAppWaba, WhatsAppWabaList, MAX_REPLY_TEXT,
 };
 #[cfg(feature = "whatsapp-cloud")]
 pub use whatsapp_ops::{
     customer_window_open, ingest_parsed, verify_webhook_challenge, ConsentKind, ConsentRecord,
-    LedgerApply, MemoryWhatsAppConsent, MemoryWhatsAppLedger, ThroughputQueue, WhatsAppConsent,
-    WhatsAppLedger, WhatsAppLedgerRecord, CUSTOMER_WINDOW_SECS, DEFAULT_THROUGHPUT_PER_SEC,
+    LedgerApply, MemoryWhatsAppConsent, MemoryWhatsAppLedger, MemoryWhatsAppReplayableDeadLetters,
+    ThroughputQueue, WhatsAppConsent, WhatsAppDeadLetter, WhatsAppDeadLetterSummary,
+    WhatsAppLedger, WhatsAppLedgerRecord, WhatsAppReplayableDeadLetters, CUSTOMER_WINDOW_SECS,
+    DEFAULT_THROUGHPUT_PER_SEC,
 };
 #[cfg(all(feature = "whatsapp-cloud", feature = "vault-file"))]
-pub use whatsapp_ops::{FileWhatsAppConsent, FileWhatsAppLedger};
+pub use whatsapp_ops::{EncryptedFileWhatsAppDeadLetters, FileWhatsAppConsent, FileWhatsAppLedger};
 
 #[cfg(feature = "vault-file")]
 pub use keys::{CreatedKey, FileKeyStore, KeyMeta, KEY_PREFIX};

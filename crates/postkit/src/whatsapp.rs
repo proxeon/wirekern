@@ -36,7 +36,8 @@ pub enum WhatsAppMessage {
         preview_url: bool,
     },
     /// Service-window text with no `context`. Meta allows this only while
-    /// a customer-service window is open; Postkit does not track that clock.
+    /// a customer-service window is open; file-backed Postkit clients reject
+    /// it unless their verified callback ledger observes that window too.
     Text {
         to: String,
         text: String,
@@ -391,6 +392,48 @@ pub struct ListRow {
 }
 
 impl WhatsAppMessage {
+    /// Return the individual customer address for messages that can create
+    /// customer-visible content. Read/typing acknowledgements deliberately
+    /// have no `to`: they act on a known inbound `wamid` instead.
+    pub fn recipient(&self) -> Option<&str> {
+        match self {
+            Self::Reply { to, .. }
+            | Self::Text { to, .. }
+            | Self::Template { to, .. }
+            | Self::Image { to, .. }
+            | Self::Document { to, .. }
+            | Self::Audio { to, .. }
+            | Self::Video { to, .. }
+            | Self::Sticker { to, .. }
+            | Self::Buttons { to, .. }
+            | Self::List { to, .. }
+            | Self::CtaUrl { to, .. }
+            | Self::LocationRequest { to, .. }
+            | Self::VoiceCall { to, .. }
+            | Self::Location { to, .. }
+            | Self::Contacts { to, .. }
+            | Self::AddressRequest { to, .. }
+            | Self::Reaction { to, .. }
+            | Self::Catalog { to, .. }
+            | Self::Product { to, .. }
+            | Self::ProductList { to, .. }
+            | Self::OrderStatus { to, .. }
+            | Self::Flow { to, .. } => Some(to),
+            Self::MarkRead { .. } | Self::Typing { .. } => None,
+        }
+    }
+
+    /// A Meta-approved template may be sent outside the customer-service
+    /// window. Every other customer-visible message uses free-form Cloud API
+    /// delivery and must remain inside that window when strict compliance is
+    /// enabled.
+    pub fn requires_customer_service_window(&self) -> bool {
+        !matches!(
+            self,
+            Self::Template { .. } | Self::MarkRead { .. } | Self::Typing { .. }
+        )
+    }
+
     pub fn required_capability(&self) -> Capability {
         match self {
             Self::Reply { .. } => Capability::SendReply,
