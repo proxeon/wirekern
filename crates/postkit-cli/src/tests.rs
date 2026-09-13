@@ -1286,6 +1286,166 @@ fn reply_to_refuses_empty_dual_source_and_fanout() {
 }
 
 #[test]
+fn page_id_flag_parses_and_refuses_wrong_targets() {
+    let cli = Cli::try_parse_from([
+        "postkit",
+        "post",
+        "facebook_pages",
+        "--text",
+        "hi",
+        "--page-id",
+        "123",
+    ])
+    .unwrap();
+    match *cli.command {
+        Commands::Post { ref page_id, .. } => assert_eq!(page_id.as_deref(), Some("123")),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(page_id_conflict(None, &[]), None);
+    assert_eq!(page_id_conflict(None, &["page_id=1".into()]), None);
+    assert_eq!(page_id_conflict(Some(""), &[]), Some("page_id_empty"));
+    assert_eq!(
+        page_id_conflict(Some("1"), &["page_id=2".into()]),
+        Some("page_id_conflict")
+    );
+    assert_eq!(
+        page_id_target_conflict(Some("1"), &["facebook_pages".into()]),
+        None
+    );
+    assert_eq!(
+        page_id_target_conflict(Some("1"), &["threads".into()]),
+        Some("page_id_site_unsupported")
+    );
+    assert_eq!(
+        page_id_target_conflict(Some("1"), &["facebook_pages".into(), "threads".into()]),
+        Some("page_id_fanout_unsupported")
+    );
+}
+
+#[test]
+fn insights_until_and_async_report_parse() {
+    let cli = Cli::try_parse_from([
+        "postkit",
+        "insights",
+        "meta_ads",
+        "--from",
+        "2026-06-01",
+        "--until",
+        "2026-06-30",
+        "--attribution",
+        "7d_click_1d_view",
+        "--async-report",
+    ])
+    .unwrap();
+    match *cli.command {
+        Commands::Insights {
+            ref until,
+            async_report,
+            ..
+        } => {
+            assert_eq!(until, "2026-06-30");
+            assert!(async_report);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(Cli::try_parse_from([
+        "postkit",
+        "insights",
+        "meta_ads",
+        "--from",
+        "2026-06-01",
+        "--to",
+        "2026-06-30",
+        "--attribution",
+        "7d_click_1d_view",
+    ])
+    .is_err());
+}
+
+#[test]
+fn insights_job_result_reuses_cached_query() {
+    let dir = tempfile::tempdir().unwrap();
+    let query = build_insights_query(
+        "meta_ads",
+        "2026-06-01",
+        "2026-06-30",
+        "campaign",
+        "spend",
+        "7d_click_1d_view",
+        InsightsOptions {
+            ad_account: None,
+            entity_ids: vec![],
+            breakdowns: String::new(),
+            report: "performance".into(),
+        },
+    )
+    .unwrap();
+    store_insights_job_query(dir.path(), "238001", &query).unwrap();
+    let loaded = resolve_insights_job_query(
+        dir.path(),
+        "meta_ads",
+        "238001",
+        None,
+        None,
+        "account",
+        "spend,impressions,clicks,purchases",
+        None,
+        InsightsOptions {
+            ad_account: None,
+            entity_ids: vec![],
+            breakdowns: String::new(),
+            report: "performance".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(loaded.range.from, "2026-06-01");
+    assert_eq!(loaded.range.to, "2026-06-30");
+    assert_eq!(loaded.level.as_str(), "campaign");
+
+    let missing = resolve_insights_job_query(
+        dir.path(),
+        "meta_ads",
+        "missing",
+        None,
+        None,
+        "account",
+        "spend",
+        None,
+        InsightsOptions {
+            ad_account: None,
+            entity_ids: vec![],
+            breakdowns: String::new(),
+            report: "performance".into(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(missing, Error::InvalidQuery { reason, .. } if reason == "insights_job_query_missing")
+    );
+
+    let incomplete = resolve_insights_job_query(
+        dir.path(),
+        "meta_ads",
+        "238001",
+        Some("2026-06-01".into()),
+        None,
+        "account",
+        "spend",
+        None,
+        InsightsOptions {
+            ad_account: None,
+            entity_ids: vec![],
+            breakdowns: String::new(),
+            report: "performance".into(),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(incomplete, Error::InvalidQuery { reason, .. } if reason == "insights_job_query_incomplete")
+    );
+}
+
+#[test]
 fn reply_to_flag_folds_into_the_param_spelling() {
     // The fold is what makes one flag feed every later check: the image
     // guard sees it, parse_params carries it, and the chain anchor
@@ -1301,7 +1461,7 @@ fn reply_to_flag_folds_into_the_param_spelling() {
     assert_eq!(parsed["reply_to_id"], "1836");
     assert_eq!(parsed["chat_id"], "5");
     assert_eq!(
-        image_input_conflict(1, 1, false, "", &param),
+        image_input_conflict(1, 1, false, None, &param),
         Some("image_reply_unsupported")
     );
 }
@@ -1352,25 +1512,36 @@ fn dry_run_flag_parses() {
 #[test]
 fn stdin_refuses_every_content_flag() {
     // --stdin alone is the intended shape: a complete request.
-    assert!(stdin_conflict(true, &[], &[], "", None, &[], None).is_none());
+    assert!(stdin_conflict(true, &[], &[], None, None, &[], None, None).is_none());
     // Each content-carrying flag must refuse — any of them silently
     // ignored is a post the command line does not describe (025).
     let t = vec!["hi".to_string()];
     let image = vec!["x.png".to_string()];
     let p = vec!["reply_to_id=1".to_string()];
     for e in [
-        stdin_conflict(true, &t, &[], "", None, &[], None),
-        stdin_conflict(true, &[], &image, "", None, &[], None),
-        stdin_conflict(true, &[], &[], "alt", None, &[], None),
-        stdin_conflict(true, &[], &[], "", Some("threads"), &[], None),
-        stdin_conflict(true, &[], &[], "", None, &p, None),
-        stdin_conflict(true, &[], &[], "", None, &[], Some("threads")),
+        stdin_conflict(true, &t, &[], None, None, &[], None, None),
+        stdin_conflict(true, &[], &image, None, None, &[], None, None),
+        stdin_conflict(true, &[], &[], Some("alt"), None, &[], None, None),
+        stdin_conflict(true, &[], &[], None, Some("threads"), &[], None, None),
+        stdin_conflict(true, &[], &[], None, None, &p, None, None),
+        stdin_conflict(true, &[], &[], None, None, &[], Some("threads"), None),
+        stdin_conflict(true, &[], &[], None, None, &[], None, Some("1")),
     ] {
         let e = e.expect("must refuse");
         assert!(matches!(&e, Error::InvalidPost { reason, .. } if reason == "stdin_exclusive"));
     }
     // Without --stdin the flags are the normal path, no opinion here.
-    assert!(stdin_conflict(false, &t, &image, "alt", Some("threads"), &p, Some("x")).is_none());
+    assert!(stdin_conflict(
+        false,
+        &t,
+        &image,
+        Some("alt"),
+        Some("threads"),
+        &p,
+        Some("x"),
+        Some("1"),
+    )
+    .is_none());
 }
 
 #[test]
@@ -1523,7 +1694,7 @@ fn image_flags_parse_and_document_the_split() {
     assert!(matches!(
         *cli.command,
         Commands::Post { ref image, ref alt, .. }
-            if image == &["./hero.png"] && alt == "chart"
+            if image == &["./hero.png"] && alt.as_deref() == Some("chart")
     ));
     // Image without any --text is a valid, caption-less post.
     let cli = Cli::try_parse_from([
@@ -1574,19 +1745,19 @@ fn repeated_images_build_one_carousel_and_reject_ambiguous_flags() {
 
     let reply = vec!["reply_to_id=1".to_string()];
     assert_eq!(
-        image_input_conflict(2, 1, false, "alt", &[]),
+        image_input_conflict(2, 1, false, Some("alt"), &[]),
         Some("carousel_alt_unsupported")
     );
     assert_eq!(
-        image_input_conflict(2, 2, false, "", &[]),
+        image_input_conflict(2, 2, false, None, &[]),
         Some("carousel_caption_multiple")
     );
     assert_eq!(
-        image_input_conflict(2, 1, false, "", &reply),
+        image_input_conflict(2, 1, false, None, &reply),
         Some("carousel_reply_unsupported")
     );
     assert_eq!(
-        image_input_conflict(2, 1, true, "", &[]),
+        image_input_conflict(2, 1, true, None, &[]),
         Some("dry_run_image_unsupported")
     );
 

@@ -1871,6 +1871,93 @@ pub(crate) fn build_insights_query(
     Ok(query)
 }
 
+fn insights_job_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+}
+
+fn insights_job_query_path(home: &Path, id: &str) -> Result<PathBuf, Error> {
+    if !insights_job_id_ok(id) {
+        return Err(Error::InvalidQuery {
+            site: Site::new("meta_ads"),
+            reason: "bad_insights_job_id".into(),
+        });
+    }
+    Ok(home.join("insights-jobs").join(format!("{id}.json")))
+}
+
+/// Cache the query that started a report run so `ads insights-job result --id`
+/// does not have to re-enter --from/--until/--attribution.
+pub(crate) fn store_insights_job_query(
+    home: &Path,
+    id: &str,
+    query: &InsightsQuery,
+) -> Result<(), Error> {
+    let path = insights_job_query_path(home, id)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    let body = serde_json::to_vec(query)?;
+    let mut opts = OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    let mut file = opts.open(&path)?;
+    file.write_all(&body)?;
+    Ok(())
+}
+
+pub(crate) fn load_insights_job_query(home: &Path, id: &str) -> Result<InsightsQuery, Error> {
+    let path = insights_job_query_path(home, id)?;
+    let bytes = std::fs::read(&path).map_err(|_| Error::InvalidQuery {
+        site: Site::new("meta_ads"),
+        reason: "insights_job_query_missing".into(),
+    })?;
+    let query: InsightsQuery = serde_json::from_slice(&bytes).map_err(|e| Error::InvalidQuery {
+        site: Site::new("meta_ads"),
+        reason: format!("json:{e}"),
+    })?;
+    query.validate().map_err(|reason| Error::InvalidQuery {
+        site: Site::new("meta_ads"),
+        reason,
+    })?;
+    Ok(query)
+}
+
+/// Omit `--from`/`--until`/`--attribution` to reuse the cached start query.
+/// Passing any of those three requires all three.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_insights_job_query(
+    home: &Path,
+    site: &str,
+    id: &str,
+    from: Option<String>,
+    until: Option<String>,
+    level: &str,
+    metrics: &str,
+    attribution: Option<String>,
+    options: InsightsOptions,
+) -> Result<InsightsQuery, Error> {
+    match (from, until, attribution) {
+        (None, None, None) => load_insights_job_query(home, id),
+        (Some(from), Some(until), Some(attribution)) => {
+            build_insights_query(site, &from, &until, level, metrics, &attribution, options)
+        }
+        _ => Err(Error::InvalidQuery {
+            site: Site::new(site),
+            reason: "insights_job_query_incomplete".into(),
+        }),
+    }
+}
+
 /// One human-mode row: `date level entity dimension=v metric=v …`. Keeping
 /// dimensions before metrics prevents a country/platform label from looking
 /// like a number that callers may sum across rows.
@@ -1893,6 +1980,7 @@ pub(crate) fn emit_insights_reply(reply: &postkit::InsightsReply, json: bool) ->
 
 pub(crate) async fn run_async_insights(
     client: &Client,
+    home: &Path,
     key: &AccountKey,
     query: InsightsQuery,
     deadline: Deadline,
@@ -1902,6 +1990,7 @@ pub(crate) async fn run_async_insights(
         .start_insights_job(key, query.clone(), deadline)
         .await
         .map_err(|e| fail(&e, json))?;
+    store_insights_job_query(home, &job.id, &query).map_err(|e| fail(&e, json))?;
     let waited = client
         .wait_for_insights_job(key, &job.id, query, deadline)
         .await

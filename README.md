@@ -103,12 +103,12 @@ postkit apps set linkedin --client-id ID --client-secret SECRET --redirect-uri '
 postkit auth linkedin
 postkit post linkedin --text 'Hello LinkedIn' --idempotency linkedin-1
 postkit auth <site> [--token | --code | --password]
-postkit insights meta_ads --from 2026-06-01 --to 2026-06-30 --attribution 7d_click_1d_view --level campaign
+postkit insights meta_ads --from 2026-06-01 --until 2026-06-30 --attribution 7d_click_1d_view --level campaign
 postkit ads create-campaign meta_ads --name 'Draft' --objective sales
 postkit ads upload-image meta_ads --file hero.png
 postkit ads create-draft meta_ads --manifest launch.paused.json --state launch.state.json
 postkit pages accounts facebook_pages --json
-postkit post facebook_pages --param page_id=123 --text 'Hello from Postkit'
+postkit post facebook_pages --page-id 123 --text 'Hello from Postkit'
 postkit whatsapp reply --to 60123456789 --reply-to wamid.inbound --text 'Hello' --idempotency reply-1 --allow-send
 postkit whatsapp send --request message.json --sender marketing --allow-send
 postkit whatsapp webhook parse --signature "$X_HUB_SIGNATURE_256" < webhook.json
@@ -149,7 +149,7 @@ Roadmap, in order: images/video. HTTP `serve` (`pk_live_`) and local MCP stdio (
 
 ## Not in this version
 
-`--listen`, video, schedule, persistent inbox, Telegram, Mastodon. LinkedIn is currently member text posts only; Page posting, media, comments, analytics, and sponsored content remain separate features. HTTP for callers that cannot exec: `postkit keys create --name n8n` then `postkit serve` (`127.0.0.1:8788`, `Authorization: Bearer pk_live_…`). Local agent hosts: `postkit mcp` (stdio JSON-RPC; see [docs/mcp](./docs/mcp/)). Add a site: [docs/connectors.md](./docs/connectors.md).
+local OAuth callback server, video, schedule, persistent inbox, Telegram, Mastodon. LinkedIn is currently member text posts only; Page posting, media, comments, analytics, and sponsored content remain separate features. HTTP for callers that cannot exec: `postkit keys create --name n8n` then `postkit serve` (`127.0.0.1:8788`, `Authorization: Bearer pk_live_…`). Local agent hosts: `postkit mcp` (stdio JSON-RPC; see [docs/mcp](./docs/mcp/)). Add a site: [docs/connectors.md](./docs/connectors.md).
 
 Notable changes, release by release: [CHANGELOG.md](./CHANGELOG.md).
 

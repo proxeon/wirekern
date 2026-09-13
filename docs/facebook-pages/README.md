@@ -65,7 +65,7 @@ permission before trying a post.
 ## Publish a clearly labelled test
 
 ```bash
-postkit post facebook_pages --param page_id=123 \
+postkit post facebook_pages --page-id 123 \
   --idempotency page-test-2026-09-10 \
   --text 'Postkit test — please ignore'
 ```
@@ -78,7 +78,7 @@ retrying an ambiguous network/deadline failure.
 For an image test, use a harmless local file:
 
 ```bash
-postkit post facebook_pages --param page_id=123 \
+postkit post facebook_pages --page-id 123 \
   --idempotency page-image-test-2026-09-10 \
   --image ./postkit-test.png \
   --text 'Postkit image test — please ignore' \

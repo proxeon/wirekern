@@ -45,8 +45,13 @@ pub(crate) enum Commands {
         image: Vec<String>,
         /// Accessibility text for --image (embedded where the platform
         /// supports it; Threads and Instagram v1 have no verified alt field).
-        #[arg(long, default_value = "")]
-        alt: String,
+        /// Omit the value (`--alt`) for an explicit empty string.
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        alt: Option<String>,
+        /// Facebook Page id. Sugar for `--param page_id=…`. facebook_pages
+        /// only; exclusive with `--param page_id=`.
+        #[arg(long = "page-id", value_name = "ID")]
+        page_id: Option<String>,
     },
     Auth {
         site: String,
@@ -54,8 +59,6 @@ pub(crate) enum Commands {
         token: Option<String>,
         #[arg(long)]
         code: Option<String>,
-        #[arg(long)]
-        listen: bool,
         /// Bluesky app password. Omit the value to prompt on a TTY.
         #[arg(long, num_args = 0..=1, default_missing_value = "")]
         password: Option<String>,
@@ -75,7 +78,7 @@ pub(crate) enum Commands {
         from: String,
         /// Range end, YYYY-MM-DD (inclusive).
         #[arg(long)]
-        to: String,
+        until: String,
         /// account | campaign | adset | ad.
         #[arg(long, default_value = "account")]
         level: String,
@@ -108,7 +111,7 @@ pub(crate) enum Commands {
         )]
         breakdowns: String,
         /// POST an Ad Report Run and poll until --deadline. Pending is explicit.
-        #[arg(long = "async")]
+        #[arg(long = "async-report", alias = "async")]
         async_report: bool,
         /// performance (default mixed) | delivery | creative.
         #[arg(long, default_value = "performance")]
@@ -119,7 +122,8 @@ pub(crate) enum Commands {
     Ads(AdsCmd),
     /// Read-only Facebook Page discovery. This lists Page identities and
     /// tasks, never Page access tokens; pass a returned ID as post
-    /// `--param page_id=<id>` for an explicit organic publish target.
+    /// `--page-id <id>` (or `--param page_id=<id>`) for an explicit organic
+    /// publish target.
     #[command(subcommand)]
     Pages(PagesCmd),
     /// Read a deliberately bounded first page of published media. This is

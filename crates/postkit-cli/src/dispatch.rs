@@ -21,7 +21,7 @@ pub(crate) async fn dispatch(
 ) -> Result<(), i32> {
     match cmd {
         Commands::WhatsApp(cmd) => whatsapp::dispatch(client, cmd, json, account, deadline).await,
-        Commands::Ads(cmd) => ads::dispatch(client, cmd, json, account, deadline).await,
+        Commands::Ads(cmd) => ads::dispatch(client, home, cmd, json, account, deadline).await,
         Commands::Media(cmd) => media::dispatch(&client, cmd, json, &account, deadline).await,
         Commands::Pages(cmd) => pages::dispatch(&client, cmd, json, &account, deadline).await,
         Commands::Capabilities { site } => capabilities(&client, site, json),
@@ -29,7 +29,7 @@ pub(crate) async fn dispatch(
         Commands::Insights {
             site,
             from,
-            to,
+            until,
             level,
             metrics,
             attribution,
@@ -41,9 +41,10 @@ pub(crate) async fn dispatch(
         } => {
             ads::run_insights(
                 &client,
+                home,
                 site,
                 from,
-                to,
+                until,
                 level,
                 metrics,
                 attribution,
@@ -62,7 +63,6 @@ pub(crate) async fn dispatch(
             site,
             token,
             code,
-            listen,
             password,
             system_user,
         } => {
@@ -72,7 +72,6 @@ pub(crate) async fn dispatch(
                 site,
                 token,
                 code,
-                listen,
                 password,
                 system_user,
                 json,
@@ -92,6 +91,7 @@ pub(crate) async fn dispatch(
             dry_run,
             image,
             alt,
+            page_id,
         } => {
             post::run(
                 &client,
@@ -100,6 +100,7 @@ pub(crate) async fn dispatch(
                 to,
                 param,
                 reply_to,
+                page_id,
                 idempotency,
                 stdin,
                 dry_run,

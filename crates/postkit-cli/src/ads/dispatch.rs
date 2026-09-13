@@ -4,6 +4,7 @@ use super::helpers::*;
 use crate::app::fail;
 use crate::output::{emit_raw, human_line};
 use postkit::{AccountKey, Client, Deadline, DraftStep, FileDraftStore, RunPausedDraft, Site};
+use std::path::Path;
 use std::str::FromStr;
 
 pub(crate) fn apply_lifecycle_policy(client: Client, command: &AdsCmd) -> Client {
@@ -77,6 +78,7 @@ pub(crate) fn apply_lifecycle_policy(client: Client, command: &AdsCmd) -> Client
 
 pub(crate) async fn dispatch(
     client: Client,
+    home: &Path,
     cmd: AdsCmd,
     json: bool,
     account: String,
@@ -107,7 +109,7 @@ pub(crate) async fn dispatch(
             site,
             id,
             from,
-            to,
+            until,
             level,
             metrics,
             attribution,
@@ -116,13 +118,15 @@ pub(crate) async fn dispatch(
             breakdowns,
             report,
         }) => {
-            let query = build_insights_query(
+            let query = resolve_insights_job_query(
+                home,
                 &site,
-                &from,
-                &to,
+                &id,
+                from,
+                until,
                 &level,
                 &metrics,
-                &attribution,
+                attribution,
                 InsightsOptions {
                     ad_account,
                     entity_ids,
@@ -1104,9 +1108,10 @@ pub(crate) async fn dispatch(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_insights(
     client: &Client,
+    home: &Path,
     site: String,
     from: String,
-    to: String,
+    until: String,
     level: String,
     metrics: String,
     attribution: String,
@@ -1122,7 +1127,7 @@ pub(crate) async fn run_insights(
     let query = build_insights_query(
         &site,
         &from,
-        &to,
+        &until,
         &level,
         &metrics,
         &attribution,
@@ -1136,7 +1141,7 @@ pub(crate) async fn run_insights(
     .map_err(|e| fail(&e, json))?;
     let key = AccountKey::new(&site, account);
     if async_report {
-        return run_async_insights(client, &key, query, deadline, json).await;
+        return run_async_insights(client, home, &key, query, deadline, json).await;
     }
     match client.insights(&key, query, deadline).await {
         Ok(reply) => {

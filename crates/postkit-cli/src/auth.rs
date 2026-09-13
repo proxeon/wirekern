@@ -30,17 +30,12 @@ pub(crate) async fn run(
     site: String,
     token: Option<String>,
     code: Option<String>,
-    listen: bool,
     password: Option<String>,
     system_user: bool,
     json: bool,
     account: String,
     deadline: Deadline,
 ) -> Result<(), i32> {
-    if listen {
-        eprintln!("--listen is not implemented in this scaffold; paste the code instead");
-        return Err(2);
-    }
     let key = AccountKey::new(&site, &account);
     let result = if system_user {
         if site != "meta_ads" {

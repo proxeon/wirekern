@@ -2,7 +2,7 @@
 
 **Done when:** `postkit post threads --text '…' --json` prints an `id` and `url`, and the post is visible on the tester profile.
 
-This is the operator path we used. Meta’s dashboard is the slow part. postkit does not open a local callback server (`--listen` is a stub). Default is paste-code OAuth.
+This is the operator path we used. Meta’s dashboard is the slow part. postkit does not open a local callback server. Default is paste-code OAuth.
 
 Do not put App secrets or tokens in this folder. They live in repo-root `.env` (gitignored) and `~/.postkit` (0700/0600).
 
@@ -184,7 +184,7 @@ pk auth threads --token 'THQVJ…' --json
 
 `--token` does not need `apps set`. Paste-code **does**.
 
-`--token` and `--code` are exclusive. `--listen` is not implemented.
+`--token` and `--code` are exclusive. Paste-code is the OAuth path.
 
 ---
 

@@ -31,11 +31,13 @@ postkit post --stdin
 |------|--|
 | `<site>` or `--to a,b` | One site, or same text/`--param` on each. Mixed success → `{ "results": [ … ] }` |
 | `--text` | `Body::Text`. Repeatable on **threads** = reply chain (`reply_to_id`). One `--text` is a single `Outcome`; two or more is `{ "results": [ … ] }`. Other sites: two `--text` → `thread_unsupported` before HTTP. |
-| `--param k=v` | `Intent.params` (repeatable). `--param reply_to_id=` = one reply to an existing post (**threads**: media id; **Bluesky**: the parent's `at://` URI — the same string `Outcome.id` returns; the connector resolves its `cid` via `getRecord`, and a reply-to-reply inherits the thread root). Facebook Pages accepts only `page_id`; LinkedIn accepts no params so its authenticated member remains the sole author. Other keys refuse with `unsupported_param:<k>` before HTTP |
+| `--reply-to <ID>` | Sugar for `--param reply_to_id=…`. Threads: media id; Bluesky: parent `at://` URI. Prefer this spelling. Exclusive with `--param reply_to_id=`; refused on `--to` fan-out |
+| `--page-id <ID>` | Sugar for `--param page_id=…`. `facebook_pages` only; exclusive with `--param page_id=` and with `--to` fan-out |
+| `--param k=v` | `Intent.params` (repeatable). Remaining extras after the sugars above. Facebook Pages accepts only `page_id`; LinkedIn accepts no params so its authenticated member remains the sole author. Other keys refuse with `unsupported_param:<k>` before HTTP |
 | `--idempotency` | Root segment only on a chain. Client-side dedupe: a retry with the same key returns the stored `Outcome` without HTTP (`~/.postkit/idempotency/…`). Only **completed** publishes are remembered — an attempt that timed out after the platform created the post was never learned and will post again. While one publish under a key is in flight (another process or task), a second call answers `idempotency` (exit 4, retry-later) instead of racing to a duplicate; a crashed holder self-heals — its claim is stolen after 15 minutes |
-| `--stdin` | Raw request JSON. One body. Exclusive with every content flag — `--text`, `--image`, `--alt`, `--param`, `--to`, and a positional site refuse with `stdin_exclusive` exit 2 before stdin is read (`--dry-run` and `--idempotency` still apply on top of the stdin request) |
+| `--stdin` | Raw request JSON. One body. Exclusive with every content flag — `--text`, `--image`, `--alt`, `--param`, `--to`, `--reply-to`, `--page-id`, and a positional site refuse with `stdin_exclusive` exit 2 before stdin is read (`--dry-run` and `--idempotency` still apply on top of the stdin request) |
 | `--image` | Repeatable only for an Instagram **image carousel**: one image is the normal optional-caption image post; 2–10 become one carousel with a single parent caption. **Two forms, never bridged**: a local file (Bluesky uploads the bytes; png/jpg/gif/webp, ≤ 2 MB enforced locally) or a public **https** URL (Threads and Instagram crawl it; Meta is definitive on reachability, format, and size). A form the site cannot honor fails that target with `image_source_unsupported:bytes\|url` before HTTP. Refused combinations, all exit 2 before any HTTP: with a chain (`image_chain_unsupported` / `carousel_caption_multiple`), with `--param reply_to_id=` (`image_reply_unsupported` / `carousel_reply_unsupported`), with `--dry-run` (`dry_run_image_unsupported`), or carousel `--alt` (`carousel_alt_unsupported`) |
-| `--alt` | Accessibility text for `--image`. Bluesky embeds it in `app.bsky.embed.images` (lexicon-required, empty allowed); Threads and Instagram v1 have no verified alt field and ignore it |
+| `--alt` | Accessibility text for `--image`. Omit the flag to send no alt; `--alt` with no value is an explicit empty string (Bluesky lexicon-required, empty allowed). Threads and Instagram v1 have no verified alt field and ignore it |
 | `--dry-run` | **threads** only. Create-only probe: one container creation, no publish, nothing visible ever — the container expires in 24h. Refused with `dry_run_unsupported` on sites with no create/publish split (Bluesky), and rejected with `dry_run_idempotency` / `dry_run_chain` when combined with `--idempotency` or a reply chain |
 
 Details that bite:
@@ -59,7 +61,7 @@ postkit auth linkedin                         # LinkedIn OAuth: openid + profile
 postkit auth whatsapp_cloud --token 'system-user-token' # static System User token
 ```
 
-- `--token` and `--code` are exclusive. `--password` cannot mix with either. `--listen` is a stub (paste-code is the path).
+- `--token` and `--code` are exclusive. `--password` cannot mix with either. Paste-code is the OAuth path; there is no local callback server.
 - `--token` bootstraps a connector that explicitly declares a bearer-token
   auth flow: OAuth sites such as Threads, or WhatsApp Cloud's static System
   User token. App-password sites (Bluesky) refuse it with
@@ -197,16 +199,16 @@ runbook](./whatsapp-cloud/README.md).
 
 ```text
 postkit pages accounts facebook_pages --json
-postkit post facebook_pages --param page_id=<PAGE_ID> --text 'A Page post'
-postkit post facebook_pages --param page_id=<PAGE_ID> \
+postkit post facebook_pages --page-id <PAGE_ID> --text 'A Page post'
+postkit post facebook_pages --page-id <PAGE_ID> \
   --image announcement.png --text 'Optional caption' --alt 'Image description'
 ```
 
 `pages accounts` is remote discovery, not `accounts list`: it returns the
 authenticated user's Page IDs, names, and Meta task strings, never Page access
-tokens. Copy an ID into `--param page_id=…` for each publish; Postkit never
-chooses the first Page. `page_id` is the only v1 Page parameter, so unknown
-keys (including `reply_to_id`) fail before the vault or network.
+tokens. Copy an ID into `--page-id` (or `--param page_id=…`) for each publish;
+Postkit never chooses the first Page. `page_id` is the only v1 Page parameter,
+so unknown keys (including `reply_to_id`) fail before the vault or network.
 
 Text posts use `/{page-id}/feed`; image posts upload a local file as multipart
 bytes to `/{page-id}/photos` with optional caption and accessibility text.
@@ -219,14 +221,17 @@ release.
 ## `insights` (meta_ads)
 
 ```text
-postkit insights meta_ads --from 2026-06-01 --to 2026-06-30 --attribution 7d_click_1d_view
-postkit insights meta_ads --from … --to … --attribution 1d_click --level campaign --metrics spend,clicks,purchases
-postkit insights meta_ads --from … --to … --attribution 7d_click_1d_view --ad-account act_999
+postkit insights meta_ads --from 2026-06-01 --until 2026-06-30 --attribution 7d_click_1d_view
+postkit insights meta_ads --from … --until … --attribution 1d_click --level campaign --metrics spend,clicks,purchases
+postkit insights meta_ads --from … --until … --attribution 7d_click_1d_view --ad-account act_999
+postkit insights meta_ads --from … --until … --attribution 7d_click_1d_view --async-report
+postkit ads insights-job result meta_ads --id <JOB>
 ```
 
 Read-only spend/performance metrics (the `read.metrics` capability). Daily rows (`time_increment=1`) grouped by `--level account|campaign|adset|ad`; `purchases` sums the purchase-ish rows of Graph's `actions` breakdown under the window you name.
 
-- `--from`/`--to` are inclusive `YYYY-MM-DD`, **≤ 90 days** — the range is also the reply size, so reads stay token-bounded by construction. Longer ranges fail `invalid_query` exit 2 before any HTTP.
+- `--from`/`--until` are inclusive `YYYY-MM-DD`, **≤ 90 days** — the range is also the reply size, so reads stay token-bounded by construction. Longer ranges fail `invalid_query` exit 2 before any HTTP. `--to` is not a date flag (it is `post` fan-out).
+- `--async-report` POSTs an Ad Report Run and polls until `--deadline`. The query is cached under `~/.postkit/insights-jobs/<id>.json` so `ads insights-job result --id <JOB>` does not re-enter the form. Pass `--from`/`--until`/`--attribution` together to rebuild instead of the cache.
 - `--attribution` is **required, no default**: `7d_click_1d_view | 1d_click | 1d_view`. ROAS answers change with the window; a caller who cannot say which window they meant cannot interpret the number.
 - `--ad-account` overrides the account resolved at auth (accepts `123` or `act_123`).
 - `--entity-id` is repeatable at `campaign|adset|ad`; `--breakdown country,publisher_platform,age` places labels under each row's `dimensions` object. `purchase_value` sums matching purchase `action_values`; `roas` is `purchase_value / spend` and is `null` without action values or with zero spend.
@@ -251,6 +256,9 @@ postkit ads update-schedule meta_ads --id <adset-id> --confirm-id <id> --start-t
 postkit ads update-placement meta_ads --id <adset-id> --confirm-id <id> --publisher-platform facebook [--facebook-position feed] --allow-placement-edit
 postkit ads update-targeting meta_ads --id <adset-id> --confirm-id <id> --targeting-file targeting.json --allow-targeting-edit
 postkit ads swap-creative meta_ads --id <ad-id> --confirm-id <id> --creative-id <id> --allow-creative-swap
+postkit ads insights-job status meta_ads --id <JOB>
+postkit ads insights-job result meta_ads --id <JOB>
+postkit ads insights-job cancel meta_ads --id <JOB> --yes
 postkit ads status meta_ads --entity ad --id <id> [--wait]
 postkit ads upload-image meta_ads --file hero.png [--ad-account act_123]
 postkit ads create-link-creative meta_ads --name <name> --page-id <id> --image-hash <hash> --message <copy> --headline <headline> --destination-url https://example.com --call-to-action learn_more [--ad-account act_123]

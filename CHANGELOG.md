@@ -14,6 +14,16 @@ same detail by subject.
 
 ### Changed
 
+- CLI flag cleanup: `auth --listen` is gone (paste-code is the OAuth path).
+  Insights date range is `--from`/`--until` so it no longer collides with
+  `post --to`. Large insights jobs use `--async-report` (`--async` remains
+  a hidden alias). `post --alt` is optional (`--alt` with no value is an
+  explicit empty string). `post --page-id` is sugar for `--param page_id=…`
+  on `facebook_pages`, exclusive with the param spelling and with `--to`
+  fan-out. `insights --async-report` caches the query under
+  `~/.postkit/insights-jobs/<id>.json` so `ads insights-job result --id`
+  does not re-enter `--from`/`--until`/`--attribution`.
+
 - WhatsApp production hardening: outbound Cloud API calls share a
   process-local ~80 messages/second queue **per configured phone**, and
   batch items wait on that queue instead of taking a fake local

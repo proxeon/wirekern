@@ -10,21 +10,27 @@ pub(crate) enum InsightsJobCmd {
         #[arg(long)]
         id: String,
     },
-    /// Fetch completed rows. Pass the same query flags used to start the job.
+    /// Fetch completed rows. Omit `--from`/`--until`/`--attribution` to reuse
+    /// the query cached when `insights --async-report` started the job.
     Result {
         site: String,
         #[arg(long)]
         id: String,
+        /// Inclusive YYYY-MM-DD. Omit with `--until` and `--attribution` to
+        /// reuse the query cached when the job started.
         #[arg(long)]
-        from: String,
+        from: Option<String>,
+        /// Inclusive YYYY-MM-DD.
         #[arg(long)]
-        to: String,
+        until: Option<String>,
         #[arg(long, default_value = "account")]
         level: String,
         #[arg(long, default_value = "spend,impressions,clicks,purchases")]
         metrics: String,
+        /// Required together with `--from` and `--until`, or omit all three
+        /// to reuse the query cached when the job started.
         #[arg(long)]
-        attribution: String,
+        attribution: Option<String>,
         #[arg(long)]
         ad_account: Option<String>,
         #[arg(long = "entity-id")]

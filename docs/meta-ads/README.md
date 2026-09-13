@@ -36,7 +36,8 @@ Insights extras: `--metrics` now includes `frequency`, `unique_clicks`,
 accepts `7d_click`, `28d_click`, `7d_view`, `28d_view`. Breakdowns add
 `gender`, `device_platform`, `platform_position` (max two). `--report
 delivery|creative` refuses mixed field lists. Large queries:
-`insights … --async` then `ads insights-job status|result|cancel`.
+`insights … --async-report` then `ads insights-job status|result|cancel`.
+`result --id <JOB>` reuses the query cached at start; pass `--from`/`--until`/`--attribution` together to rebuild.
 
 ### Unattended System User token
 
@@ -86,7 +87,7 @@ postkit ads accounts meta_ads --json
 ```
 
 ```bash
-postkit insights meta_ads --from 2026-06-01 --to 2026-06-30 \
+postkit insights meta_ads --from 2026-06-01 --until 2026-06-30 \
   --attribution 7d_click_1d_view --ad-account act_123 \
   --level campaign --entity-id 238001 \
   --breakdown country,publisher_platform \
@@ -234,7 +235,7 @@ the commands above. In Ads Manager, verify the campaign, ad set, and ad each
 show **Paused**. Then use the returned campaign ID with Tier A+:
 
 ```bash
-postkit insights meta_ads --from 2026-06-12 --to 2026-09-09 \
+postkit insights meta_ads --from 2026-06-12 --until 2026-09-09 \
   --attribution 7d_click_1d_view --ad-account act_123 \
   --level campaign --entity-id <CAMPAIGN_ID> --metrics spend,purchases,purchase_value,roas --json
 ```

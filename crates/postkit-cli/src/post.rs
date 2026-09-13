@@ -7,24 +7,27 @@ use postkit::connectors::threads::validate_text;
 use postkit::{AccountKey, Body, Client, Deadline, Error, Image, Intent, PostRequest, Site};
 use std::io::{self, Read};
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn stdin_conflict(
     stdin: bool,
     text: &[String],
     images: &[String],
-    alt: &str,
+    alt: Option<&str>,
     to: Option<&str>,
     param: &[String],
     site: Option<&str>,
+    page_id: Option<&str>,
 ) -> Option<Error> {
     if !stdin {
         return None;
     }
     let clean = text.is_empty()
         && images.is_empty()
-        && alt.is_empty()
+        && alt.is_none()
         && to.is_none()
         && param.is_empty()
-        && site.is_none();
+        && site.is_none()
+        && page_id.is_none();
     if clean {
         return None;
     }
@@ -92,6 +95,37 @@ pub(crate) fn reply_to_conflict(reply_to: Option<&str>, param: &[String]) -> Opt
     None
 }
 
+/// `--page-id` is sugar for `--param page_id=…`. Same dual-source and empty
+/// rules as `--reply-to`.
+pub(crate) fn page_id_conflict(page_id: Option<&str>, param: &[String]) -> Option<&'static str> {
+    let id = page_id?;
+    if id.is_empty() {
+        return Some("page_id_empty");
+    }
+    if param
+        .iter()
+        .any(|p| p.split('=').next().unwrap_or("") == "page_id")
+    {
+        return Some("page_id_conflict");
+    }
+    None
+}
+
+/// A Page id is facebook_pages-only and not honest across a fan-out.
+pub(crate) fn page_id_target_conflict(
+    page_id: Option<&str>,
+    sites: &[String],
+) -> Option<&'static str> {
+    page_id?;
+    if sites.len() != 1 {
+        return Some("page_id_fanout_unsupported");
+    }
+    if sites[0] != "facebook_pages" {
+        return Some("page_id_site_unsupported");
+    }
+    None
+}
+
 /// One id cannot be honest across a fan-out: threads media ids and bluesky
 /// at:// URIs are different namespaces, so the same value cloned to every
 /// --to target would publish on one site and fail on the rest.
@@ -112,7 +146,7 @@ pub(crate) fn image_input_conflict(
     image_count: usize,
     text_count: usize,
     dry_run: bool,
-    alt: &str,
+    alt: Option<&str>,
     params: &[String],
 ) -> Option<&'static str> {
     if image_count == 0 {
@@ -128,7 +162,7 @@ pub(crate) fn image_input_conflict(
     if dry_run {
         return Some("dry_run_image_unsupported");
     }
-    if image_count > 1 && !alt.is_empty() {
+    if image_count > 1 && alt.is_some() {
         // A single generic alt string cannot truthfully describe multiple
         // slides. Reject it instead of silently dropping it while Instagram
         // carousel alt text is not a reviewed per-slide wire contract.
@@ -374,11 +408,12 @@ pub(crate) async fn run(
     to: Option<String>,
     param: Vec<String>,
     reply_to: Option<String>,
+    page_id: Option<String>,
     idempotency: Option<String>,
     stdin: bool,
     dry_run: bool,
     image: Vec<String>,
-    alt: String,
+    alt: Option<String>,
     json: bool,
     account: String,
     deadline: Deadline,
@@ -397,10 +432,18 @@ pub(crate) async fn run(
     if let Some(id) = reply_to.as_deref() {
         param.push(format!("reply_to_id={id}"));
     }
+    if let Some(reason) = page_id_conflict(page_id.as_deref(), &param) {
+        return Err(fail(&invalid_post(&site_or_to(&site, &to), reason), json));
+    }
+    if let Some(id) = page_id.as_deref() {
+        param.push(format!("page_id={id}"));
+    }
     // Image exclusions fire before any parsing or I/O: each
     // combination names a wire contract postkit has not verified
     // (015 D4), and half-honoring it is the 022 failure mode.
-    if let Some(err) = image_input_conflict(image.len(), text.len(), dry_run, &alt, &param) {
+    if let Some(err) =
+        image_input_conflict(image.len(), text.len(), dry_run, alt.as_deref(), &param)
+    {
         return Err(fail(&invalid_post(&site_or_to(&site, &to), err), json));
     }
     // 025: --stdin is a complete request in itself; any other
@@ -410,10 +453,11 @@ pub(crate) async fn run(
         stdin,
         &text,
         &image,
-        &alt,
+        alt.as_deref(),
         to.as_deref(),
         &param,
         site.as_deref(),
+        page_id.as_deref(),
     ) {
         return Err(fail(&e, json));
     }
@@ -463,6 +507,9 @@ pub(crate) async fn run(
     if let Some(reason) = reply_to_fanout_conflict(reply_to.as_deref(), &sites) {
         return Err(fail(&invalid_post(&site_or_to(&site, &to), reason), json));
     }
+    if let Some(reason) = page_id_target_conflict(page_id.as_deref(), &sites) {
+        return Err(fail(&invalid_post(&site_or_to(&site, &to), reason), json));
+    }
     if texts.len() > 1 {
         if let Some(bad) = chain_blocked_site(&sites) {
             return Err(fail(
@@ -503,8 +550,8 @@ pub(crate) async fn run(
             // Bytes are cloned per target: each connector gets its
             // own copy and a per-target failure (e.g. a URL image
             // on Bluesky) is isolated in the fan-out results.
-            let body =
-                build_post_body(&image, text.clone(), &alt, s).map_err(|e| fail(&e, json))?;
+            let body = build_post_body(&image, text.clone(), alt.as_deref().unwrap_or(""), s)
+                .map_err(|e| fail(&e, json))?;
             let intent = Intent {
                 site: Site::new(s),
                 params: params.clone(),
@@ -541,7 +588,8 @@ pub(crate) async fn run(
     } else {
         let site = sites.into_iter().next().expect("collect_post_sites");
         let key = AccountKey::new(&site, &account);
-        let body = build_post_body(&image, text, &alt, &site).map_err(|e| fail(&e, json))?;
+        let body = build_post_body(&image, text, alt.as_deref().unwrap_or(""), &site)
+            .map_err(|e| fail(&e, json))?;
         let intent = Intent {
             site: Site::new(&site),
             params,
