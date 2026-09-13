@@ -1,6 +1,8 @@
 use crate::apps::{env_override, resolve_app_config, AppStore};
 use crate::error::Error;
-use crate::types::{valid_name, AccountCreds, AccountKey, AppConfig, Outcome, Site};
+use crate::types::{
+    valid_name, AccountCreds, AccountKey, AppConfig, OAuthPkceSession, Outcome, Site,
+};
 use crate::vault::{Claim, Vault};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -78,6 +80,20 @@ impl FileVault {
             .join(key.site.as_str())
             .join(&key.name)
             .join(format!("{idem}.json")))
+    }
+
+    /// One pending PKCE session per site/account. Keeping `state` in the
+    /// encrypted-by-permissions document rather than the filename avoids
+    /// exposing an authorization correlation value in a directory listing.
+    fn auth_session_path(&self, key: &AccountKey) -> Result<PathBuf, Error> {
+        if !valid_name(key.site.as_str()) || !valid_name(&key.name) {
+            return Err(Error::InvalidName(key.name.clone()));
+        }
+        Ok(self
+            .root
+            .join("oauth-sessions")
+            .join(key.site.as_str())
+            .join(format!("{}.json", key.name)))
     }
 }
 
@@ -227,6 +243,49 @@ impl Vault for FileVault {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn put_auth_session(&self, key: &AccountKey, session: &OAuthPkceSession) -> Result<(), Error> {
+        let path = self.auth_session_path(key)?;
+        if let Some(parent) = path.parent() {
+            self.ensure_dir_under_root(parent)?;
+        }
+        // Replacing an old unfinished browser flow is deliberate: only the
+        // most recent auth request for an alias can be completed, and the
+        // old verifier must not remain reusable on disk.
+        atomic_write(&path, &serde_json::to_vec_pretty(session)?)
+    }
+
+    fn take_auth_session(
+        &self,
+        key: &AccountKey,
+        state: &str,
+    ) -> Result<Option<OAuthPkceSession>, Error> {
+        let path = self.auth_session_path(key)?;
+        let data = match fs::read(&path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let session: OAuthPkceSession = serde_json::from_slice(&data)?;
+        // Do not consume a valid session after an unrelated redirect: this
+        // mirrors MemoryVault and lets the caller retry with the correct tab.
+        if session.state != state {
+            return Ok(None);
+        }
+        // Single-use means the verifier disappears before token exchange;
+        // even a failed exchange needs a new authorization rather than a
+        // replay of the same code and verifier.
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|time| time.as_secs())
+            .unwrap_or(u64::MAX);
+        Ok((session.expires_at >= now).then_some(session))
     }
 }
 
@@ -637,6 +696,27 @@ mod tests {
         // an idempotency key is caller input and names a file
         let err = v.put_outcome(&key, "../escape", &out).unwrap_err();
         assert!(matches!(err, Error::InvalidName(n) if n == "../escape"));
+    }
+
+    #[test]
+    fn pkce_session_is_owner_only_and_consumed_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = FileVault::new(tmp.path()).unwrap();
+        let key = AccountKey::new("x", "default");
+        vault
+            .put_auth_session(
+                &key,
+                &OAuthPkceSession {
+                    state: "expected".into(),
+                    code_verifier: "secret-verifier".into(),
+                    expires_at: u64::MAX,
+                },
+            )
+            .unwrap();
+        assert!(tmp.path().join("oauth-sessions/x/default.json").exists());
+        assert!(vault.take_auth_session(&key, "wrong").unwrap().is_none());
+        assert!(vault.take_auth_session(&key, "expected").unwrap().is_some());
+        assert!(vault.take_auth_session(&key, "expected").unwrap().is_none());
     }
 
     #[cfg(unix)]

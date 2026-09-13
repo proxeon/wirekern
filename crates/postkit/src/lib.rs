@@ -20,6 +20,8 @@ mod vault;
 mod whatsapp;
 #[cfg(feature = "whatsapp-cloud")]
 mod whatsapp_ops;
+#[cfg(feature = "x")]
+mod x;
 
 #[cfg(feature = "vault-file")]
 mod keys;
@@ -58,6 +60,7 @@ pub use oauth::{
     feature = "facebook-pages",
     feature = "instagram",
     feature = "linkedin",
+    feature = "x",
     feature = "whatsapp-cloud"
 ))]
 pub mod connectors;
@@ -96,6 +99,8 @@ pub use draft::{
     RunPausedDraft, CONFIGURED_PAUSED, MIN_DAILY_BUDGET,
 };
 pub use error::{Error, WireError};
+#[cfg(feature = "x")]
+pub use facets::XDirectMessages;
 pub use facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 #[cfg(feature = "whatsapp-cloud")]
 pub use facets::{
@@ -115,11 +120,15 @@ pub use policy::{
     AllowWhatsAppSendsPolicy, EnforceWhatsAppCompliancePolicy, NoWhatsAppSendsPolicy,
     WhatsAppAction, WhatsAppPolicy,
 };
-pub use publisher::{AuthKind, AuthReply, AuthStart, Publisher};
+#[cfg(feature = "x")]
+pub use policy::{
+    AllowXDirectMessagesPolicy, NoXDirectMessagesPolicy, XDirectMessageAction, XDirectMessagePolicy,
+};
+pub use publisher::{AuthKind, AuthReply, AuthStart, AuthStartOptions, Publisher};
 pub use registry::{Connector, Registry};
 pub use types::{
     valid_name, AccountCreds, AccountKey, AppConfig, Body, Capability, Deadline, Image, Intent,
-    Limits, OAuthApp, Outcome, PostRequest, Probe, Site, WhoAmI, USER_AGENT,
+    Limits, OAuthApp, OAuthPkceSession, Outcome, PostRequest, Probe, Site, WhoAmI, USER_AGENT,
 };
 pub use vault::{MemoryVault, Vault};
 #[cfg(feature = "whatsapp-cloud")]
@@ -146,6 +155,8 @@ pub use whatsapp_ops::{
 };
 #[cfg(all(feature = "whatsapp-cloud", feature = "vault-file"))]
 pub use whatsapp_ops::{EncryptedFileWhatsAppDeadLetters, FileWhatsAppConsent, FileWhatsAppLedger};
+#[cfg(feature = "x")]
+pub use x::{valid_x_id, XDirectMessageRequest};
 
 #[cfg(feature = "vault-file")]
 pub use keys::{CreatedKey, FileKeyStore, KeyMeta, KEY_PREFIX};

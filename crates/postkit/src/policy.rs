@@ -142,6 +142,63 @@ impl AdsPolicy for AllowAdsActionPolicy {
     }
 }
 
+/// X direct messages are private, recipient-targeted external writes. They
+/// share the X identity with public posts but must never inherit publishing's
+/// implicit authorization merely because a caller registered the connector.
+#[cfg(feature = "x")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum XDirectMessageAction {
+    SendText,
+}
+
+#[cfg(feature = "x")]
+impl XDirectMessageAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SendText => "send_x_direct_message",
+        }
+    }
+}
+
+/// Independent from public X publishing so application embedders can allow
+/// scheduled/operator-controlled posts without also granting access to a
+/// private-message transport.
+#[cfg(feature = "x")]
+pub trait XDirectMessagePolicy: Send + Sync {
+    fn authorize(&self, site: &Site, action: XDirectMessageAction) -> Result<(), Error>;
+}
+
+/// Production default for X DMs. CLI users must acknowledge the exact send
+/// with `--allow-dm`; library users install an allow policy consciously.
+#[cfg(feature = "x")]
+#[derive(Default)]
+pub struct NoXDirectMessagesPolicy;
+
+#[cfg(feature = "x")]
+impl XDirectMessagePolicy for NoXDirectMessagesPolicy {
+    fn authorize(&self, site: &Site, action: XDirectMessageAction) -> Result<(), Error> {
+        Err(Error::PolicyDenied {
+            site: site.clone(),
+            action: action.as_str().into(),
+            reason: "explicit_x_dm_send_required".into(),
+        })
+    }
+}
+
+/// Opt-in policy for a caller that has made its own recipient, consent, and
+/// retention decision. X can still reject a send due to recipient settings,
+/// blocks, or rate limits; an allow policy is not a delivery guarantee.
+#[cfg(feature = "x")]
+#[derive(Default)]
+pub struct AllowXDirectMessagesPolicy;
+
+#[cfg(feature = "x")]
+impl XDirectMessagePolicy for AllowXDirectMessagesPolicy {
+    fn authorize(&self, _site: &Site, _action: XDirectMessageAction) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
 /// Every private WhatsApp send receives its own decision. A message is not a
 /// public post: templates can be billable and even replies must obey Meta's
 /// customer-service rules, so falling through to allow would be unsafe.

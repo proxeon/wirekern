@@ -23,6 +23,7 @@ postkit post threads --image https://cdn.example.com/hero.png [--text 'caption']
 postkit post instagram --image https://cdn.example.com/hero.jpg [--text 'caption']
 postkit post instagram --image https://cdn.example.com/slide-1.jpg --image https://cdn.example.com/slide-2.jpg [--text 'one carousel caption']
 postkit post linkedin --text 'public member post' [--idempotency <key>]
+postkit post x --text 'public X post' [--reply-to <numeric-post-id>] [--idempotency <key>]
 postkit media list instagram [--limit 10]
 postkit post --stdin
 ```
@@ -33,7 +34,7 @@ postkit post --stdin
 | `--text` | `Body::Text`. Repeatable on **threads** = reply chain (`reply_to_id`). One `--text` is a single `Outcome`; two or more is `{ "results": [ … ] }`. Other sites: two `--text` → `thread_unsupported` before HTTP. |
 | `--reply-to <ID>` | Sugar for `--param reply_to_id=…`. Threads: media id; Bluesky: parent `at://` URI. Prefer this spelling. Exclusive with `--param reply_to_id=`; refused on `--to` fan-out |
 | `--page-id <ID>` | Sugar for `--param page_id=…`. `facebook_pages` only; exclusive with `--param page_id=` and with `--to` fan-out |
-| `--param k=v` | `Intent.params` (repeatable). Remaining extras after the sugars above. Facebook Pages accepts only `page_id`; LinkedIn accepts no params so its authenticated member remains the sole author. Other keys refuse with `unsupported_param:<k>` before HTTP |
+| `--param k=v` | `Intent.params` (repeatable). Remaining extras after the sugars above. Facebook Pages accepts only `page_id`; X accepts only numeric `reply_to_id`; LinkedIn accepts no params so its authenticated member remains the sole author. Other keys refuse with `unsupported_param:<k>` before HTTP |
 | `--idempotency` | Root segment only on a chain. Client-side dedupe: a retry with the same key returns the stored `Outcome` without HTTP (`~/.postkit/idempotency/…`). Only **completed** publishes are remembered — an attempt that timed out after the platform created the post was never learned and will post again. While one publish under a key is in flight (another process or task), a second call answers `idempotency` (exit 4, retry-later) instead of racing to a duplicate; a crashed holder self-heals — its claim is stolen after 15 minutes |
 | `--stdin` | Raw request JSON. One body. Exclusive with every content flag — `--text`, `--image`, `--alt`, `--param`, `--to`, `--reply-to`, `--page-id`, and a positional site refuse with `stdin_exclusive` exit 2 before stdin is read (`--dry-run` and `--idempotency` still apply on top of the stdin request) |
 | `--image` | Repeatable only for an Instagram **image carousel**: one image is the normal optional-caption image post; 2–10 become one carousel with a single parent caption. **Two forms, never bridged**: a local file (Bluesky uploads the bytes; png/jpg/gif/webp, ≤ 2 MB enforced locally) or a public **https** URL (Threads and Instagram crawl it; Meta is definitive on reachability, format, and size). A form the site cannot honor fails that target with `image_source_unsupported:bytes\|url` before HTTP. Refused combinations, all exit 2 before any HTTP: with a chain (`image_chain_unsupported` / `carousel_caption_multiple`), with `--param reply_to_id=` (`image_reply_unsupported` / `carousel_reply_unsupported`), with `--dry-run` (`dry_run_image_unsupported`), or carousel `--alt` (`carousel_alt_unsupported`) |
@@ -58,6 +59,8 @@ postkit auth meta_ads                        # same paste-code flow, ads_read + 
 postkit auth facebook_pages                  # Page scopes; re-authorize after adding this connector
 postkit auth instagram                        # Instagram Login for one professional account
 postkit auth linkedin                         # LinkedIn OAuth: openid + profile + w_member_social
+postkit auth x                                # X OAuth 2.0 Authorization Code + PKCE, public-post scopes
+postkit auth x --with-dm                      # re-authorize with dm.read + dm.write
 postkit auth whatsapp_cloud --token 'system-user-token' # static System User token
 ```
 
@@ -92,6 +95,13 @@ postkit auth whatsapp_cloud --token 'system-user-token' # static System User tok
   UserInfo, and posts only public text as that stored member. The response is
   an exact LinkedIn post URN, not a constructed permalink. See the
   [LinkedIn runbook](./linkedin/README.md).
+- `x` uses OAuth 2.0 Authorization Code with **PKCE**. Start with
+  `auth x`, paste the complete callback URL (not just the code), then use
+  `post x --text …`. Direct messages need a fresh `auth x --with-dm` so
+  `dm.read dm.write` are not granted to ordinary posting tokens. The private
+  send command is `postkit x dm --to <numeric-user-id> --text … --idempotency
+  <key> --allow-dm`; `--allow-dm` is required for each invocation. See the
+  [X runbook](./x/README.md).
 - `whatsapp_cloud` is not OAuth: configure the numeric sender with
   `postkit whatsapp configure --phone-number-id … [--app-secret …]`, then use
   `auth whatsapp_cloud --token …`. The one-time token bootstrap verifies

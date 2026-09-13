@@ -1,3 +1,5 @@
+#[cfg(feature = "x")]
+use crate::facets::XDirectMessages;
 use crate::facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
 #[cfg(feature = "whatsapp-cloud")]
 use crate::facets::{
@@ -19,6 +21,8 @@ pub struct Connector {
     ads: Option<Arc<dyn AdsManager>>,
     pages: Option<Arc<dyn PageDirectory>>,
     media: Option<Arc<dyn MediaReader>>,
+    #[cfg(feature = "x")]
+    x_direct_messages: Option<Arc<dyn XDirectMessages>>,
     #[cfg(feature = "whatsapp-cloud")]
     whatsapp: Option<Arc<dyn WhatsAppSender>>,
     #[cfg(feature = "whatsapp-cloud")]
@@ -39,6 +43,8 @@ impl Connector {
             ads: None,
             pages: None,
             media: None,
+            #[cfg(feature = "x")]
+            x_direct_messages: None,
             #[cfg(feature = "whatsapp-cloud")]
             whatsapp: None,
             #[cfg(feature = "whatsapp-cloud")]
@@ -69,6 +75,12 @@ impl Connector {
 
     pub fn media(mut self, facet: Arc<dyn MediaReader>) -> Self {
         self.media = Some(facet);
+        self
+    }
+
+    #[cfg(feature = "x")]
+    pub fn x_direct_messages(mut self, facet: Arc<dyn XDirectMessages>) -> Self {
+        self.x_direct_messages = Some(facet);
         self
     }
 
@@ -120,6 +132,11 @@ impl Connector {
 
     pub fn media_facet(&self) -> Option<Arc<dyn MediaReader>> {
         self.media.clone()
+    }
+
+    #[cfg(feature = "x")]
+    pub fn x_direct_messages_facet(&self) -> Option<Arc<dyn XDirectMessages>> {
+        self.x_direct_messages.clone()
     }
 
     #[cfg(feature = "whatsapp-cloud")]

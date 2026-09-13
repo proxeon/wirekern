@@ -1,7 +1,7 @@
 //! Publish, probe, whoami, and token bootstrap.
 use super::{empty_app, Client};
 use crate::error::Error;
-use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
+use crate::publisher::{AuthKind, AuthReply, AuthStart, AuthStartOptions, Publisher};
 use crate::types::{AccountCreds, AccountKey, Deadline, Intent, Outcome, Probe, Site, WhoAmI};
 use crate::vault::Claim;
 use std::sync::Arc;
@@ -167,10 +167,55 @@ impl Client {
         }
     }
 
+    /// Start an ordinary connector authorization. PKCE connectors need an
+    /// account alias so their one-time verifier can be stored safely; callers
+    /// should use [`Self::auth_start_for`] for those sites.
     pub async fn auth_start(&self, site: &Site) -> Result<AuthStart, Error> {
         let publisher = self.publisher(site)?;
         let app = self.apps.get(site).unwrap_or_else(|_| empty_app(site));
-        publisher.auth_start(&app).await
+        let mut start = publisher
+            .auth_start_with(&app, &AuthStartOptions::default())
+            .await?;
+        if matches!(
+            &start,
+            AuthStart::Browser {
+                pending_pkce: Some(_),
+                ..
+            }
+        ) {
+            // Never return an OAuth verifier from the public Client API. The
+            // account-aware method below persists it owner-only instead.
+            return Err(Error::Auth {
+                site: site.clone(),
+                reason: "auth_start_requires_account".into(),
+            });
+        }
+        if let AuthStart::Browser { pending_pkce, .. } = &mut start {
+            *pending_pkce = None;
+        }
+        Ok(start)
+    }
+
+    /// Start an authorization flow for one vault alias. This is the only
+    /// public start path used by the CLI because PKCE's verifier must survive
+    /// a browser handoff without being printed or passed in a command line.
+    pub async fn auth_start_for(
+        &self,
+        key: &AccountKey,
+        options: AuthStartOptions,
+    ) -> Result<AuthStart, Error> {
+        let publisher = self.publisher(&key.site)?;
+        let app = self
+            .apps
+            .get(&key.site)
+            .unwrap_or_else(|_| empty_app(&key.site));
+        let mut start = publisher.auth_start_with(&app, &options).await?;
+        if let AuthStart::Browser { pending_pkce, .. } = &mut start {
+            if let Some(session) = pending_pkce.take() {
+                self.vault.put_auth_session(key, &session)?;
+            }
+        }
+        Ok(start)
     }
 
     pub async fn auth_finish(&self, key: &AccountKey, reply: AuthReply) -> Result<WhoAmI, Error> {
@@ -179,9 +224,30 @@ impl Client {
             .apps
             .get(&key.site)
             .unwrap_or_else(|_| empty_app(&key.site));
+        let reply = self.attach_pkce_session(key, reply)?;
         let creds = publisher.auth_finish(&app, reply).await?;
         self.vault.put(key, &creds)?;
         publisher.whoami(&app, &creds).await
+    }
+
+    /// Convert a pasted full redirect into the PKCE reply only when it
+    /// matches a one-time state kept in the vault. Raw codes remain supported
+    /// for non-PKCE connectors, but X intentionally refuses them because a
+    /// PKCE exchange without its verifier cannot be completed securely.
+    fn attach_pkce_session(&self, key: &AccountKey, reply: AuthReply) -> Result<AuthReply, Error> {
+        let AuthReply::Redirect { url } = &reply else {
+            return Ok(reply);
+        };
+        let Some(state) = redirect_query_value(url, "state") else {
+            return Ok(reply);
+        };
+        let Some(session) = self.vault.take_auth_session(key, &state)? else {
+            return Ok(reply);
+        };
+        Ok(AuthReply::Pkce {
+            code: url.clone(),
+            verifier: session.code_verifier,
+        })
     }
 
     /// 009 bootstrap. Does not require an app file.
@@ -237,4 +303,15 @@ impl Client {
         self.vault.put(key, &creds)?;
         Ok(me)
     }
+}
+
+/// `state` is generated as lowercase hexadecimal and therefore never needs
+/// percent-decoding. This small parser exists in the always-compiled Client
+/// module, whereas the shared OAuth URL parser is feature-gated.
+fn redirect_query_value(url: &str, key: &str) -> Option<String> {
+    let query = url.split('#').next()?.split_once('?')?.1;
+    query.split('&').find_map(|item| {
+        let (name, value) = item.split_once('=')?;
+        (name == key).then(|| value.to_string())
+    })
 }

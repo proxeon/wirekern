@@ -4,8 +4,12 @@ use crate::error::Error;
 use crate::policy::{AdsPolicy, PausedOnlyAdsPolicy};
 #[cfg(feature = "whatsapp-cloud")]
 use crate::policy::{NoWhatsAppSendsPolicy, WhatsAppPolicy};
+#[cfg(feature = "x")]
+use crate::policy::{NoXDirectMessagesPolicy, XDirectMessagePolicy};
 use crate::registry::Registry;
-use crate::types::{AccountCreds, AccountKey, AppConfig, Site};
+#[cfg(feature = "whatsapp-cloud")]
+use crate::types::AccountKey;
+use crate::types::{AccountCreds, AppConfig, Site};
 use crate::vault::Vault;
 #[cfg(feature = "whatsapp-cloud")]
 use std::collections::HashMap;
@@ -16,12 +20,18 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "meta-ads")]
 mod ads;
+#[cfg(feature = "meta-ads")]
 mod ads_inner;
 mod creds;
+#[cfg(feature = "meta-ads")]
 mod insights;
 mod publish;
 mod reads;
+
+#[cfg(feature = "x")]
+mod x;
 
 #[cfg(feature = "whatsapp-cloud")]
 mod whatsapp;
@@ -45,6 +55,8 @@ pub struct Client {
     pub(super) vault: Arc<dyn Vault>,
     pub(super) apps: Arc<dyn AppStore>,
     pub(super) ads_policy: Arc<dyn AdsPolicy>,
+    #[cfg(feature = "x")]
+    pub(super) x_direct_message_policy: Arc<dyn XDirectMessagePolicy>,
     #[cfg(feature = "whatsapp-cloud")]
     pub(super) whatsapp_policy: Arc<dyn WhatsAppPolicy>,
     #[cfg(feature = "whatsapp-cloud")]
@@ -79,6 +91,8 @@ impl Client {
             vault,
             apps,
             ads_policy: Arc::new(PausedOnlyAdsPolicy),
+            #[cfg(feature = "x")]
+            x_direct_message_policy: Arc::new(NoXDirectMessagesPolicy),
             #[cfg(feature = "whatsapp-cloud")]
             whatsapp_policy: Arc::new(NoWhatsAppSendsPolicy),
             #[cfg(feature = "whatsapp-cloud")]
@@ -97,6 +111,17 @@ impl Client {
     /// must not reset each other.
     pub fn with_ads_policy(mut self, ads_policy: Arc<dyn AdsPolicy>) -> Self {
         self.ads_policy = ads_policy;
+        self
+    }
+
+    /// Replace only the X direct-message policy. Public post publishing and
+    /// every other connector keep their existing authorization boundary.
+    #[cfg(feature = "x")]
+    pub fn with_x_direct_message_policy(
+        mut self,
+        x_direct_message_policy: Arc<dyn XDirectMessagePolicy>,
+    ) -> Self {
+        self.x_direct_message_policy = x_direct_message_policy;
         self
     }
 

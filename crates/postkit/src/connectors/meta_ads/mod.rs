@@ -152,13 +152,14 @@ impl Publisher for MetaAds {
         Ok(AuthStart::Browser {
             authorize_url: url,
             state,
+            pending_pkce: None,
         })
     }
 
     async fn auth_finish(&self, app: &AppConfig, reply: AuthReply) -> Result<AccountCreds, Error> {
         let oauth = require_oauth(app)?;
         let raw = match reply {
-            AuthReply::Pasted { code } => code,
+            AuthReply::Pasted { code } | AuthReply::Pkce { code, .. } => code,
             AuthReply::Redirect { url } => url,
             AuthReply::AppPassword { .. } => {
                 return Err(Error::Auth {

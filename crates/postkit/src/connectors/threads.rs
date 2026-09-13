@@ -255,13 +255,14 @@ impl Publisher for Threads {
         Ok(AuthStart::Browser {
             authorize_url,
             state,
+            pending_pkce: None,
         })
     }
 
     async fn auth_finish(&self, app: &AppConfig, reply: AuthReply) -> Result<AccountCreds, Error> {
         let oauth = require_oauth(app)?;
         let raw = match reply {
-            AuthReply::Pasted { code } => code,
+            AuthReply::Pasted { code } | AuthReply::Pkce { code, .. } => code,
             AuthReply::Redirect { url } => url,
             AuthReply::AppPassword { .. } => {
                 return Err(Error::Auth {
@@ -970,10 +971,12 @@ mod tests {
                 Ok(AuthStart::Browser {
                     authorize_url: ua,
                     state: sa,
+                    ..
                 }),
                 Ok(AuthStart::Browser {
                     authorize_url: ub,
                     state: sb,
+                    ..
                 }),
             ) => ((ua, sa), (ub, sb)),
             _ => panic!("auth_start should return Browser"),
@@ -1720,6 +1723,7 @@ mod tests {
             AuthStart::Browser {
                 authorize_url,
                 state,
+                ..
             } => {
                 assert!(authorize_url.contains("https://threads.net/oauth/authorize"));
                 assert!(authorize_url

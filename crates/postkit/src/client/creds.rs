@@ -3,7 +3,11 @@ use super::{empty_app, refresh_is_due, Client, CredOp};
 use crate::error::Error;
 #[cfg(feature = "whatsapp-cloud")]
 use crate::facets::WhatsAppSender;
-use crate::facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
+#[cfg(feature = "x")]
+use crate::facets::XDirectMessages;
+#[cfg(feature = "meta-ads")]
+use crate::facets::{AdsManager, InsightsSource};
+use crate::facets::{MediaReader, PageDirectory};
 use crate::publisher::Publisher;
 use crate::types::{AccountCreds, AccountKey, AppConfig, Capability, Deadline, Site};
 use std::sync::Arc;
@@ -107,6 +111,7 @@ impl Client {
         }
     }
 
+    #[cfg(feature = "meta-ads")]
     pub(super) fn insights_source(
         &self,
         site: &Site,
@@ -118,6 +123,7 @@ impl Client {
             .ok_or_else(|| Self::missing_facet(site, need))
     }
 
+    #[cfg(feature = "meta-ads")]
     pub(super) fn ads_manager(
         &self,
         site: &Site,
@@ -141,6 +147,18 @@ impl Client {
             .connector(site)
             .and_then(|c| c.media_facet())
             .ok_or_else(|| Self::missing_facet(site, Capability::ReadMedia))
+    }
+
+    #[cfg(feature = "x")]
+    pub(super) fn x_direct_messages(
+        &self,
+        site: &Site,
+        need: Capability,
+    ) -> Result<Arc<dyn XDirectMessages>, Error> {
+        self.registry
+            .connector(site)
+            .and_then(|c| c.x_direct_messages_facet())
+            .ok_or_else(|| Self::missing_facet(site, need))
     }
 
     #[cfg(feature = "whatsapp-cloud")]

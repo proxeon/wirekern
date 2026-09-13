@@ -8,6 +8,7 @@ use crate::output::{emit_raw, human_line};
 use crate::pages;
 use crate::post;
 use crate::whatsapp;
+use crate::x;
 use postkit::{Client, Deadline, Error, Site};
 use std::path::Path;
 
@@ -21,6 +22,7 @@ pub(crate) async fn dispatch(
 ) -> Result<(), i32> {
     match cmd {
         Commands::WhatsApp(cmd) => whatsapp::dispatch(client, cmd, json, account, deadline).await,
+        Commands::X(cmd) => x::dispatch(client, cmd, json, account, deadline).await,
         Commands::Ads(cmd) => ads::dispatch(client, home, cmd, json, account, deadline).await,
         Commands::Media(cmd) => media::dispatch(&client, cmd, json, &account, deadline).await,
         Commands::Pages(cmd) => pages::dispatch(&client, cmd, json, &account, deadline).await,
@@ -65,6 +67,7 @@ pub(crate) async fn dispatch(
             code,
             password,
             system_user,
+            with_dm,
         } => {
             auth::run(
                 &client,
@@ -74,6 +77,7 @@ pub(crate) async fn dispatch(
                 code,
                 password,
                 system_user,
+                with_dm,
                 json,
                 account,
                 deadline,

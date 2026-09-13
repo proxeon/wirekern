@@ -221,6 +221,7 @@ async fn auth_start_url_shape() {
         AuthStart::Browser {
             authorize_url,
             state,
+            ..
         } => {
             assert!(authorize_url.starts_with("https://www.facebook.com/dialog/oauth?"));
             assert_eq!(

@@ -58,6 +58,10 @@ pub enum Capability {
     PublishVideo,
     #[serde(rename = "send.reply")]
     SendReply,
+    /// A private direct message whose transport and consent model do not
+    /// match a public post or Meta's customer-service message classes.
+    #[serde(rename = "send.direct_message")]
+    SendDirectMessage,
     /// In-window service text with no `context` (Meta customer-service window).
     #[serde(rename = "send.text")]
     SendText,
@@ -131,6 +135,7 @@ impl Capability {
             Self::PublishCarousel => "publish.carousel",
             Self::PublishVideo => "publish.video",
             Self::SendReply => "send.reply",
+            Self::SendDirectMessage => "send.direct_message",
             Self::SendText => "send.text",
             Self::SendTemplate => "send.template",
             Self::SendMedia => "send.media",
@@ -193,6 +198,27 @@ pub struct OAuthApp {
     pub client_id: String,
     pub client_secret: String,
     pub redirect_uri: String,
+}
+
+/// A short-lived OAuth PKCE authorization session retained only until the
+/// authorization server redirects back. The verifier is a credential: its
+/// debug output is deliberately redacted and file-backed vaults store it
+/// owner-only just like an access token.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct OAuthPkceSession {
+    pub state: String,
+    pub code_verifier: String,
+    pub expires_at: u64,
+}
+
+impl std::fmt::Debug for OAuthPkceSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OAuthPkceSession")
+            .field("state", &self.state)
+            .field("code_verifier", &"[redacted]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for OAuthApp {

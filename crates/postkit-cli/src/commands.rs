@@ -6,6 +6,7 @@ use crate::keys::KeysCmd;
 use crate::media::MediaCmd;
 use crate::pages::PagesCmd;
 use crate::whatsapp::WhatsAppCmd;
+use crate::x::XCmd;
 use clap::Subcommand;
 
 #[derive(Subcommand, Debug)]
@@ -66,6 +67,10 @@ pub(crate) enum Commands {
         /// `--token`. Refuses a user OAuth token reused as a service secret.
         #[arg(long)]
         system_user: bool,
+        /// X only: request the private DM scopes in addition to public-post
+        /// scopes. Re-authorize whenever you add this capability.
+        #[arg(long)]
+        with_dm: bool,
     },
     Whoami {
         site: String,
@@ -142,6 +147,10 @@ pub(crate) enum Commands {
     /// need --yes.
     #[command(name = "whatsapp", subcommand)]
     WhatsApp(WhatsAppCmd),
+    /// X-specific private-message operations. Public text posts stay under
+    /// `post x --text ...`; DMs require an explicit acknowledgement.
+    #[command(subcommand)]
+    X(XCmd),
     /// Local HTTP for callers that cannot exec. With --json, prints one
     /// listen document then runs until interrupt; request results are HTTP
     /// bodies, not a second stdout document.
@@ -160,6 +169,13 @@ pub(crate) enum Commands {
 pub(crate) fn whatsapp_send_allowed(command: &Commands) -> bool {
     match command {
         Commands::WhatsApp(cmd) => crate::whatsapp::send_allowed(cmd),
+        _ => false,
+    }
+}
+
+pub(crate) fn x_direct_message_allowed(command: &Commands) -> bool {
+    match command {
+        Commands::X(command) => crate::x::direct_message_allowed(command),
         _ => false,
     }
 }

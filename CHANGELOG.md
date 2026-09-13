@@ -12,6 +12,15 @@ same detail by subject.
 
 ## [Unreleased]
 
+### Added
+
+- X API v2 connector: OAuth 2.0 Authorization Code with a vault-held,
+  single-use PKCE verifier; public text posts and numeric-ID replies; and an
+  independently policy-gated one-to-one text-DM facet. DMs require a
+  deliberate `auth x --with-dm` scope elevation and `x dm --allow-dm` at the
+  CLI. The initial surface intentionally excludes media, group DMs, inbox
+  reads, webhooks, and all X Ads operations.
+
 ### Changed
 
 - CLI flag cleanup: `auth --listen` is gone (paste-code is the OAuth path).

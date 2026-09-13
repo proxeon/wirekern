@@ -12,13 +12,14 @@ mod output;
 mod pages;
 mod post;
 mod whatsapp;
+mod x;
 
 #[cfg(test)]
 mod tests;
 
 use crate::app::{fail, make_client, resolve_home};
 use crate::cli::Cli;
-use crate::commands::{whatsapp_send_allowed, Commands};
+use crate::commands::{whatsapp_send_allowed, x_direct_message_allowed, Commands};
 use crate::whatsapp::WhatsAppCmd;
 use clap::Parser;
 use postkit::Deadline;
@@ -78,6 +79,16 @@ async fn run(cli: Cli) -> Result<(), i32> {
         other => {
             let allow_whatsapp_send = whatsapp_send_allowed(&other);
             let client = make_client(&home, allow_whatsapp_send).map_err(|e| fail(&e, json))?;
+            let client = if x_direct_message_allowed(&other) {
+                // The command itself also carries --allow-dm. Installing the
+                // allow policy only for that command prevents unrelated CLI
+                // invocations from silently gaining private-send authority.
+                client.with_x_direct_message_policy(std::sync::Arc::new(
+                    postkit::AllowXDirectMessagesPolicy,
+                ))
+            } else {
+                client
+            };
             let client = match &other {
                 Commands::Ads(ads) => ads::apply_lifecycle_policy(client, ads),
                 _ => client,

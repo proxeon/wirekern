@@ -42,6 +42,8 @@ pub fn bundled_registry() -> Result<Registry, Error> {
     registry.register_connector(crate::connectors::instagram::Instagram::new()?.connector());
     #[cfg(feature = "linkedin")]
     registry.register(Arc::new(crate::connectors::linkedin::LinkedIn::new()?));
+    #[cfg(feature = "x")]
+    registry.register_connector(crate::connectors::x::X::new()?.connector());
     #[cfg(feature = "whatsapp-cloud")]
     registry
         .register_connector(crate::connectors::whatsapp_cloud::WhatsAppCloud::new()?.connector());
@@ -115,6 +117,7 @@ mod tests {
             feature = "facebook-pages",
             feature = "instagram",
             feature = "linkedin",
+            feature = "x",
             feature = "whatsapp-cloud"
         )))]
         assert!(registry.sites().next().is_none());
@@ -124,6 +127,8 @@ mod tests {
         assert!(registry.get(&crate::types::Site::new("bluesky")).is_some());
         #[cfg(feature = "linkedin")]
         assert!(registry.get(&crate::types::Site::new("linkedin")).is_some());
+        #[cfg(feature = "x")]
+        assert!(registry.get(&crate::types::Site::new("x")).is_some());
         #[cfg(feature = "whatsapp-cloud")]
         assert!(registry
             .get(&crate::types::Site::new("whatsapp_cloud"))

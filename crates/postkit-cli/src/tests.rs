@@ -1,12 +1,13 @@
 use crate::ads::*;
 use crate::app::*;
 use crate::cli::Cli;
-use crate::commands::{whatsapp_send_allowed, Commands};
+use crate::commands::{whatsapp_send_allowed, x_direct_message_allowed, Commands};
 use crate::keys::KeysCmd;
 use crate::media::MediaCmd;
 use crate::pages::PagesCmd;
 use crate::post::*;
 use crate::whatsapp::*;
+use crate::x::XCmd;
 use postkit::connectors::instagram::MAX_CAROUSEL_IMAGES;
 use postkit::{
     AdAccount, AdEntity, AdPreviewFormat, AdReviewStatus, AdReviewWait, AdsInventoryItem,
@@ -285,6 +286,51 @@ fn ads_accounts_command_parses() {
     assert!(
         matches!(bad_id, Error::InvalidQuery { reason, .. } if reason == "bad_ads_inspect_id:ad-1")
     );
+}
+
+#[test]
+fn x_dm_and_scope_elevation_commands_are_explicit() {
+    let auth = Cli::try_parse_from(["postkit", "auth", "x", "--with-dm"]).unwrap();
+    assert!(matches!(
+        *auth.command,
+        Commands::Auth { with_dm: true, .. }
+    ));
+
+    let denied = Cli::try_parse_from([
+        "postkit",
+        "x",
+        "dm",
+        "--to",
+        "123",
+        "--text",
+        "private",
+        "--idempotency",
+        "x-dm-1",
+    ])
+    .unwrap();
+    assert!(matches!(
+        *denied.command,
+        Commands::X(XCmd::Dm {
+            allow_dm: false,
+            ..
+        })
+    ));
+    assert!(!x_direct_message_allowed(&denied.command));
+
+    let allowed = Cli::try_parse_from([
+        "postkit",
+        "x",
+        "dm",
+        "--to",
+        "123",
+        "--text",
+        "private",
+        "--idempotency",
+        "x-dm-1",
+        "--allow-dm",
+    ])
+    .unwrap();
+    assert!(x_direct_message_allowed(&allowed.command));
 }
 
 #[test]

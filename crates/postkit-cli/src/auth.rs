@@ -1,7 +1,9 @@
 //! `postkit auth` and `postkit whoami`.
 use crate::app::fail;
 use crate::output::emit_ok;
-use postkit::{extract_code, verify_state, AccountKey, AuthReply, Client, Deadline, Site};
+use postkit::{
+    extract_code, verify_state, AccountKey, AuthReply, AuthStartOptions, Client, Deadline,
+};
 use std::io::{self, BufRead, IsTerminal};
 use std::path::Path;
 
@@ -32,11 +34,16 @@ pub(crate) async fn run(
     code: Option<String>,
     password: Option<String>,
     system_user: bool,
+    with_dm: bool,
     json: bool,
     account: String,
     deadline: Deadline,
 ) -> Result<(), i32> {
     let key = AccountKey::new(&site, &account);
+    if with_dm && site != "x" {
+        eprintln!("--with-dm is only valid for x");
+        return Err(2);
+    }
     let result = if system_user {
         if site != "meta_ads" {
             eprintln!("--system-user is only valid for meta_ads");
@@ -87,14 +94,31 @@ pub(crate) async fn run(
         }
         client.put_token(&key, &token).await
     } else if let Some(code) = code {
-        let code = extract_code(&code).map_err(|e| fail(&e, json))?;
-        client.auth_finish(&key, AuthReply::Pasted { code }).await
+        // PKCE needs the redirect state to retrieve its vault-held verifier.
+        // Keep a pasted URL intact; older OAuth connectors still receive a
+        // normalized code through the Pasted branch.
+        let looks_url = code.contains("://") || code.starts_with("http");
+        if looks_url {
+            client
+                .auth_finish(&key, AuthReply::Redirect { url: code })
+                .await
+        } else {
+            let code = extract_code(&code).map_err(|e| fail(&e, json))?;
+            client.auth_finish(&key, AuthReply::Pasted { code }).await
+        }
     } else {
-        match client.auth_start(&Site::new(&site)).await {
+        let options = AuthStartOptions {
+            requested_features: with_dm
+                .then(|| "direct_messages".into())
+                .into_iter()
+                .collect(),
+        };
+        match client.auth_start_for(&key, options).await {
             Ok(start) => match start {
                 postkit::AuthStart::Browser {
                     authorize_url,
                     state,
+                    ..
                 } => {
                     eprintln!("open: {authorize_url}");
                     if !io::stdin().is_terminal() {
@@ -105,8 +129,17 @@ pub(crate) async fn run(
                     let mut line = String::new();
                     io::stdin().lock().read_line(&mut line).map_err(|_| 5)?;
                     verify_state(&state, &line).map_err(|e| fail(&e, json))?;
-                    let code = extract_code(&line).map_err(|e| fail(&e, json))?;
-                    client.auth_finish(&key, AuthReply::Pasted { code }).await
+                    // Preserve a redirect so Client can match its PKCE state;
+                    // raw codes remain supported for legacy non-PKCE sites.
+                    let trimmed = line.trim().to_string();
+                    let reply = if trimmed.contains("://") || trimmed.starts_with("http") {
+                        AuthReply::Redirect { url: trimmed }
+                    } else {
+                        AuthReply::Pasted {
+                            code: extract_code(&trimmed).map_err(|e| fail(&e, json))?,
+                        }
+                    };
+                    client.auth_finish(&key, reply).await
                 }
                 postkit::AuthStart::PasteInstructions { hint } => {
                     eprintln!("{hint}");

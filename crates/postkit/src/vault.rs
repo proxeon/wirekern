@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::types::{AccountCreds, AccountKey, Outcome, Site};
+use crate::types::{AccountCreds, AccountKey, OAuthPkceSession, Outcome, Site};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -26,6 +26,16 @@ pub trait Vault: Send + Sync {
     /// reserve must say so at compile time.
     fn claim_outcome(&self, key: &AccountKey, idem: &str) -> Result<Claim, Error>;
     fn release_outcome(&self, key: &AccountKey, idem: &str) -> Result<(), Error>;
+
+    /// Hold an OAuth PKCE verifier only between authorization start and the
+    /// matching redirect. A verifier must survive a shell/process boundary,
+    /// but unlike an account credential it is single-use and short-lived.
+    fn put_auth_session(&self, key: &AccountKey, session: &OAuthPkceSession) -> Result<(), Error>;
+    fn take_auth_session(
+        &self,
+        key: &AccountKey,
+        state: &str,
+    ) -> Result<Option<OAuthPkceSession>, Error>;
 }
 
 /// A claim attempt's answer: `Free` means the caller now holds the
@@ -45,6 +55,7 @@ pub struct MemoryVault {
     /// vault) still cannot double-publish; cross-process serialization is
     /// the file vault's job.
     claims: Mutex<std::collections::HashSet<(AccountKey, String)>>,
+    auth_sessions: Mutex<HashMap<AccountKey, OAuthPkceSession>>,
 }
 
 impl MemoryVault {
@@ -53,6 +64,7 @@ impl MemoryVault {
             inner: Mutex::new(HashMap::new()),
             outcomes: Mutex::new(HashMap::new()),
             claims: Mutex::new(std::collections::HashSet::new()),
+            auth_sessions: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -126,5 +138,68 @@ impl Vault for MemoryVault {
             .expect("vault")
             .remove(&(key.clone(), idem.to_string()));
         Ok(())
+    }
+
+    fn put_auth_session(&self, key: &AccountKey, session: &OAuthPkceSession) -> Result<(), Error> {
+        self.auth_sessions
+            .lock()
+            .expect("vault")
+            .insert(key.clone(), session.clone());
+        Ok(())
+    }
+
+    fn take_auth_session(
+        &self,
+        key: &AccountKey,
+        state: &str,
+    ) -> Result<Option<OAuthPkceSession>, Error> {
+        let mut sessions = self.auth_sessions.lock().expect("vault");
+        let Some(session) = sessions.get(key) else {
+            return Ok(None);
+        };
+        // A mismatched redirect must not consume the valid session: an
+        // operator can still paste the correct redirect after seeing a CSRF
+        // refusal for another browser tab.
+        if session.state != state {
+            return Ok(None);
+        }
+        let session = sessions.remove(key).expect("session existed");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|time| time.as_secs())
+            .unwrap_or(u64::MAX);
+        Ok((session.expires_at >= now).then_some(session))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pkce_session_requires_matching_state_and_is_single_use() {
+        let vault = MemoryVault::new();
+        let key = AccountKey::new("x", "default");
+        vault
+            .put_auth_session(
+                &key,
+                &OAuthPkceSession {
+                    state: "expected".into(),
+                    code_verifier: "secret-verifier".into(),
+                    expires_at: u64::MAX,
+                },
+            )
+            .unwrap();
+        // A stray callback cannot consume the valid browser flow.
+        assert!(vault.take_auth_session(&key, "wrong").unwrap().is_none());
+        assert_eq!(
+            vault
+                .take_auth_session(&key, "expected")
+                .unwrap()
+                .unwrap()
+                .code_verifier,
+            "secret-verifier"
+        );
+        assert!(vault.take_auth_session(&key, "expected").unwrap().is_none());
     }
 }

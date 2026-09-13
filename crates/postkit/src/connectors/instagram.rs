@@ -204,13 +204,16 @@ impl Publisher for Instagram {
                 &state,
             ),
             state,
+            pending_pkce: None,
         })
     }
 
     async fn auth_finish(&self, app: &AppConfig, reply: AuthReply) -> Result<AccountCreds, Error> {
         let oauth = require_oauth(app)?;
         let raw = match reply {
-            AuthReply::Pasted { code } | AuthReply::Redirect { url: code } => code,
+            AuthReply::Pasted { code }
+            | AuthReply::Redirect { url: code }
+            | AuthReply::Pkce { code, .. } => code,
             AuthReply::AppPassword { .. } => {
                 return Err(Error::Auth {
                     site: self.site.clone(),
@@ -1098,6 +1101,7 @@ mod tests {
         let AuthStart::Browser {
             authorize_url,
             state,
+            ..
         } = connector.auth_start(&app()).await.unwrap()
         else {
             panic!("expected browser authorization");

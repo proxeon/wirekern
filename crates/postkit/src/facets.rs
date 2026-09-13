@@ -18,7 +18,7 @@ use crate::error::Error;
 use crate::insights::{AdAccountsReply, InsightsJob, InsightsQuery, InsightsReply};
 use crate::media::{MediaQuery, MediaReply};
 use crate::pages::PagesReply;
-#[cfg(feature = "whatsapp-cloud")]
+#[cfg(any(feature = "whatsapp-cloud", feature = "x"))]
 use crate::types::Outcome;
 use crate::types::{AccountCreds, AppConfig, Capability, Deadline, Site};
 #[cfg(feature = "whatsapp-cloud")]
@@ -29,6 +29,9 @@ use crate::whatsapp::{
     WhatsAppTemplateQuery, WhatsAppTemplateRecord, WhatsAppUploadedMedia, WhatsAppWabaList,
 };
 use async_trait::async_trait;
+
+#[cfg(feature = "x")]
+use crate::x::XDirectMessageRequest;
 
 /// Spend/performance reads. Distinct from publish because a metrics-only
 /// connector must not grow a write path merely by sharing one trait.
@@ -345,6 +348,21 @@ pub trait MediaReader: Send + Sync {
         query: &MediaQuery,
         deadline: Deadline,
     ) -> Result<MediaReply, Error>;
+}
+
+/// X's private direct-message transport. This is intentionally X-specific:
+/// unlike a generic chat abstraction it carries X user IDs, X's OAuth scopes,
+/// and the connector's dedicated privacy/default-deny policy.
+#[cfg(feature = "x")]
+#[async_trait]
+pub trait XDirectMessages: Send + Sync {
+    async fn send_x_direct_message(
+        &self,
+        app: &AppConfig,
+        creds: &AccountCreds,
+        request: &XDirectMessageRequest,
+        deadline: Deadline,
+    ) -> Result<Outcome, Error>;
 }
 
 /// Typed private business messaging. Deliberately not `publish`: recipient,

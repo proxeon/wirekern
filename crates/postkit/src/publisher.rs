@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::types::{
-    AccountCreds, AppConfig, Capability, Deadline, Intent, Outcome, Probe, Site, WhoAmI,
+    AccountCreds, AppConfig, Capability, Deadline, Intent, OAuthPkceSession, Outcome, Probe, Site,
+    WhoAmI,
 };
 use async_trait::async_trait;
 
@@ -22,6 +23,10 @@ pub enum AuthStart {
     Browser {
         authorize_url: String,
         state: String,
+        /// Client-only PKCE material. `Client::auth_start_for` moves this
+        /// into the vault before returning the browser URL to the caller, so
+        /// terminal output and logs never contain the verifier.
+        pending_pkce: Option<OAuthPkceSession>,
     },
     PasteInstructions {
         hint: String,
@@ -37,11 +42,28 @@ pub enum AuthReply {
     Pasted {
         code: String,
     },
+    /// A browser redirect matched to a vault-held PKCE session. This is
+    /// constructed only by `Client::auth_finish`; callers should supply the
+    /// full redirect URL instead of handling a code verifier themselves.
+    Pkce {
+        code: String,
+        verifier: String,
+    },
     AppPassword {
         identifier: String,
         secret: String,
         pds: Option<String>,
     },
+}
+
+/// Connector-owned opt-in authorization features. The generic auth command
+/// supplies only reviewed feature names; a connector must reject names it
+/// does not understand rather than turning this into an arbitrary scope
+/// injection path. X uses `direct_messages` to request `dm.read`/`dm.write`
+/// only when the operator explicitly asks for private messaging.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AuthStartOptions {
+    pub requested_features: Vec<String>,
 }
 
 /// Kernel seam: social publish + auth.
@@ -108,6 +130,24 @@ pub trait Publisher: Send + Sync {
             site: self.site().clone(),
             reason: "unsupported_auth".into(),
         })
+    }
+
+    /// Start authorization with an explicit, connector-validated feature
+    /// request. Existing connectors retain their narrow OAuth scopes through
+    /// the default implementation; a non-empty request is refused unless a
+    /// connector consciously implements a scope elevation path.
+    async fn auth_start_with(
+        &self,
+        app: &AppConfig,
+        options: &AuthStartOptions,
+    ) -> Result<AuthStart, Error> {
+        if !options.requested_features.is_empty() {
+            return Err(Error::Auth {
+                site: self.site().clone(),
+                reason: "unsupported_auth_feature".into(),
+            });
+        }
+        self.auth_start(app).await
     }
 
     async fn auth_finish(
