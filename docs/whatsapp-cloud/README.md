@@ -8,7 +8,7 @@ consent and billing consequences.
 
 The connector sends typed Cloud API messages (text, media, interactive,
 templates, catalog/order, Flows) and parses **signed inbound webhooks**.
-`postkit serve` provides the challenge/acknowledgement callback and a small
+`wirekern serve` provides the challenge/acknowledgement callback and a small
 local delivery ledger; it is not a conversation inbox. The server is plain
 HTTP and must sit behind your own public HTTPS reverse proxy or tunnel before
 Meta can reach it. Every customer send still needs `--allow-send` and an
@@ -28,29 +28,29 @@ In the Meta developer/business setup for the legitimate business:
    number, WABA ID, App ID, or Business Portfolio ID).
 3. Create a System User access token that can send WhatsApp business messages
    for that phone number. Treat it as a password.
-4. Copy the Meta app secret if this Postkit instance will parse inbound
+4. Copy the Meta app secret if this Wirekern instance will parse inbound
    webhooks. It verifies `X-Hub-Signature-256`; it is not sent to Graph.
 5. In Meta, configure a public HTTPS webhook endpoint and subscribe it to the
    WhatsApp `messages` field. Point it at a TLS reverse proxy or tunnel that
-   forwards unchanged bytes to Postkit's local callback route below.
+   forwards unchanged bytes to Wirekern's local callback route below.
 
 Do not use a personal WhatsApp login password or a scraped WhatsApp Web
 session. Cloud API is a business platform and needs these business assets.
 
-## 2. Configure Postkit and verify the token
+## 2. Configure Wirekern and verify the token
 
 Keep the token out of committed files. You may configure the sender interactively:
 
 ```bash
-postkit whatsapp configure \
+wirekern whatsapp configure \
   --phone-number-id 123456789012345 \
   --sender marketing=987654321098765 \
   --app-secret '<META_APP_SECRET>' \
   --verify-token '<RANDOM_CALLBACK_VERIFY_TOKEN>'
 
-postkit auth whatsapp_cloud --token '<SYSTEM_USER_ACCESS_TOKEN>'
-postkit whoami whatsapp_cloud --json
-postkit apps show whatsapp_cloud --json
+wirekern auth whatsapp_cloud --token '<SYSTEM_USER_ACCESS_TOKEN>'
+wirekern whoami whatsapp_cloud --json
+wirekern apps show whatsapp_cloud --json
 ```
 
 `auth` calls the configured phone-number endpoint before writing the token to
@@ -59,30 +59,30 @@ verified/display name; it never prints the token.
 
 For CI or a noninteractive server, configure the app data in the environment
 instead. The token should still go through `auth … --token` once and live in
-the Postkit vault.
+the Wirekern vault.
 
 ```bash
-export POSTKIT_WHATSAPP_PHONE_NUMBER_ID=123456789012345
-export POSTKIT_WHATSAPP_APP_SECRET='<META_APP_SECRET>' # only needed for webhook parsing
-export POSTKIT_WHATSAPP_VERIFY_TOKEN='<RANDOM_CALLBACK_VERIFY_TOKEN>'
+export WIREKERN_WHATSAPP_PHONE_NUMBER_ID=123456789012345
+export WIREKERN_WHATSAPP_APP_SECRET='<META_APP_SECRET>' # only needed for webhook parsing
+export WIREKERN_WHATSAPP_VERIFY_TOKEN='<RANDOM_CALLBACK_VERIFY_TOKEN>'
 # Optional: 64 hex characters. Enables encrypted replay of signed callbacks
-# that a future Postkit parser learns to understand; never commit this value.
-export POSTKIT_WHATSAPP_REPLAY_DLQ_KEY='<64_HEX_CHARACTERS>'
+# that a future Wirekern parser learns to understand; never commit this value.
+export WIREKERN_WHATSAPP_REPLAY_DLQ_KEY='<64_HEX_CHARACTERS>'
 # Optional: enables paged owned-WABA and system-user reads.
-export POSTKIT_WHATSAPP_BUSINESS_ID=123456789012345
-postkit auth whatsapp_cloud --token '<SYSTEM_USER_ACCESS_TOKEN>'
+export WIREKERN_WHATSAPP_BUSINESS_ID=123456789012345
+wirekern auth whatsapp_cloud --token '<SYSTEM_USER_ACCESS_TOKEN>'
 ```
 
 For WhatsApp, environment values override their matching fields rather than
-replacing the whole file: setting only `POSTKIT_WHATSAPP_PHONE_NUMBER_ID`
+replacing the whole file: setting only `WIREKERN_WHATSAPP_PHONE_NUMBER_ID`
 keeps an app secret previously saved by `whatsapp configure`. Set
-`POSTKIT_WHATSAPP_APP_SECRET` only when you deliberately want to replace that
+`WIREKERN_WHATSAPP_APP_SECRET` only when you deliberately want to replace that
 secret. `apps show` redacts the app secret and reports only whether webhook
-signing is configured. `--verify-token` / `POSTKIT_WHATSAPP_VERIFY_TOKEN` is
+signing is configured. `--verify-token` / `WIREKERN_WHATSAPP_VERIFY_TOKEN` is
 the separate value Meta sends only during the public GET callback challenge.
 
 `--sender alias=phone_number_id` adds a secondary outbound number without
-changing the primary phone. Send with `--sender alias`; Postkit accepts only a
+changing the primary phone. Send with `--sender alias`; Wirekern accepts only a
 configured alias, then applies separate local pacing and idempotency for that
 phone. The primary sender remains the default when `--sender` is omitted.
 
@@ -90,11 +90,11 @@ phone. The primary sender remains the default when `--sender` is omitted.
 
 Replies are tied to a known inbound `wamid`; use the `from` and `id` from a
 verified parsed webhook. Recipients may include a leading `+` and
-spaces/hyphens/parentheses; Postkit normalizes to digits (keeping `+` if you
+spaces/hyphens/parentheses; Wirekern normalizes to digits (keeping `+` if you
 typed it) and does not invent a country code.
 
 ```bash
-postkit --json whatsapp reply \
+wirekern --json whatsapp reply \
   --to 60123456789 \
   --reply-to 'wamid.HBgLN...inbound...' \
   --text 'Terima kasih. Kami akan semak pesanan anda.' \
@@ -103,8 +103,8 @@ postkit --json whatsapp reply \
 ```
 
 `--allow-send` is required on every private send. Without it the default
-policy rejects the command **before** vault/network access. Meta, not Postkit,
-remains the final delivery authority. Postkit's file-backed CLI/HTTP clients
+policy rejects the command **before** vault/network access. Meta, not Wirekern,
+remains the final delivery authority. Wirekern's file-backed CLI/HTTP clients
 also refuse free-form content when no verified inbound callback has opened a
 local 24-hour customer-service window; do not bypass that by pretending an
 arbitrary old ID is a reply context.
@@ -113,17 +113,17 @@ The returned `id` is Meta's accepted outbound `wamid`, **not** proof of
 delivery or read. Keep it to correlate the later status webhook.
 
 `--idempotency` records only a **confirmed** success. If the request left
-this machine and the response was lost, Postkit does **not** retry. Check
+this machine and the response was lost, Wirekern does **not** retry. Check
 the delivery webhook (or WhatsApp Manager) before sending again — a second
 send can be a second private message.
 
 In-window follow-ups that are not quoting a specific inbound `wamid` use
 `whatsapp text` (Meta `type=text` with no `context`). Meta still requires an
-open customer-service window; Postkit computes a conservative local check
+open customer-service window; Wirekern computes a conservative local check
 from verified callbacks before it sends.
 
 ```bash
-postkit --json whatsapp text \
+wirekern --json whatsapp text \
   --to '+60 12-345 6789' \
   --text 'Kami masih semak.' \
   --idempotency follow-up-order-42-v1 \
@@ -148,7 +148,7 @@ are available through the typed `whatsapp send` and `whatsapp templates`
 commands below.
 
 ```bash
-postkit --json whatsapp template \
+wirekern --json whatsapp template \
   --to 60123456789 \
   --name order_update \
   --language en_US \
@@ -160,7 +160,7 @@ postkit --json whatsapp template \
 
 Template categorisation, approval, messaging limits, user opt-in, and
 per-conversation/template pricing are Meta business decisions. Review them in
-WhatsApp Manager before adding `--allow-send`. A Postkit success means Meta
+WhatsApp Manager before adding `--allow-send`. A Wirekern success means Meta
 accepted the request; monitor signed status webhooks for delivery/failure.
 
 ## 4a. Typed command coverage
@@ -184,7 +184,7 @@ typing) from a local JSON document; it never passes arbitrary Graph JSON.
 ```
 
 ```bash
-postkit --json whatsapp send \
+wirekern --json whatsapp send \
   --request receipt.json \
   --sender marketing \
   --allow-send
@@ -206,8 +206,8 @@ same list command. Do not try to construct or modify a cursor.
 
 ## 5. Receive webhooks safely
 
-For a Postkit-managed callback, run the HTTP listener on loopback and terminate
-TLS before it. Do not expose `postkit serve` directly to the internet: it does
+For a Wirekern-managed callback, run the HTTP listener on loopback and terminate
+TLS before it. Do not expose `wirekern serve` directly to the internet: it does
 not own certificates or HTTPS.
 
 ```text
@@ -215,14 +215,14 @@ Meta HTTPS -> your TLS reverse proxy/tunnel -> http://127.0.0.1:8788/v1/whatsapp
 ```
 
 ```bash
-postkit keys create --name whatsapp-callback-read
-postkit serve --bind 127.0.0.1:8788
+wirekern keys create --name whatsapp-callback-read
+wirekern serve --bind 127.0.0.1:8788
 ```
 
 ### Minimal HTTPS deployment: Caddy
 
-Use a domain that resolves to the host running Postkit and allow inbound TCP
-443. Keep Postkit bound to loopback; Caddy owns the public certificate and
+Use a domain that resolves to the host running Wirekern and allow inbound TCP
+443. Keep Wirekern bound to loopback; Caddy owns the public certificate and
 forwards the unchanged request locally.
 
 ```caddyfile
@@ -234,7 +234,7 @@ whatsapp.example.com {
 Run Caddy with that file, then set Meta's callback URL to
 `https://whatsapp.example.com/v1/whatsapp/callback`. Do **not** configure a
 CDN/body-transforming proxy in front of this route: the signature covers the
-exact bytes Meta sent. Health-check the local process separately; Postkit does
+exact bytes Meta sent. Health-check the local process separately; Wirekern does
 not issue certificates, redirect HTTP, or bind a public interface for you.
 
 Configure the public `https://…/v1/whatsapp/callback` URL in Meta. The GET
@@ -248,7 +248,7 @@ signature header to the parser. Do not parse/reformat JSON before passing it
 along—the HMAC is over the raw body.
 
 ```bash
-postkit --json whatsapp webhook parse \
+wirekern --json whatsapp webhook parse \
   --signature "$X_HUB_SIGNATURE_256" < webhook-body.json
 ```
 
@@ -292,14 +292,14 @@ legal-retention basis.
 ### Encrypted replay for signed parser failures
 
 The default dead-letter audit contains only a reason, body hash, and timestamp.
-To retain a signed raw callback for replay after a Postkit parser upgrade, set
-`POSTKIT_WHATSAPP_REPLAY_DLQ_KEY` to exactly 64 random hexadecimal characters
-before starting Postkit. Generate and store it in your secret manager, not the
-repository or the Postkit home directory:
+To retain a signed raw callback for replay after a Wirekern parser upgrade, set
+`WIREKERN_WHATSAPP_REPLAY_DLQ_KEY` to exactly 64 random hexadecimal characters
+before starting Wirekern. Generate and store it in your secret manager, not the
+repository or the Wirekern home directory:
 
 ```bash
 openssl rand -hex 32
-export POSTKIT_WHATSAPP_REPLAY_DLQ_KEY='…generated value…'
+export WIREKERN_WHATSAPP_REPLAY_DLQ_KEY='…generated value…'
 ```
 
 The bounded (at most 1 MiB) body and HMAC are XChaCha20-Poly1305 encrypted at
@@ -307,8 +307,8 @@ rest; list output shows only metadata. After upgrading, inspect and replay
 deliberately:
 
 ```bash
-postkit --json whatsapp ledger dead-letters
-postkit --json whatsapp ledger replay --id dlq-… --yes
+wirekern --json whatsapp ledger dead-letters
+wirekern --json whatsapp ledger replay --id dlq-… --yes
 ```
 
 A successful replay verifies the original signature again, reduces the event
@@ -328,13 +328,13 @@ the explicit `--allow-send` acknowledgement:
   treated as closed, not as permission.
 - Read/typing acknowledgements act on an inbound `wamid` and carry no `to`, so
   their final validation remains with Meta. Group sends are refused by this
-  strict local policy because Postkit has no individual consent record to
+  strict local policy because Wirekern has no individual consent record to
   evaluate.
 
 Record consent using a normalized WhatsApp ID before sending a template:
 
 ```bash
-postkit whatsapp consent set --wa-id 60123456789 --kind opt_in --yes
+wirekern whatsapp consent set --wa-id 60123456789 --kind opt_in --yes
 ```
 
 An explicit `opt_out` is always stronger than an open customer-service window.
@@ -344,7 +344,7 @@ delivery authority. Library embeddings can intentionally install
 `AllowWhatsAppSendsPolicy` instead when they provide their own compliance
 service.
 
-Postkit paces outbound Cloud API requests at a process-local default of roughly
+Wirekern paces outbound Cloud API requests at a process-local default of roughly
 80 messages/second per configured phone number. Batches are capped at 10 items and
 wait for the next slot within the caller's deadline. This is local pacing, not
 a distributed quota service or a Meta throughput guarantee.
@@ -354,7 +354,7 @@ a distributed quota service or a Meta throughput guarantee.
 Every send has a mandatory local idempotency key. Repeating a **confirmed**
 send with the same key replays the stored outcome without making a second API
 call. If the process loses the response after the request left your machine,
-the remote result is unknown and Postkit records nothing. Do not blindly retry:
+the remote result is unknown and Wirekern records nothing. Do not blindly retry:
 inspect the signed status/inbound webhook or WhatsApp Manager first, then make
 an intentional operational decision.
 
@@ -362,17 +362,17 @@ an intentional operational decision.
 
 | Symptom | Meaning / next action |
 | --- | --- |
-| `missing_phone_number_id` | Run `whatsapp configure …`, or set `POSTKIT_WHATSAPP_PHONE_NUMBER_ID`. Use the numeric Phone number ID, not the display number/WABA ID. |
+| `missing_phone_number_id` | Run `whatsapp configure …`, or set `WIREKERN_WHATSAPP_PHONE_NUMBER_ID`. Use the numeric Phone number ID, not the display number/WABA ID. |
 | `token_invalid` | Create/renew the authorised System User token, then re-run `auth whatsapp_cloud --token …`. |
 | `policy_denied` / `explicit_whatsapp_send_required` | Review consent, window, template and pricing, then repeat the exact typed command with `--allow-send`. |
 | `whatsapp_consent_missing` | Record a verified `opt_in` before a template send. |
 | `whatsapp_consent_opted_out` | Do not send customer-visible content; honor the local opt-out. |
 | `whatsapp_customer_window_closed` | Wait for a verified inbound message or use an approved template after recording opt-in. |
-| `recipient_must_be_whatsapp_id` | Use country code + 7–15 digits. A leading `+` and spaces, hyphens, or parentheses are stripped; Postkit does not invent a country code. Letters and other punctuation are refused. |
+| `recipient_must_be_whatsapp_id` | Use country code + 7–15 digits. A leading `+` and spaces, hyphens, or parentheses are stripped; Wirekern does not invent a country code. Letters and other punctuation are refused. |
 | `template_name_invalid` | V1 accepts lowercase letters, digits and underscores only; use the approved name exactly. |
-| Meta template/window error | Postkit sent a valid wire shape; correct the template approval, customer opt-in, recipient, or policy in WhatsApp Manager. |
+| Meta template/window error | Wirekern sent a valid wire shape; correct the template approval, customer opt-in, recipient, or policy in WhatsApp Manager. |
 | `webhook_signature_invalid` | Pass the unchanged body and exact `X-Hub-Signature-256` value; check the configured app secret. |
-| `webhook_phone_number_mismatch` | The signed event belongs to another phone number. Route it to the Postkit configuration for that sender. |
+| `webhook_phone_number_mismatch` | The signed event belongs to another phone number. Route it to the Wirekern configuration for that sender. |
 | `webhook_status_unsupported` | Meta sent a delivery state this version does not model. With the replay key configured, inspect `whatsapp ledger dead-letters` after upgrading. |
 
 ## Current boundaries
@@ -383,7 +383,7 @@ supports typed sends and the same optional configured `sender` alias; it does
 not expose management endpoints. Use the CLI or library for management until
 an HTTP-management authorization contract is separately designed.
 
-Postkit does not terminate TLS itself, run distributed rate limits, or provide
+Wirekern does not terminate TLS itself, run distributed rate limits, or provide
 a hosted inbox/billing dashboard. It documents a TLS deployment and provides
 an opt-in encrypted local replay queue, but the operator still owns the domain,
 secret manager, process supervision, and retention choice. A successful send
@@ -394,12 +394,12 @@ result.
 
 Mocked tests validate wire shapes. To verify the live, read-only Graph
 contracts against a deliberately configured local test account, run the
-ignored suite with a local Postkit vault and app configuration:
+ignored suite with a local Wirekern vault and app configuration:
 
 ```bash
-POSTKIT_LIVE_WHATSAPP=1 \
-POSTKIT_HOME="$HOME/.postkit" \
-cargo test -p postkit --features whatsapp-cloud,vault-file tests::live_whatsapp_cloud_reads -- --ignored --exact
+WIREKERN_LIVE_WHATSAPP=1 \
+WIREKERN_HOME="$HOME/.wirekern" \
+cargo test -p wirekern --features whatsapp-cloud,vault-file tests::live_whatsapp_cloud_reads -- --ignored --exact
 ```
 
 It calls only `whoami`, first-page template/Flow/WABA/phone/system-user reads,
@@ -413,11 +413,11 @@ customer, provide a disposable supported fixture and explicitly authorize the
 ignored test. It uploads once, then deletes the returned media ID:
 
 ```bash
-POSTKIT_LIVE_WHATSAPP_WRITE_TESTS=1 \
-POSTKIT_HOME="$HOME/.postkit" \
-POSTKIT_LIVE_WHATSAPP_MEDIA_FILE=/absolute/path/to/disposable.png \
-POSTKIT_LIVE_WHATSAPP_MEDIA_MIME=image/png \
-cargo test -p postkit --features whatsapp-cloud,vault-file \
+WIREKERN_LIVE_WHATSAPP_WRITE_TESTS=1 \
+WIREKERN_HOME="$HOME/.wirekern" \
+WIREKERN_LIVE_WHATSAPP_MEDIA_FILE=/absolute/path/to/disposable.png \
+WIREKERN_LIVE_WHATSAPP_MEDIA_MIME=image/png \
+cargo test -p wirekern --features whatsapp-cloud,vault-file \
   tests::live_whatsapp_cloud_media_upload_delete -- --ignored --exact
 ```
 

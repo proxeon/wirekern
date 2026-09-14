@@ -9,10 +9,10 @@ does not create any advertising spend.
 ## One-time setup
 
 1. In the Meta app that the intended Facebook user can test, configure the
-   Facebook Login redirect URI. For Postkit's paste-code flow,
+   Facebook Login redirect URI. For Wirekern's paste-code flow,
    `https://example.com/callback` is fine: the browser may show an error or a
    blank page after consent; copy its full address-bar URL back to the CLI.
-   The Meta dashboard value and Postkit redirect URI must match byte-for-byte.
+   The Meta dashboard value and Wirekern redirect URI must match byte-for-byte.
 2. Make the authenticating user an app admin/developer/tester while the app is
    in Development mode. For customer Pages outside the app-role group, obtain
    Meta's required access/review before treating this connector as production
@@ -23,15 +23,15 @@ does not create any advertising spend.
    pages_show_list,pages_manage_posts,pages_read_engagement
    ```
 
-4. Put the app registration in Postkit. The same Meta app may be used for
+4. Put the app registration in Wirekern. The same Meta app may be used for
    Meta Ads, but use the Pages-specific environment names so one connector's
    configuration cannot silently shadow the other:
 
    ```bash
-   postkit apps set facebook_pages \
-     --client-id "$POSTKIT_FACEBOOK_PAGES_CLIENT_ID" \
-     --client-secret "$POSTKIT_FACEBOOK_PAGES_CLIENT_SECRET" \
-     --redirect-uri "$POSTKIT_FACEBOOK_PAGES_REDIRECT_URI"
+   wirekern apps set facebook_pages \
+     --client-id "$WIREKERN_FACEBOOK_PAGES_CLIENT_ID" \
+     --client-secret "$WIREKERN_FACEBOOK_PAGES_CLIENT_SECRET" \
+     --redirect-uri "$WIREKERN_FACEBOOK_PAGES_REDIRECT_URI"
    ```
 
    Or export those three variables directly. See [`.env.example`](../../.env.example).
@@ -41,7 +41,7 @@ does not create any advertising spend.
    redirect URL (including `state`) back into the terminal:
 
    ```bash
-   postkit auth facebook_pages
+   wirekern auth facebook_pages
    ```
 
    This exchanges the short code and then uses `fb_exchange_token` for a
@@ -52,11 +52,11 @@ does not create any advertising spend.
 ## Discover, then choose a Page
 
 ```bash
-postkit pages accounts facebook_pages --json
+wirekern pages accounts facebook_pages --json
 # {"site":"facebook_pages","pages":[{"id":"123","name":"Example Page","tasks":["CREATE_CONTENT"]}]}
 ```
 
-The result deliberately excludes Page access tokens. Postkit resolves the
+The result deliberately excludes Page access tokens. Wirekern resolves the
 selected Page's token just in time from Meta and holds it only for that request.
 It never chooses a default/first Page: copy the ID you intend to publish to on
 every command. Confirm the listed `tasks` include a content-publishing
@@ -65,9 +65,9 @@ permission before trying a post.
 ## Publish a clearly labelled test
 
 ```bash
-postkit post facebook_pages --page-id 123 \
+wirekern post facebook_pages --page-id 123 \
   --idempotency page-test-2026-09-10 \
-  --text 'Postkit test — please ignore'
+  --text 'Wirekern test — please ignore'
 ```
 
 Then inspect the Page in Facebook. An idempotency key replays a completed local
@@ -78,16 +78,16 @@ retrying an ambiguous network/deadline failure.
 For an image test, use a harmless local file:
 
 ```bash
-postkit post facebook_pages --page-id 123 \
+wirekern post facebook_pages --page-id 123 \
   --idempotency page-image-test-2026-09-10 \
-  --image ./postkit-test.png \
-  --text 'Postkit image test — please ignore' \
-  --alt 'A labelled Postkit test image'
+  --image ./wirekern-test.png \
+  --text 'Wirekern image test — please ignore' \
+  --alt 'A labelled Wirekern test image'
 ```
 
 The Page Photos endpoint receives the exact local bytes as multipart `source`,
 with optional `caption` and `alt_text_custom`. Public `https://` image URLs are
-not accepted: Postkit does not fetch arbitrary URLs or create an implicit image
+not accepted: Wirekern does not fetch arbitrary URLs or create an implicit image
 hosting service. Delete these test posts manually in Facebook if they should
 not remain visible.
 

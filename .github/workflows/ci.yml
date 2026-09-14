@@ -36,5 +36,5 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p postkit --no-default-features --features "${{ matrix.features }}" --all-targets -- -D warnings
-      - run: cargo test -p postkit --no-default-features --features "${{ matrix.features }}"
+      - run: cargo clippy -p wirekern --no-default-features --features "${{ matrix.features }}" --all-targets -- -D warnings
+      - run: cargo test -p wirekern --no-default-features --features "${{ matrix.features }}"

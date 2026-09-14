@@ -1,10 +1,10 @@
 # Threads: zero to first post
 
-**Done when:** `postkit post threads --text '…' --json` prints an `id` and `url`, and the post is visible on the tester profile.
+**Done when:** `wirekern post threads --text '…' --json` prints an `id` and `url`, and the post is visible on the tester profile.
 
-This is the operator path we used. Meta’s dashboard is the slow part. postkit does not open a local callback server. Default is paste-code OAuth.
+This is the operator path we used. Meta’s dashboard is the slow part. wirekern does not open a local callback server. Default is paste-code OAuth.
 
-Do not put App secrets or tokens in this folder. They live in repo-root `.env` (gitignored) and `~/.postkit` (0700/0600).
+Do not put App secrets or tokens in this folder. They live in repo-root `.env` (gitignored) and `~/.wirekern` (0700/0600).
 
 ---
 
@@ -27,13 +27,13 @@ Skip 6 if you already have a long-lived token (`THQVJ…`) and use `--token` ins
 From the repo:
 
 ```bash
-cd /path/to/postkit
-alias pk='cargo run -q -p postkit-cli --'
+cd /path/to/wirekern
+alias pk='cargo run -q -p wirekern-cli --'
 ```
 
-Or `cargo install postkit-cli` and use `postkit` instead of `pk`.
+Or `cargo install wirekern-cli` and use `wirekern` instead of `pk`.
 
-Vault and app files default to `~/.postkit`. Override with `--home` or `POSTKIT_HOME`.
+Vault and app files default to `~/.wirekern`. Override with `--home` or `WIREKERN_HOME`.
 
 ---
 
@@ -43,7 +43,7 @@ Vault and app files default to `~/.postkit`. Override with `--home` or `POSTKIT_
 2. Use case: **Access the Threads API**. Not a generic Facebook Login app.
 3. Finish creation. You now have **two** ID/secret pairs:
 
-| Pair | Where | Use with postkit? |
+| Pair | Where | Use with wirekern? |
 |------|--------|-------------------|
 | Facebook App ID / secret | App settings → Basic | No |
 | **Threads App ID / secret** | Use Cases → Access the Threads API → **Settings** | **Yes** (`client_id` / `client_secret`) |
@@ -87,7 +87,7 @@ If you reload and the pill is gone, it did not save.
 
 Exact error **Redirect URIs: Please specify an OAuth redirect URI** means the field was still empty text, not a chip.
 
-Copy the chip **byte-for-byte** (trailing slash if Meta added one). That string is `--redirect-uri` / `POSTKIT_THREADS_REDIRECT_URI`.
+Copy the chip **byte-for-byte** (trailing slash if Meta added one). That string is `--redirect-uri` / `WIREKERN_THREADS_REDIRECT_URI`.
 
 ---
 
@@ -123,19 +123,19 @@ Reload App roles. Pending should clear.
 Repo-root `.env` (gitignored). Copy from [`.env.example`](../../.env.example). Names the CLI already reads if they are in the **process** environment:
 
 ```bash
-POSTKIT_THREADS_CLIENT_ID=
-POSTKIT_THREADS_CLIENT_SECRET=
-POSTKIT_THREADS_REDIRECT_URI=https://example.com/callback
+WIREKERN_THREADS_CLIENT_ID=
+WIREKERN_THREADS_CLIENT_SECRET=
+WIREKERN_THREADS_REDIRECT_URI=https://example.com/callback
 ```
 
-The CLI does not auto-load `.env`. Source it, then write `~/.postkit/apps/threads.json` so later commands work without the env:
+The CLI does not auto-load `.env`. Source it, then write `~/.wirekern/apps/threads.json` so later commands work without the env:
 
 ```bash
 set -a && . ./.env && set +a
 pk apps set threads \
-  --client-id "$POSTKIT_THREADS_CLIENT_ID" \
-  --client-secret "$POSTKIT_THREADS_CLIENT_SECRET" \
-  --redirect-uri "$POSTKIT_THREADS_REDIRECT_URI"
+  --client-id "$WIREKERN_THREADS_CLIENT_ID" \
+  --client-secret "$WIREKERN_THREADS_CLIENT_SECRET" \
+  --redirect-uri "$WIREKERN_THREADS_REDIRECT_URI"
 pk apps show threads --json
 ```
 
@@ -156,7 +156,7 @@ Stderr prints `open: https://threads.net/oauth/authorize?…`. Open it while log
 The redirect lands on `https://example.com/callback?code=AQBx-…&state=…#_` and looks broken. That is expected. Copy the **full address bar**.
 
 - TTY: paste that line into the waiting CLI, Enter.
-- Non-TTY (agents): the first `auth` exits after printing `then: postkit auth threads --code <code>`. Finish with:
+- Non-TTY (agents): the first `auth` exits after printing `then: wirekern auth threads --code <code>`. Finish with:
 
 ```bash
 pk auth threads --code 'https://example.com/callback?code=AQBx-…#_' --json
@@ -172,7 +172,7 @@ Success looks like:
 {"site":"threads","id":"…","handle":"yourhandle"}
 ```
 
-Vault: `~/.postkit/accounts/threads/default.json` — **long-lived** token only (`kind: oauth2`, `extra.expires_at` ~60 days, no short 1h token).
+Vault: `~/.wirekern/accounts/threads/default.json` — **long-lived** token only (`kind: oauth2`, `extra.expires_at` ~60 days, no short 1h token).
 
 ### `--token` shortcut
 
@@ -192,7 +192,7 @@ pk auth threads --token 'THQVJ…' --json
 
 ```bash
 pk whoami threads --json
-pk post threads --text 'postkit live' --json
+pk post threads --text 'wirekern live' --json
 ```
 
 `whoami` repeats site / id / handle. `post` prints `id` and a `https://www.threads.com/@…/post/…` url. Confirm on the profile.
@@ -205,7 +205,7 @@ pk post threads --text 'hello' --json
 
 Text limit: **500 characters**, emoji counting as their UTF-8 bytes (Meta's rule; CJK/Arabic are 1 each). Empty text is rejected.
 
-Reply chain (not a carousel). Repeat `--text`; each line is one Graph post. Segment 2+ send `reply_to_id` of the previous id (create container, then `threads_publish` — not `auto_publish_text`). Meta's write path lags its read path: replying to a seconds-old post returns Graph `code 24` until the parent propagates — the window varies by night and load, measured ~30s on 2026-09-08 and 12–15 min on 2026-09-09. postkit retries reply creation every 2s until the deadline — give chains with fresh parents `--deadline 1500`; replying to an old post needs nothing special. Not atomic: if a later segment fails, earlier posts stay live (delete in the Threads app). `--to` + two `--text` is refused (`thread_unsupported`).
+Reply chain (not a carousel). Repeat `--text`; each line is one Graph post. Segment 2+ send `reply_to_id` of the previous id (create container, then `threads_publish` — not `auto_publish_text`). Meta's write path lags its read path: replying to a seconds-old post returns Graph `code 24` until the parent propagates — the window varies by night and load, measured ~30s on 2026-09-08 and 12–15 min on 2026-09-09. wirekern retries reply creation every 2s until the deadline — give chains with fresh parents `--deadline 1500`; replying to an old post needs nothing special. Not atomic: if a later segment fails, earlier posts stay live (delete in the Threads app). `--to` + two `--text` is refused (`thread_unsupported`).
 
 Dry-run probe. `--dry-run` stops after container creation: no `threads_publish`, nothing visible, the container expires unpublished after 24h. One attempt, no retry — the probe reports the write path's current answer, so an operator (or agent) can ask "would this reply go through *right now?*" before committing a chain to the `code 24` window, or smoke-test credentials without a visible post. Branch on the response: `container_id` → ready; `code 24` → valid id, not yet visible (propagation window — wait and re-probe); `code 100` → not a valid media id, fix the input. Never combined with `--idempotency` or reply chains (`dry_run_idempotency` / `dry_run_chain`), and the id it returns is a *container* id — do not feed it to `reply_to_id`, which references published posts.
 
@@ -239,13 +239,13 @@ Client refreshes the long-lived token when `expires_at` is within 7 days **and**
 | Form can't be saved (generic) on Add People | No chip, or Professional IG account | Personal account; wait for dropdown |
 | invalid redirect / not whitelisted | `--redirect-uri` ≠ dashboard chip, or `localhost` | Exact string; `example.com` dummy is fine for paste |
 | user has not accepted the invite (1349245) | Tester pending | Accept under Threads Website permissions → Invites |
-| `missing_app_config` | No `apps set` and no `POSTKIT_THREADS_*` in the process env | Step 5 |
+| `missing_app_config` | No `apps set` and no `WIREKERN_THREADS_*` in the process env | Step 5 |
 | Authorize URL then hang in a non-TTY | CLI will not read stdin | Use `--code` with the copied URL |
 | `platform` code `200` `API access blocked` on `auth` / `whoami` / `post` | Facebook user checkpointed or developer identity unverified — not a bad vault file | Fix the Facebook user on the **phone**, then a **new** `auth`. Do not reuse the last `--code`. [meta-identity.md](../meta-identity.md) |
 
 ---
 
-## What postkit calls (for debugging)
+## What wirekern calls (for debugging)
 
 Authorize (unversioned): `https://threads.net/oauth/authorize`  
 Code → short: `POST https://graph.threads.net/oauth/access_token`  

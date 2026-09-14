@@ -13,7 +13,7 @@ stays **1.80**.
 
 ## Crate and protocol
 
-- [x] Workspace member `postkit-mcp`; clap-free lib so the CLI can call `run`
+- [x] Workspace member `wirekern-mcp`; clap-free lib so the CLI can call `run`
 - [x] `Client::from_home` (deny-by-default + allowing WhatsApp client)
 - [x] Newline-delimited JSON-RPC stdio; stderr logging; 1 MiB line cap
 - [x] `initialize` / `notifications/initialized` / `ping`
@@ -46,13 +46,13 @@ stays **1.80**.
 
 ## Surfaces and docs
 
-- [x] `postkit mcp` and standalone `postkit-mcp`
+- [x] `wirekern mcp` and standalone `wirekern-mcp`
 - [x] Host config snippet; README / cli.md / changelog / positioning
 
 ## Explicitly deferred
 
 - [ ] Official `rmcp` crate (MSRV 1.88 / edition 2024 as of 3.3.0)
-- [ ] Streamable HTTP MCP (use `postkit serve` for non-exec HTTP)
+- [ ] Streamable HTTP MCP (use `wirekern serve` for non-exec HTTP)
 - [ ] Auth / apps / keys tools (secrets in host logs)
 - [ ] Ads activation, budget mutation, WhatsApp management writes
 - [ ] Prompts and resources as a product surface

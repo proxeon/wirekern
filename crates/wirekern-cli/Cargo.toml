@@ -1,0 +1,29 @@
+[package]
+name = "wirekern-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CLI for the wirekern execution kernel. Flags compile to the same JSON as Client."
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["social", "publish", "cli"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "wirekern"
+path = "src/main.rs"
+
+[dependencies]
+wirekern = { version = "0.1.0", path = "../wirekern", features = ["vault-file", "threads", "bluesky", "meta-ads", "facebook-pages", "instagram", "linkedin", "x", "whatsapp-cloud", "draft"] }
+wirekern-serve = { version = "0.1.0", path = "../wirekern-serve", default-features = false }
+wirekern-mcp = { version = "0.1.0", path = "../wirekern-mcp", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+rpassword = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

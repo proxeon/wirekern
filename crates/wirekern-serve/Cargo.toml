@@ -1,0 +1,39 @@
+[package]
+name = "wirekern-serve"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Local HTTP surface for wirekern. Same JSON as the CLI. pk_live_ keys."
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["social", "publish", "http"]
+categories = ["web-programming::http-server"]
+
+[[bin]]
+name = "wirekern-serve"
+path = "src/main.rs"
+required-features = ["bin"]
+
+[features]
+default = ["bin"]
+# Clap is only for the `wirekern-serve` binary. The library (router + run)
+# must stay clap-free so CLI and a later MCP crate do not grow a second
+# argument parser by depending on this crate.
+bin = ["dep:clap"]
+
+[dependencies]
+wirekern = { version = "0.1.0", path = "../wirekern", features = ["vault-file", "threads", "bluesky", "meta-ads", "facebook-pages", "instagram", "linkedin", "whatsapp-cloud"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "signal"] }
+axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1", "query"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+clap = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+async-trait = { workspace = true }
+hmac = "0.12"
+sha2 = "0.10"

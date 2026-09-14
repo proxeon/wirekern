@@ -32,7 +32,7 @@ Account-scoped GET of one kind:
 
 Meta: a campaign request with no filters returns only campaigns that were
 not archived or deleted. The documented example `["ACTIVE","PAUSED"]` is too
-narrow for paused drafts still in `IN_PROCESS` / `WITH_ISSUES`. Postkit
+narrow for paused drafts still in `IN_PROCESS` / `WITH_ISSUES`. Wirekern
 sends every documented `effective_status` except `DELETED` and `ARCHIVED`.
 Ad set and ad edges do not promise the campaign default, so they get the
 same explicit list.

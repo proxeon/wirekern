@@ -92,7 +92,7 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 
 ### Webhook transport
 
-- [x] Public HTTPS termination/deployment runbook (Caddy reverse-proxy example; Postkit remains loopback HTTP)
+- [x] Public HTTPS termination/deployment runbook (Caddy reverse-proxy example; Wirekern remains loopback HTTP)
 - [x] GET webhook challenge (hub.verify_token)
 - [x] HTTP 200 ACK to Meta
 - [x] Subscribe WABA to `messages` via API (dashboard works today)
@@ -100,7 +100,7 @@ Each needs a `WhatsAppMessage` variant + `--allow-send` + idempotency. No JSON e
 - [x] Durable minimal message + status store (“what happened to `wamid X`?”)
 - [x] Final-state reduction (sent → delivered → read / failed)
 - [x] Hash-only dead-letter audit record for signed parse failures
-- [x] Opt-in encrypted replayable dead-letter workflow (key stays outside Postkit home; default remains hash-only)
+- [x] Opt-in encrypted replayable dead-letter workflow (key stays outside Wirekern home; default remains hash-only)
 - [x] Process-local pacing (default ~80 msg/s per configured phone; batches wait within deadline)
 - [x] Delivery-ledger retention purge (caller selects the cutoff; consent is separate)
 - [x] Opt-in read-only live Graph contract suite (ignored unless explicitly invoked)

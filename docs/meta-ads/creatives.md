@@ -55,7 +55,7 @@ top-level creative field `product_set_id`. Catalog itself is not created here.
 ## 6. Lead-form creative
 
 Image-link shape whose CTA value includes numeric `lead_gen_form_id`.
-The form is a pre-existing Page asset; Postkit does not create lead forms
+The form is a pre-existing Page asset; Wirekern does not create lead forms
 (that is a separate product, listed under Not this kernel).
 
 ## 7. App-install creative

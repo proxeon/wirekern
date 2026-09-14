@@ -13,7 +13,7 @@ That error is the **Facebook user**, not a bad vault file. `auth`, `whoami`, and
 - A login **Security check** (`facebook.com/checkpoint/…`) only offered recovery numbers **already on the account**. A current SIM cannot be typed into that radio list.
 - Dead SIMs would not delete in desktop Accounts Center. The Facebook / Instagram **mobile app** could remove them.
 - Meta for Developers registration / “verify your account” completed in **Chrome on the phone** (same device as the SIM). Desktop web checkpointed or looped.
-- Re-running `postkit auth <site> --code` during the checkpoint still returned Graph `200`. OAuth codes are one-shot; do not retry the last redirect URL.
+- Re-running `wirekern auth <site> --code` during the checkpoint still returned Graph `200`. OAuth codes are one-shot; do not retry the last redirect URL.
 
 Meta’s identity work (SMS, 2FA, developer verify, checkpoints) is built around a phone they can text and an app session they already trust. The desktop site is a thinner client of that stack. Publishing is not: once `whoami` returns an id, the desktop CLI is the path.
 

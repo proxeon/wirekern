@@ -10,14 +10,14 @@ subscription.
 ## Scope and safety invariants
 
 1. Every generic send is deserialized as `WhatsAppSendRequest`, the same
-   closed Rust type used by the library and HTTP surface. Postkit never accepts
+   closed Rust type used by the library and HTTP surface. Wirekern never accepts
    arbitrary Graph JSON.
 2. Customer-addressed sends retain both mandatory idempotency and
    `--allow-send`. Management writes instead require `--yes`, so a command
    cannot publish a Flow, submit/change/delete a template, alter phone setup,
    or delete media by accident.
 3. Collection responses carry only the opaque `paging.cursors.after` value.
-   Postkit does not expose or replay Graph's `paging.next` URL, and it percent
+   Wirekern does not expose or replay Graph's `paging.next` URL, and it percent
    encodes a supplied cursor before making the next request.
 4. A selected sender must be a configured local alias. A raw phone-number ID
    is never accepted in a send request. The resolved phone number namespaces
@@ -47,9 +47,9 @@ subscription.
 The follow-up safety release adds a concrete Caddy/TLS deployment runbook,
 strict file-backed consent/window authorization, and an opt-in encrypted
 dead-letter replay queue. The replay key is supplied only through
-`POSTKIT_WHATSAPP_REPLAY_DLQ_KEY`; normal operation retains a hash-only audit
+`WIREKERN_WHATSAPP_REPLAY_DLQ_KEY`; normal operation retains a hash-only audit
 record and does not archive customer content.
 
-Postkit remains intentionally outside the scope of a distributed rate limiter,
+Wirekern remains intentionally outside the scope of a distributed rate limiter,
 hosted inbox, billing product, or campaign/broadcast system. Those require a
 separate operational ownership model rather than a local connector feature.

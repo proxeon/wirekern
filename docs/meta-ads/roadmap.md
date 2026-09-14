@@ -2,11 +2,11 @@
 
 This is the deliberately deferred work after the current Tier A reads and
 Tier B paused-draft builder. It is a product/safety backlog, not an assertion
-that every Marketing API feature should be copied into Postkit.
+that every Marketing API feature should be copied into Wirekern.
 
 ## Shipped boundary
 
-Postkit reads metrics and ad accounts; uploads image and video assets; creates
+Wirekern reads metrics and ad accounts; uploads image and video assets; creates
 typed paused campaigns, ad sets, ads, and several creative formats; previews
 creatives; lists and inspects objects; and can activate, pause, archive,
 delete, duplicate, and apply typed edits **from the CLI**. Default
@@ -30,7 +30,7 @@ are a separate product decision with materially different financial risk.
 
 ## Tier D — safe edits and lifecycle inventory
 
-**Goal:** inspect and make bounded changes to objects Postkit already knows.
+**Goal:** inspect and make bounded changes to objects Wirekern already knows.
 
 - Read/list campaigns, ad sets, ads, creatives, and their effective status by
   selected account, with pagination caps and stable ordering.

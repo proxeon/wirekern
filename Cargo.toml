@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/postkit",
-    "crates/postkit-cli",
-    "crates/postkit-serve",
-    "crates/postkit-mcp",
+    "crates/wirekern",
+    "crates/wirekern-cli",
+    "crates/wirekern-serve",
+    "crates/wirekern-mcp",
 ]
 
 [workspace.package]
@@ -13,8 +13,8 @@ edition = "2021"
 rust-version = "1.80"
 license = "MIT OR Apache-2.0"
 description = "Official-API execution kernel. BYO credentials. No calendar."
-repository = "https://github.com/proxeon/postkit"
-homepage = "https://github.com/proxeon/postkit"
+repository = "https://github.com/proxeon/wirekern"
+homepage = "https://github.com/proxeon/wirekern"
 readme = "README.md"
 
 [workspace.dependencies]

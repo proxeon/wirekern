@@ -1,10 +1,10 @@
 # Bluesky: zero to first post
 
-**Done when:** `postkit post bluesky --account you.bsky.social --text '…' --json` prints an `id` (`at://…`) and `url`, and the post is visible on the profile.
+**Done when:** `wirekern post bluesky --account you.bsky.social --text '…' --json` prints an `id` (`at://…`) and `url`, and the post is visible on the profile.
 
 This is the operator path we used. There is **no Meta dashboard**, no OAuth redirect, no `apps set`. Auth is an **app password** (not the login password). Default PDS is `https://bsky.social`.
 
-Do not put app passwords in this folder. They live in repo-root `.env` (gitignored) and `~/.postkit` (0700/0600).
+Do not put app passwords in this folder. They live in repo-root `.env` (gitignored) and `~/.wirekern` (0700/0600).
 
 ---
 
@@ -15,7 +15,7 @@ Do not put app passwords in this folder. They live in repo-root `.env` (gitignor
 3. Handle + password in `.env`, then `auth bluesky --account … --password …`
 4. `whoami` then `post` with the **same** `--account`
 
-No Threads-style tester invite. No `POSTKIT_THREADS_*`. `Client` does not need `~/.postkit/apps/bluesky.json`.
+No Threads-style tester invite. No `WIREKERN_THREADS_*`. `Client` does not need `~/.wirekern/apps/bluesky.json`.
 
 ---
 
@@ -24,11 +24,11 @@ No Threads-style tester invite. No `POSTKIT_THREADS_*`. `Client` does not need `
 From the repo:
 
 ```bash
-cd /path/to/postkit
-alias pk='cargo run -q -p postkit-cli --'
+cd /path/to/wirekern
+alias pk='cargo run -q -p wirekern-cli --'
 ```
 
-Or `cargo install postkit-cli` and use `postkit` instead of `pk`.
+Or `cargo install wirekern-cli` and use `wirekern` instead of `pk`.
 
 `--account` is global and **required** for Bluesky. The CLI default is `default`; that identifier is rejected (`identifier_required`). Use the handle as the account name. That is also the vault filename.
 
@@ -37,7 +37,7 @@ pk --account you.bsky.social whoami bluesky --json
 pk --account you.bsky.social post bluesky --text 'hi' --json
 ```
 
-`--account` may sit before or after the subcommand. Vault root: `~/.postkit` (`--home` / `POSTKIT_HOME`).
+`--account` may sit before or after the subcommand. Vault root: `~/.wirekern` (`--home` / `WIREKERN_HOME`).
 
 ---
 
@@ -45,7 +45,7 @@ pk --account you.bsky.social post bluesky --text 'hi' --json
 
 1. Create or open an account at [bsky.app](https://bsky.app).
 2. Settings should show **@you.bsky.social** (or `you.com` if you set a custom domain).
-3. That string is `--account` and `POSTKIT_BSKY_HANDLE`. No `@`.
+3. That string is `--account` and `WIREKERN_BSKY_HANDLE`. No `@`.
 
 The handle need not match Threads. We used a Bluesky handle that differed from the Threads username.
 
@@ -61,7 +61,7 @@ On [bsky.app](https://bsky.app): **Settings → Privacy and security → App pas
 - **Not** the password you type to log into bsky.app.
 - Revoke in the same screen if it leaks.
 
-postkit proves the password with `createSession`, then stores identifier + secret. It does **not** vault `accessJwt` / `refreshJwt`. Each `whoami` / `post` mints a new session.
+wirekern proves the password with `createSession`, then stores identifier + secret. It does **not** vault `accessJwt` / `refreshJwt`. Each `whoami` / `post` mints a new session.
 
 ---
 
@@ -70,8 +70,8 @@ postkit proves the password with `createSession`, then stores identifier + secre
 Repo-root `.env` (gitignored). Copy from [`.env.example`](../../.env.example):
 
 ```bash
-POSTKIT_BSKY_HANDLE=you.bsky.social
-POSTKIT_BSKY_APP_PASSWORD=
+WIREKERN_BSKY_HANDLE=you.bsky.social
+WIREKERN_BSKY_APP_PASSWORD=
 ```
 
 The CLI does not auto-load `.env`. Source it, then auth:
@@ -79,12 +79,12 @@ The CLI does not auto-load `.env`. Source it, then auth:
 ```bash
 set -a && . ./.env && set +a
 pk auth bluesky \
-  --account "$POSTKIT_BSKY_HANDLE" \
-  --password "$POSTKIT_BSKY_APP_PASSWORD" \
+  --account "$WIREKERN_BSKY_HANDLE" \
+  --password "$WIREKERN_BSKY_APP_PASSWORD" \
   --json
 ```
 
-`--password` with no value prompts on a TTY. Non-TTY: pass the value or the CLI prints `then: postkit auth bluesky --account <handle> --password <app-password>` and exits.
+`--password` with no value prompts on a TTY. Non-TTY: pass the value or the CLI prints `then: wirekern auth bluesky --account <handle> --password <app-password>` and exits.
 
 `--password` cannot combine with `--token` or `--code`. Bluesky does not use those.
 
@@ -94,7 +94,7 @@ pk auth bluesky \
 
 ```bash
 pk --account you.bsky.social whoami bluesky --json
-pk --account you.bsky.social post bluesky --text 'postkit live' --json
+pk --account you.bsky.social post bluesky --text 'wirekern live' --json
 ```
 
 `whoami` prints `did:plc:…` and the handle. `post` prints:
@@ -115,9 +115,9 @@ Later posts reuse the vault. No browser:
 pk --account you.bsky.social post bluesky --text 'hello' --json
 ```
 
-Vault: `~/.postkit/accounts/bluesky/you.bsky.social.json` — `{ kind: app_password, identifier, secret, pds }`. No JWT.
+Vault: `~/.wirekern/accounts/bluesky/you.bsky.social.json` — `{ kind: app_password, identifier, secret, pds }`. No JWT.
 
-Custom PDS: the vault may store `pds`. Default is `https://bsky.social`. postkit has no CLI flag for PDS yet; omit unless you patch creds.
+Custom PDS: the vault may store `pds`. Default is `https://bsky.social`. wirekern has no CLI flag for PDS yet; omit unless you patch creds.
 
 ---
 
@@ -154,7 +154,7 @@ pk --account you.bsky.social post bluesky --text 'hi' --json
 
 ---
 
-## What postkit calls (for debugging)
+## What wirekern calls (for debugging)
 
 Default PDS: `https://bsky.social` (no `/v1.0`).
 

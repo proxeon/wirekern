@@ -2,7 +2,7 @@
 
 A site is a **`Publisher` module**, not a new `Client`. A checklist written after Threads alone would say “copy Graph”; Bluesky existing is what makes this page general.
 
-**Done when:** `postkit post <site> --json` has worked once for you. Do not add a row to the inventory instead of a live `Outcome.id`.
+**Done when:** `wirekern post <site> --json` has worked once for you. Do not add a row to the inventory instead of a live `Outcome.id`.
 
 > Numbered references below (`012`, `010 §5`, …) point to private, untracked design notes. This page is self-contained without them.
 
@@ -34,7 +34,7 @@ Do these in order. One site per PR.
 
 ### 1. Feature flag, off in lib defaults
 
-`crates/postkit/Cargo.toml`:
+`crates/wirekern/Cargo.toml`:
 
 ```toml
 # default = []   # must stay empty
@@ -46,23 +46,23 @@ mysite = ["client"]
 mysite = ["client", "oauth"]
 ```
 
-`oauth` is **RFC 6749 code exchange** (`crates/postkit/src/oauth.rs`). Extra hops (`th_exchange_token`, LinkedIn whatever) stay in **that** connector, not in `oauth.rs`.
+`oauth` is **RFC 6749 code exchange** (`crates/wirekern/src/oauth.rs`). Extra hops (`th_exchange_token`, LinkedIn whatever) stay in **that** connector, not in `oauth.rs`.
 
-`crates/postkit/src/lib.rs`:
+`crates/wirekern/src/lib.rs`:
 
 ```rust
 #[cfg(any(feature = "threads", feature = "bluesky", feature = "mysite"))]
 pub mod connectors;
 ```
 
-`crates/postkit/src/connectors/mod.rs`:
+`crates/wirekern/src/connectors/mod.rs`:
 
 ```rust
 #[cfg(feature = "mysite")]
 pub mod mysite;
 ```
 
-CLI (`crates/postkit-cli/Cargo.toml`) may enable the feature; the **lib** default must not.
+CLI (`crates/wirekern-cli/Cargo.toml`) may enable the feature; the **lib** default must not.
 
 Prove isolation when the site must not pull Graph OAuth:
 
@@ -90,11 +90,11 @@ Same pattern: `connectors/bluesky.rs` `bluesky_feature_excludes_oauth`.
 
 Do not put Graph error subcodes in core. Do not return `"ok": true`.
 
-Use `crate::http::Http` (feature `client`). It sets `User-Agent: postkit/<ver>` and the deadline. **No platform URLs in `http.rs`.**
+Use `crate::http::Http` (feature `client`). It sets `User-Agent: wirekern/<ver>` and the deadline. **No platform URLs in `http.rs`.**
 
 ### 3. No Graph-shaped types in core
 
-Do not add fields to `Client`, `Site` (open string), or `Publisher` “for this site.” `Publisher` is frozen to publish + auth + probe. Extra verbs (insights, ads, pages, media, WhatsApp) are facet traits on `Connector` (`crates/postkit/src/facets.rs`). A publish-only site implements `Publisher` and calls `Registry::register`. A site that also reads metrics implements `InsightsSource` and registers with `Registry::register_connector(Connector::from_publisher(arc.clone()).insights(arc))`.
+Do not add fields to `Client`, `Site` (open string), or `Publisher` “for this site.” `Publisher` is frozen to publish + auth + probe. Extra verbs (insights, ads, pages, media, WhatsApp) are facet traits on `Connector` (`crates/wirekern/src/facets.rs`). A publish-only site implements `Publisher` and calls `Registry::register`. A site that also reads metrics implements `InsightsSource` and registers with `Registry::register_connector(Connector::from_publisher(arc.clone()).insights(arc))`.
 
 Allowed vault shapes today (`types.rs`): `OAuth2`, `AppPassword`, `BotToken`. Pick one. Redacting `Debug` already covers secrets.
 
@@ -104,11 +104,11 @@ Allowed vault shapes today (`types.rs`): `OAuth2`, `AppPassword`, `BotToken`. Pi
 
 httpmock 0.7 is a **dev-dependency**. Happy `publish` + one auth failure is enough for v1 text.
 
-- No `POSTKIT_LIVE` in `cargo test -p postkit` / `--features mysite`.
-- Live post: `#[ignore]` + `POSTKIT_LIVE=1` + env (see Threads/Bluesky live tests).
+- No `WIREKERN_LIVE` in `cargo test -p wirekern` / `--features mysite`.
+- Live post: `#[ignore]` + `WIREKERN_LIVE=1` + env (see Threads/Bluesky live tests).
 - If the site has no Meta app: `Client::auth_finish` with an **empty** `MemoryAppStore` (copy `connectors::bluesky::tests::client_auth_finish_without_app_file`). Core fallback: `client.rs` `empty_app`. Connector that needs OAuth still errors inside **auth_start** (`threads` `auth_start_needs_app`).
 
-`cargo test -p postkit` (no features) must stay green.
+`cargo test -p wirekern` (no features) must stay green.
 
 ### 5. Skip `OAuth2AuthCode` if the site is not OAuth
 
@@ -136,25 +136,25 @@ Link it from [README.md](./README.md). Secrets stay in `.env` (copy [`.env.examp
 
 ### 7. Register in the operator factory
 
-In-tree sites go in `crates/postkit/src/bundle.rs` (`bundled_registry` /
-`Client::from_home`). CLI, `postkit-serve`, and `postkit-mcp` all call that —
+In-tree sites go in `crates/wirekern/src/bundle.rs` (`bundled_registry` /
+`Client::from_home`). CLI, `wirekern-serve`, and `wirekern-mcp` all call that —
 do not copy a `Registry::register` list into a surface crate.
 
 ```rust
-registry.register(Arc::new(postkit::connectors::mysite::MySite::new()?));
+registry.register(Arc::new(wirekern::connectors::mysite::MySite::new()?));
 // Extra verbs: registry.register_connector(MySite::new()?.connector());
 ```
 
-Enable the feature on the `postkit` dep in `crates/postkit-cli/Cargo.toml`
-and `crates/postkit-serve/Cargo.toml`.
+Enable the feature on the `wirekern` dep in `crates/wirekern-cli/Cargo.toml`
+and `crates/wirekern-serve/Cargo.toml`.
 
-`postkit capabilities --json` must list the site. `unknown_site` (exit 2) means you skipped this step.
+`wirekern capabilities --json` must list the site. `unknown_site` (exit 2) means you skipped this step.
 
 ---
 
 ## Outsiders
 
-Implement `Publisher`, call `Registry::register`. Extra verbs are optional facets on `Connector`, not new methods on `Publisher`. No core PR required. In-tree sites still get a feature flag so `cargo add postkit` default stays empty.
+Implement `Publisher`, call `Registry::register`. Extra verbs are optional facets on `Connector`, not new methods on `Publisher`. No core PR required. In-tree sites still get a feature flag so `cargo add wirekern` default stays empty.
 
 ---
 
@@ -163,7 +163,7 @@ Implement `Publisher`, call `Registry::register`. Extra verbs are optional facet
 | Rule | Where it already is |
 |------|---------------------|
 | Vault writes only in `Client` | `client.rs` |
-| Connectors do not touch `~/.postkit` | 012 |
+| Connectors do not touch `~/.wirekern` | 012 |
 | Empty app fallback on auth/publish/whoami | `client.rs`; tests in `tests.rs` + bluesky |
 | `--account` is the vault name, not `Intent.params` | CLI global; Bluesky handle vs Threads `default` |
 | `--json` document: `Outcome` or `WireError` | `error.rs` |
@@ -178,9 +178,9 @@ One site (or this doc). Do not mix Telegram + Threads image + `serve` in one PR.
 Before merge:
 
 ```bash
-cargo test -p postkit
-cargo test -p postkit --features mysite
+cargo test -p wirekern
+cargo test -p wirekern --features mysite
 # if mysite must not pull Graph:
-cargo test -p postkit --features mysite -- mysite_feature_excludes_oauth
-cargo run -p postkit-cli -- capabilities --json
+cargo test -p wirekern --features mysite -- mysite_feature_excludes_oauth
+cargo run -p wirekern-cli -- capabilities --json
 ```

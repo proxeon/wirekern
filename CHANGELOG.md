@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to postkit are documented here. The format follows
+All notable changes to wirekern are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 once a first tag exists.
@@ -23,6 +23,11 @@ same detail by subject.
 
 ### Changed
 
+- Renamed the kernel from postkit to **wirekern**: crates `wirekern` /
+  `wirekern-cli` / `wirekern-serve` / `wirekern-mcp`, binary `wirekern`,
+  vault `~/.wirekern`, env `WIREKERN_*`, User-Agent `wirekern/<ver>`,
+  headers `X-Wirekern-Deadline` / `X-Wirekern-Status-Extras`. HTTP key
+  prefix stays `pk_live_`. The send verb is still `post`.
 - CLI flag cleanup: `auth --listen` is gone (paste-code is the OAuth path).
   Insights date range is `--from`/`--until` so it no longer collides with
   `post --to`. Large insights jobs use `--async-report` (`--async` remains
@@ -30,7 +35,7 @@ same detail by subject.
   explicit empty string). `post --page-id` is sugar for `--param page_id=…`
   on `facebook_pages`, exclusive with the param spelling and with `--to`
   fan-out. `insights --async-report` caches the query under
-  `~/.postkit/insights-jobs/<id>.json` so `ads insights-job result --id`
+  `~/.wirekern/insights-jobs/<id>.json` so `ads insights-job result --id`
   does not re-enter `--from`/`--until`/`--attribution`.
 
 - WhatsApp production hardening: outbound Cloud API calls share a
@@ -43,15 +48,15 @@ same detail by subject.
   delivery/window/dead-letter rows at an operator cutoff and never
   touches consent. Recipients may include a leading `+` and
   spaces/hyphens/parentheses; those decorations are stripped, a country
-  code is never invented. An ignored `POSTKIT_LIVE_WHATSAPP=1` suite
+  code is never invented. An ignored `WIREKERN_LIVE_WHATSAPP=1` suite
   exercises read-only live Graph contracts.
 
-- HTTP listen/router moved to the `postkit-serve` crate. `postkit serve`
+- HTTP listen/router moved to the `wirekern-serve` crate. `wirekern serve`
   still works; it calls that crate. Operator `Client` construction is
   `Client::from_home` / `bundled_registry` so CLI, serve, and a later MCP
-  crate share one connector set. `postkit keys` stays on the CLI.
+  crate share one connector set. `wirekern keys` stays on the CLI.
 
-- Product sentence is now explicit: postkit is an **official-API execution
+- Product sentence is now explicit: wirekern is an **official-API execution
   kernel** (send now through your apps, your vault, no calendar). Ads and
   WhatsApp stay in this crate. LinkedIn, Telegram, and video are future
   connectors, not a second product.
@@ -82,16 +87,16 @@ same detail by subject.
   `fb_exchange_token`. `ads inspect-token` returns `/debug_token` metadata
   without printing the secret. `ads access-tier` maps
   `ads_api_access_tier` headers to Limited/Full and always points at the
-  App Dashboard — Postkit cannot grant or bypass Marketing API Access Tier.
+  App Dashboard — Wirekern cannot grant or bypass Marketing API Access Tier.
 
-- Local MCP stdio crate (`postkit-mcp` / `postkit mcp`): newline-delimited
+- Local MCP stdio crate (`wirekern-mcp` / `wirekern mcp`): newline-delimited
   JSON-RPC over stdin/stdout using the same `Client::from_home` as the CLI
   and HTTP serve. Tools cover capabilities, vault account names, whoami,
   post, WhatsApp send (`allow_send` required), insights, ads account
   discovery, Page discovery, and bounded media list. Kernel `WireError`
   values return as MCP tool-execution errors. Auth, keys, ads activation,
   and WhatsApp management stay on the CLI so secrets are not tool
-  arguments. Streamable HTTP is still `postkit serve`. The crate does not
+  arguments. Streamable HTTP is still `wirekern serve`. The crate does not
   depend on `rmcp` 3.x (that SDK's MSRV is 1.88; this workspace stays
   1.80).
 
@@ -108,7 +113,7 @@ same detail by subject.
   accepts the same `sender` field. HTTP still has no management
   endpoints.
 
-- WhatsApp receive/operate: `postkit serve` answers Meta's GET
+- WhatsApp receive/operate: `wirekern serve` answers Meta's GET
   `hub.verify_token` challenge and POSTs with HMAC verification plus
   HTTP 200 ACK on `/v1/whatsapp/callback` (no bearer; sit it behind
   your TLS reverse proxy). Authenticated BYO parse stays on
@@ -148,8 +153,8 @@ same detail by subject.
   unknown remote write stays ambiguous. Refresh works only when LinkedIn
   issued a refresh token.
 
-- `postkit serve` and `postkit keys`: localhost HTTP for callers that cannot
-  exec, authenticated with `pk_live_` keys hashed in `~/.postkit/keys/`. Same
+- `wirekern serve` and `wirekern keys`: localhost HTTP for callers that cannot
+  exec, authenticated with `pk_live_` keys hashed in `~/.wirekern/keys/`. Same
   JSON as `--json`. Default bind `127.0.0.1:8788`. `POST /v1/whatsapp` requires
   `"allow_send": true` (the HTTP twin of `--allow-send`). `serve --json` is one
   listen document (`listening: true`) then the process stays up.
@@ -182,7 +187,7 @@ same detail by subject.
   alt text is deliberately not sent until its Instagram Login wire contract is
   verified. Token refresh uses `ig_refresh_token`, while ambiguous write
   outcomes are never auto-retried to avoid duplicate visible posts.
-- Instagram bounded media reads: `postkit media list instagram --limit 1..25`
+- Instagram bounded media reads: `wirekern media list instagram --limit 1..25`
   adds the separate `read.media` capability for one server-ordered first page
   of the authorized professional account's published media. The reply exposes
   only ID plus optional permalink, caption, media type, and timestamp; it has
@@ -192,7 +197,7 @@ same detail by subject.
   into an error or causes a second visible publish.
 - Instagram image carousels: repeat `post instagram --image` 2–10 times to
   create one `publish.carousel` post with an optional single parent caption.
-  Postkit creates each public-HTTPS child with `is_carousel_item=true`, waits
+  Wirekern creates each public-HTTPS child with `is_carousel_item=true`, waits
   for every child, creates and waits for the `CAROUSEL` parent, and then sends
   exactly one visible publish request. Child/parent errors stop before that
   final write; child IDs stay internal and expiring. Carousel `--alt`, replies,
@@ -200,7 +205,7 @@ same detail by subject.
   guessed. Confirmed results use the existing best-effort permalink lookup;
   visible writes are never retried automatically.
 - Facebook Pages organic publishing: the new `facebook_pages` connector
-  discovers token-visible Pages with `postkit pages accounts facebook_pages`,
+  discovers token-visible Pages with `wirekern pages accounts facebook_pages`,
   then posts text or one local image only when the operator provides an
   explicit `--param page_id=<id>`. Its Page OAuth grant is narrowly scoped to
   `pages_show_list,pages_manage_posts,pages_read_engagement`, stored long-lived
@@ -240,7 +245,7 @@ same detail by subject.
 
 ### Added
 
-- Bluesky replies: `postkit post bluesky --param reply_to_id=<at://…>` with
+- Bluesky replies: `wirekern post bluesky --param reply_to_id=<at://…>` with
   the parent's at-URI (the string `Outcome.id` returns). The connector
   resolves the parent's `cid` via one `com.atproto.repo.getRecord` and
   writes the lexicon `reply.root`/`reply.parent` strongRefs — a reply to a
@@ -249,7 +254,7 @@ same detail by subject.
   with `invalid_post:reply_to_id` before any HTTP; image replies remain
   refused (`image_reply_unsupported`) until that wire is taught; unknown
   params still refuse with `unsupported_param:<k>`.
-- Images on posts (plans/001/015, `publish.image`): `postkit post <site>
+- Images on posts (plans/001/015, `publish.image`): `wirekern post <site>
   --image … [--text caption] [--alt …]`. The kernel seam carries both forms
   platforms ingest — bytes (Bluesky `uploadBlob` → `app.bsky.embed.images`
   embed with alt text, ≤ 2 MB, png/jpg/gif/webp) and a public https URL
@@ -301,7 +306,7 @@ same detail by subject.
   campaign/ad-set/ad creation. Delivery-object forms structurally hard-code
   `PAUSED`; there is no CLI activation, budget-update, delete, billing, or
   available-funds verb.
-- Meta Ads review-status inspection: `postkit ads status meta_ads` reports an
+- Meta Ads review-status inspection: `wirekern ads status meta_ads` reports an
   object's configured and effective lifecycle states plus structured Meta
   review issues. Its opt-in `--wait` poll is bounded by `--deadline` and
   returns an explicit `pending_review` result; it only makes GET requests.
@@ -324,12 +329,12 @@ same detail by subject.
   the kernel, `invalid_query` exit 2; proactive + reactive refresh like
   publish). The same query shape serves the future IG/TikTok/Google
   insights connectors (design 028's grammar).
-- `postkit insights <site>` CLI subcommand: `--from/--to` (inclusive,
+- `wirekern insights <site>` CLI subcommand: `--from/--to` (inclusive,
   `YYYY-MM-DD`), `--level`, `--metrics`, required `--attribution`
   (no silent window default), `--ad-account` override. Deterministic
   JSON rows (entity+date order, alphabetical metric keys).
 - Threads publisher: text posts through the Graph API's
-  `auto_publish_text`, with the `postkit` binary registering the
+  `auto_publish_text`, with the `wirekern` binary registering the
   connector.
 - Paste-code OAuth for Threads: RFC 6749 authorization-code exchange
   plus Meta's long-lived-token exchange, no local callback server
@@ -385,7 +390,7 @@ same detail by subject.
 - The duplicated form-encoding implementations (oauth and the Threads
   connector) are consolidated into one `crate::form` primitive.
 
-- `--home` reads `POSTKIT_HOME` through clap's env folding instead of
+- `--home` reads `WIREKERN_HOME` through clap's env folding instead of
   a manual environment read.
 
 ### Fixed
@@ -400,14 +405,14 @@ same detail by subject.
   an attacker-controlled host would otherwise leak the
   credential-bearing query string.
 - Vault writes create their tmp files `0600` with unique names, so a
-  concurrent `postkit` run cannot clobber or read another's in-flight
+  concurrent `wirekern` run cannot clobber or read another's in-flight
   token file.
 - Vault listing no longer aliases `.json`-suffixed account names onto
   other accounts' files.
 - The vault home is never guessed from the current directory: with
-  `HOME` unset (cron, systemd, `env -i`), postkit refuses with a
+  `HOME` unset (cron, systemd, `env -i`), wirekern refuses with a
   re-auth-style message instead of silently writing tokens into
-  `./.postkit`.
+  `./.wirekern`.
 - `--token` bootstrap verifies the token via `whoami` *before* the
   vault write and persists the returned id, so publishing addresses
   `/{user_id}/threads` instead of leaning on the `/me` alias.
@@ -422,7 +427,7 @@ same detail by subject.
 - Interactive app-password prompts suppress echo: an app password is a
   full account-access credential and must not land in terminal
   scrollback or screen shares.
-- `apps show`/`set` surface when `POSTKIT_<SITE>_CLIENT_*`
+- `apps show`/`set` surface when `WIREKERN_<SITE>_CLIENT_*`
   environment credentials outrank the file just written.
 - Reply-container creation retries Graph `code 24` (parent not yet
   visible to the write path) at a fixed 2s pacing bounded by

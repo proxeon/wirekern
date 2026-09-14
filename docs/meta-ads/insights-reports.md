@@ -16,7 +16,7 @@ labelled so it cannot be read as a billing total.
 Keep the existing ten. Add a closed set with a one-line definition on each
 variant (and CLI `--help`):
 
-| Postkit | Graph field | Definition |
+| Wirekern | Graph field | Definition |
 |---------|-------------|------------|
 | `frequency` | `frequency` | Estimated average impressions per person reached. Not spend. |
 | `unique_clicks` | `unique_clicks` | Estimated unique people who clicked. Not a billing event. |

@@ -1,0 +1,65 @@
+[package]
+name = "wirekern"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["social", "publish", "threads", "cli"]
+categories = ["api-bindings", "command-line-utilities"]
+
+[features]
+default = []
+vault-file = ["dep:getrandom", "dep:sha2", "dep:base64"]
+client = ["dep:reqwest"]
+oauth = ["client", "dep:getrandom"]
+threads = ["client", "oauth", "dep:tokio", "dep:emojis"]
+bluesky = ["client", "dep:unicode-segmentation"]
+meta-ads = ["client", "oauth", "dep:tokio"]
+facebook-pages = ["client", "oauth"]
+# Instagram Login is a distinct OAuth surface from Facebook Pages and Ads.
+# Keep it independent so applications can ship direct Instagram publishing
+# without pulling another Meta connector into their dependency graph.
+# Container readiness is an asynchronous Meta-side fetch, so the connector
+# needs Tokio only to perform bounded status polling before its final write.
+instagram = ["client", "oauth", "dep:tokio"]
+# LinkedIn's self-serve member posting is OAuth plus a versioned REST API.
+# It stays independent from Meta/Instagram features so library users opt in
+# only to LinkedIn's credential and HTTP surface.
+linkedin = ["client", "oauth"]
+# X uses OAuth 2.0 Authorization Code with PKCE. SHA-256 plus URL-safe
+# base64 form the mandatory S256 code challenge; they stay optional so a
+# library build that does not opt into X does not pull them in.
+x = ["client", "oauth", "dep:getrandom", "dep:sha2", "dep:base64"]
+# WhatsApp Cloud uses a static bearer token rather than an OAuth redirect.
+# HMAC-SHA256 verifies the raw inbound webhook body before it is parsed.
+# Outbound Cloud API pacing sleeps asynchronously and must never block an
+# embedding application's executor thread.
+whatsapp-cloud = ["client", "dep:chacha20poly1305", "dep:hmac", "dep:sha2", "dep:tokio"]
+draft = ["client", "dep:tokio", "dep:sha2"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+emojis = { workspace = true, optional = true }
+unicode-segmentation = { workspace = true, optional = true }
+time = { workspace = true }
+sha2 = { workspace = true, optional = true }
+hmac = { version = "0.12", optional = true }
+chacha20poly1305 = { version = "0.10", optional = true }
+tokio = { workspace = true, optional = true }
+base64 = { version = "0.22", optional = true, default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+httpmock = "0.7"
+tempfile = "3"
+libc = "0.2"

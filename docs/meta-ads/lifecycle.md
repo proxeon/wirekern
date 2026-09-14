@@ -19,9 +19,9 @@ vault. MCP and HTTP `serve` stay off this surface (unattended spend).
 
 Meta: `configured_status` / `status` enum is `ACTIVE, PAUSED, DELETED, ARCHIVED`.
 `POST /{id}` with `status=<value>` is the documented mutate. Delete may also
-be `HTTP DELETE`; Postkit uses `POST status=DELETED` so archive/delete share
+be `HTTP DELETE`; Wirekern uses `POST status=DELETED` so archive/delete share
 one helper. Copies: `POST /{id}/copies` with **hard-coded**
-`status_option=PAUSED` (Meta default; Postkit never sends `ACTIVE` or
+`status_option=PAUSED` (Meta default; Wirekern never sends `ACTIVE` or
 `INHERITED_FROM_SOURCE`).
 
 Creatives have no delivery `status` pair. Lifecycle kinds are `AdEntity`
@@ -59,13 +59,13 @@ Capability: `manage.ads_lifecycle`. Distinct from `create.paused_ads`.
    A leftover marker is `reconciliation_required` (exit 0) and **no retry**.
 6. POST. Network/deadline after the POST left → `reconciliation_required`,
    never a second POST. Graph `Platform` errors mean the write did not
-   apply. `ARCHIVED` stays refused (`not_paused:ARCHIVED`); Postkit does
+   apply. `ARCHIVED` stays refused (`not_paused:ARCHIVED`); Wirekern does
    not restore archived objects to ACTIVE.
 
 CLI:
 
 ```text
-postkit ads activate meta_ads --entity campaign|adset|ad --id <ID> \
+wirekern ads activate meta_ads --entity campaign|adset|ad --id <ID> \
   --confirm-id <ID> --allow-activate \
   [--confirm-daily-budget N | --confirm-lifetime-budget N] [--state path]
 ```
@@ -76,7 +76,7 @@ postkit ads activate meta_ads --entity campaign|adset|ad --id <ID> \
 idempotent success. `ARCHIVED` / `DELETED` refuse. No budget confirmation.
 
 ```text
-postkit ads pause meta_ads --entity campaign|adset|ad --id <ID>
+wirekern ads pause meta_ads --entity campaign|adset|ad --id <ID>
 ```
 
 ## 6. Archive
@@ -125,7 +125,7 @@ Merge only `publisher_platforms` / `facebook_positions` / `instagram_positions`
 
 Same merge GET/POST. Before/after diff of the typed subset (countries, ages,
 placements). Refuse when the parent campaign `special_ad_categories` is
-non-empty (not `NONE`): Postkit will not rewrite a Special Ad Category
+non-empty (not `NONE`): Wirekern will not rewrite a Special Ad Category
 contract.
 
 ## 14. Creative swap

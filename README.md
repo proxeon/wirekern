@@ -1,35 +1,35 @@
-# postkit
+# wirekern
 
-**postkit is an official-API execution kernel:** send now through your apps, with your vault, no calendar. Posts to **Threads**, **Bluesky**, **Facebook Pages**, **Instagram**, **LinkedIn**, and **X**, plus narrowly typed **WhatsApp Cloud** business messages and paused **Meta Ads** drafts. Credentials never leave your machine. Rust library + CLI. No scheduler, no hosted inbox, no cloud.
+**wirekern is an official-API execution kernel:** send now through your apps, with your vault, no calendar. Posts to **Threads**, **Bluesky**, **Facebook Pages**, **Instagram**, **LinkedIn**, and **X**, plus narrowly typed **WhatsApp Cloud** business messages and paused **Meta Ads** drafts. Credentials never leave your machine. Rust library + CLI. No scheduler, no hosted inbox, no cloud.
 
 Success is an `Outcome` with `id` and `url`; failure is a `WireError` you can branch on. No `"ok": true`.
 
 ## Install
 
 ```bash
-cargo install postkit-cli     # the `postkit` binary (includes `postkit serve` and `postkit mcp`)
-cargo install postkit-serve   # optional: HTTP-only binary
-cargo install postkit-mcp     # optional: MCP stdio-only binary
-cargo add postkit             # the library crate
+cargo install wirekern-cli     # the `wirekern` binary (includes `wirekern serve` and `wirekern mcp`)
+cargo install wirekern-serve   # optional: HTTP-only binary
+cargo install wirekern-mcp     # optional: MCP stdio-only binary
+cargo add wirekern             # the library crate
 ```
 
-Vault: `~/.postkit` (0700/0600). Override with `--home` or `POSTKIT_HOME`. Copy [`.env.example`](./.env.example) to `.env` (gitignored) — the CLI does **not** auto-load it.
+Vault: `~/.wirekern` (0700/0600). Override with `--home` or `WIREKERN_HOME`. Copy [`.env.example`](./.env.example) to `.env` (gitignored) — the CLI does **not** auto-load it.
 
 ## Quick start
 
 Threads — paste-code OAuth; full Meta-app walkthrough in [docs/threads](./docs/threads/):
 
 ```bash
-postkit apps set threads --client-id ID --client-secret SECRET --redirect-uri 'https://example.com/callback'
-postkit auth threads --json          # print URL, paste the redirect back
-postkit post threads --text "hi" --json
+wirekern apps set threads --client-id ID --client-secret SECRET --redirect-uri 'https://example.com/callback'
+wirekern auth threads --json          # print URL, paste the redirect back
+wirekern post threads --text "hi" --json
 ```
 
 Bluesky — app password; walkthrough in [docs/bluesky](./docs/bluesky/):
 
 ```bash
-postkit auth bluesky --account you.bsky.social --password 'xxxx-xxxx-xxxx-xxxx' --json
-postkit post bluesky --account you.bsky.social --text "hi" --json
+wirekern auth bluesky --account you.bsky.social --password 'xxxx-xxxx-xxxx-xxxx' --json
+wirekern post bluesky --account you.bsky.social --text "hi" --json
 ```
 
 ## What it is
@@ -39,7 +39,7 @@ postkit post bluesky --account you.bsky.social --text "hi" --json
 | **Job** | Official-API execution kernel. Send **now**. `Outcome.id` + `url`, or `WireError`. |
 | **Not** | Scheduler, persistent inbox, social drafts, `--at`, media download/hosting |
 | **You hold** | Tokens on disk. BYO Meta app / Bluesky app password. |
-| **Surfaces** | `cargo add postkit` (`Client`), the `postkit` CLI, local MCP stdio (`postkit mcp`), and HTTP (`pk_live_`) when a caller cannot exec. |
+| **Surfaces** | `cargo add wirekern` (`Client`), the `wirekern` CLI, local MCP stdio (`wirekern mcp`), and HTTP (`pk_live_`) when a caller cannot exec. |
 
 | Site | Capability | Auth | Limit |
 |------|------------|------|--------|
@@ -83,7 +83,7 @@ Kernel-level, all sites: 0600 vault with atomic writes, CSPRNG OAuth `state`, re
 | Media | ✓ Upload/metadata/download/delete; send image, document, audio, video, sticker (id or https) |
 | Interactive and service | ✓ Buttons, list, CTA URL, location request, voice-call, location, contacts, address request, reaction, mark-as-read, typing; `recipient_type: group` |
 | Catalog / order / Flows | ✓ Typed catalog, product, and order-status sends; Flow list/get/create/publish |
-| Inbound / status | ✓ Signed raw-body parse; `postkit serve` GET/POST callback with HTTP 200 ACK; local wamid ledger (not an inbox) |
+| Inbound / status | ✓ Signed raw-body parse; `wirekern serve` GET/POST callback with HTTP 200 ACK; local wamid ledger (not an inbox) |
 | Account / multi-sender | ✓ Paginated WABA/phone/system-user reads; phone register and two-step PIN; configured sender aliases (`--sender` on `send` / `send-batch` / HTTP) |
 | Bounded fan-out | ✓ `send-batch` / `send_whatsapp_many` ≤ 10, process-paced per phone; not campaigns |
 | Hosted inbox, calendar, billing dashboard | ✗ by design |
@@ -92,37 +92,37 @@ Kernel-level, all sites: 0600 vault with atomic writes, CSPRNG OAuth `state`, re
 ## CLI
 
 ```text
-postkit post <site> --text "…"              # publish now; --to threads,bluesky fans out
-postkit post threads --text 'root' --text 'reply'   # reply chain on Threads
-postkit post threads --text 'reply' --reply-to 18367439386214650  # reply to an existing post (threads media id; bluesky takes an at:// URI)
-postkit post threads --text '…' --dry-run   # probe: publish nothing (threads)
-postkit post bluesky --image hero.png --text 'caption' --alt 'description' # image post
-postkit post instagram --image https://cdn.example.com/hero.jpg --text 'caption'
-postkit post instagram --image https://cdn.example.com/slide-1.jpg --image https://cdn.example.com/slide-2.jpg --text 'one carousel caption'
-postkit media list instagram --limit 10 --json
-postkit apps set linkedin --client-id ID --client-secret SECRET --redirect-uri 'https://example.com/callback'
-postkit auth linkedin
-postkit post linkedin --text 'Hello LinkedIn' --idempotency linkedin-1
-postkit apps set x --client-id ID --client-secret SECRET --redirect-uri 'https://example.com/callback'
-postkit auth x
-postkit post x --text 'Hello X' --idempotency x-1
-postkit auth x --with-dm                         # re-authorize for DMs
-postkit x dm --to NUMERIC_USER_ID --text 'Hello' --idempotency dm-1 --allow-dm
-postkit auth <site> [--token | --code | --password]
-postkit insights meta_ads --from 2026-06-01 --until 2026-06-30 --attribution 7d_click_1d_view --level campaign
-postkit ads create-campaign meta_ads --name 'Draft' --objective sales
-postkit ads upload-image meta_ads --file hero.png
-postkit ads create-draft meta_ads --manifest launch.paused.json --state launch.state.json
-postkit pages accounts facebook_pages --json
-postkit post facebook_pages --page-id 123 --text 'Hello from Postkit'
-postkit whatsapp reply --to 60123456789 --reply-to wamid.inbound --text 'Hello' --idempotency reply-1 --allow-send
-postkit whatsapp send --request message.json --sender marketing --allow-send
-postkit whatsapp webhook parse --signature "$X_HUB_SIGNATURE_256" < webhook.json
-postkit whoami <site>
-postkit capabilities [site]
-postkit mcp                                 # MCP stdio for local agent hosts
-postkit accounts list|delete
-postkit apps show|set
+wirekern post <site> --text "…"              # publish now; --to threads,bluesky fans out
+wirekern post threads --text 'root' --text 'reply'   # reply chain on Threads
+wirekern post threads --text 'reply' --reply-to 18367439386214650  # reply to an existing post (threads media id; bluesky takes an at:// URI)
+wirekern post threads --text '…' --dry-run   # probe: publish nothing (threads)
+wirekern post bluesky --image hero.png --text 'caption' --alt 'description' # image post
+wirekern post instagram --image https://cdn.example.com/hero.jpg --text 'caption'
+wirekern post instagram --image https://cdn.example.com/slide-1.jpg --image https://cdn.example.com/slide-2.jpg --text 'one carousel caption'
+wirekern media list instagram --limit 10 --json
+wirekern apps set linkedin --client-id ID --client-secret SECRET --redirect-uri 'https://example.com/callback'
+wirekern auth linkedin
+wirekern post linkedin --text 'Hello LinkedIn' --idempotency linkedin-1
+wirekern apps set x --client-id ID --client-secret SECRET --redirect-uri 'https://example.com/callback'
+wirekern auth x
+wirekern post x --text 'Hello X' --idempotency x-1
+wirekern auth x --with-dm                         # re-authorize for DMs
+wirekern x dm --to NUMERIC_USER_ID --text 'Hello' --idempotency dm-1 --allow-dm
+wirekern auth <site> [--token | --code | --password]
+wirekern insights meta_ads --from 2026-06-01 --until 2026-06-30 --attribution 7d_click_1d_view --level campaign
+wirekern ads create-campaign meta_ads --name 'Draft' --objective sales
+wirekern ads upload-image meta_ads --file hero.png
+wirekern ads create-draft meta_ads --manifest launch.paused.json --state launch.state.json
+wirekern pages accounts facebook_pages --json
+wirekern post facebook_pages --page-id 123 --text 'Hello from Wirekern'
+wirekern whatsapp reply --to 60123456789 --reply-to wamid.inbound --text 'Hello' --idempotency reply-1 --allow-send
+wirekern whatsapp send --request message.json --sender marketing --allow-send
+wirekern whatsapp webhook parse --signature "$X_HUB_SIGNATURE_256" < webhook.json
+wirekern whoami <site>
+wirekern capabilities [site]
+wirekern mcp                                 # MCP stdio for local agent hosts
+wirekern accounts list|delete
+wirekern apps show|set
 ```
 
 Every subcommand takes `--json`: with it, stdout carries exactly one JSON document; without it, stdout stays empty and every line (results included) goes to stderr.
@@ -140,23 +140,23 @@ Fan-out returns one result per target: `{ "results": [ Outcome | WireError, … 
 ## Library
 
 ```toml
-postkit = { version = "0.1", features = ["vault-file", "threads", "bluesky"] }
+wirekern = { version = "0.1", features = ["vault-file", "threads", "bluesky"] }
 ```
 
-Default features are empty: `vault-file`, `client`, `oauth` (implies `client`), `threads`, `bluesky`, `instagram`, `linkedin`, `x`, `meta-ads`, `facebook-pages`, `whatsapp-cloud`, `draft` (manifest-orchestrated paused launches). `cargo add postkit --features threads` pulls no Bluesky, no scheduler, nothing you did not ask for.
+Default features are empty: `vault-file`, `client`, `oauth` (implies `client`), `threads`, `bluesky`, `instagram`, `linkedin`, `x`, `meta-ads`, `facebook-pages`, `whatsapp-cloud`, `draft` (manifest-orchestrated paused launches). `cargo add wirekern --features threads` pulls no Bluesky, no scheduler, nothing you did not ask for.
 
 `Client::{publish, send_x_direct_message, send_whatsapp, whoami, insights, pages, media, auth_start, auth_finish, put_token, run_paused_draft}`. Connectors register on `Registry`. Refresh (Threads/Facebook/Instagram/X long-lived) runs in `Client`, not in `publish`.
 
 ## Positioning & roadmap
 
-postkit keeps what hosted APIs take: tokens stay in **your** vault, you bring **your own** platform apps, cost is **$0**, license MIT OR Apache-2.0. Comparison grid against hosted post APIs, self-hosted schedulers and official SDKs: **[docs/positioning.md](./docs/positioning.md)**.
+wirekern keeps what hosted APIs take: tokens stay in **your** vault, you bring **your own** platform apps, cost is **$0**, license MIT OR Apache-2.0. Comparison grid against hosted post APIs, self-hosted schedulers and official SDKs: **[docs/positioning.md](./docs/positioning.md)**.
 
-Roadmap, in order: images/video. HTTP `serve` (`pk_live_`) and local MCP stdio (`postkit mcp`) are shipped.
+Roadmap, in order: images/video. HTTP `serve` (`pk_live_`) and local MCP stdio (`wirekern mcp`) are shipped.
 
 ## Not in this version
 
-local OAuth callback server, video, schedule, persistent inbox, Telegram, Mastodon. LinkedIn is currently member text posts only; Page posting, media, comments, analytics, and sponsored content remain separate features. HTTP for callers that cannot exec: `postkit keys create --name n8n` then `postkit serve` (`127.0.0.1:8788`, `Authorization: Bearer pk_live_…`). Local agent hosts: `postkit mcp` (stdio JSON-RPC; see [docs/mcp](./docs/mcp/)). Add a site: [docs/connectors.md](./docs/connectors.md).
+local OAuth callback server, video, schedule, persistent inbox, Telegram, Mastodon. LinkedIn is currently member text posts only; Page posting, media, comments, analytics, and sponsored content remain separate features. HTTP for callers that cannot exec: `wirekern keys create --name n8n` then `wirekern serve` (`127.0.0.1:8788`, `Authorization: Bearer pk_live_…`). Local agent hosts: `wirekern mcp` (stdio JSON-RPC; see [docs/mcp](./docs/mcp/)). Add a site: [docs/connectors.md](./docs/connectors.md).
 
 Notable changes, release by release: [CHANGELOG.md](./CHANGELOG.md).
 
-License: MIT OR Apache-2.0. Repository: [github.com/proxeon/postkit](https://github.com/proxeon/postkit).
+License: MIT OR Apache-2.0. Repository: [github.com/proxeon/wirekern](https://github.com/proxeon/wirekern).

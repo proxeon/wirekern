@@ -44,7 +44,7 @@ Last aligned with Meta Marketing API / Graph docs and
 ## Paused creates
 
 Every delivery object hard-codes `status=PAUSED` in the connector. There is
-no `--status`. Meta still allows `ACTIVE` at create; Postkit never sends it.
+no `--status`. Meta still allows `ACTIVE` at create; Wirekern never sends it.
 
 - [x] Campaign: typed objectives `awareness` | `traffic` | `engagement` | `leads` | `app_promotion` | `sales` → `OUTCOME_*`
 - [x] Campaign: `special_ad_categories` (explicit; blank = none)

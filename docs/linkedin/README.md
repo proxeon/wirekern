@@ -19,7 +19,7 @@ post, but cannot create an ad or spend money.
    - **Sign in with LinkedIn using OpenID Connect** — provides `openid` and
      `profile`, used only to identify the authenticated member safely.
 3. Under **Auth**, add this exact redirect URL (or choose your own and use the
-   exact same value in Postkit):
+   exact same value in Wirekern):
 
    ```text
    https://example.com/callback
@@ -35,56 +35,56 @@ authorizing again.
 ## 2. Store app configuration locally
 
 ```bash
-postkit apps set linkedin \
+wirekern apps set linkedin \
   --client-id '<LinkedIn Client ID>' \
   --client-secret '<LinkedIn Client Secret>' \
   --redirect-uri 'https://example.com/callback'
 ```
 
 Or keep these only in your local, Git-ignored `.env` and export them before
-running Postkit:
+running Wirekern:
 
 ```bash
-POSTKIT_LINKEDIN_CLIENT_ID='<LinkedIn Client ID>'
-POSTKIT_LINKEDIN_CLIENT_SECRET='<LinkedIn Client Secret>'
-POSTKIT_LINKEDIN_REDIRECT_URI='https://example.com/callback'
+WIREKERN_LINKEDIN_CLIENT_ID='<LinkedIn Client ID>'
+WIREKERN_LINKEDIN_CLIENT_SECRET='<LinkedIn Client Secret>'
+WIREKERN_LINKEDIN_REDIRECT_URI='https://example.com/callback'
 ```
 
-Environment values take precedence over `~/.postkit/apps/linkedin.json`.
+Environment values take precedence over `~/.wirekern/apps/linkedin.json`.
 Check the non-secret result with:
 
 ```bash
-postkit apps show linkedin --json
+wirekern apps show linkedin --json
 ```
 
 ## 3. Authorize the member
 
 ```bash
-postkit auth linkedin --json
+wirekern auth linkedin --json
 ```
 
 Open the printed URL in the browser where the intended LinkedIn member is
 signed in. Approve the request, then paste the **complete redirected URL**
-back into Postkit. Keeping the URL intact lets Postkit verify OAuth `state`;
+back into Wirekern. Keeping the URL intact lets Wirekern verify OAuth `state`;
 do not paste the authorization code into a chat, issue tracker, or shell
 history.
 
-Postkit exchanges the code, calls LinkedIn OIDC UserInfo, and stores the
+Wirekern exchanges the code, calls LinkedIn OIDC UserInfo, and stores the
 access token plus the resolved opaque member ID in the local 0600 vault. It
 uses UserInfo rather than the legacy `/v2/me` profile endpoint.
 
 Validate the resulting credential before posting:
 
 ```bash
-postkit whoami linkedin --json
+wirekern whoami linkedin --json
 # {"site":"linkedin","id":"<opaque member id>","handle":"<optional name>"}
 ```
 
 ## 4. Publish a disposable text post
 
 ```bash
-postkit post linkedin \
-  --text 'Postkit LinkedIn connector validation — organic text post.' \
+wirekern post linkedin \
+  --text 'Wirekern LinkedIn connector validation — organic text post.' \
   --idempotency linkedin-validation-001 \
   --json
 ```
@@ -100,7 +100,7 @@ Expected success is an exact LinkedIn post URN, for example:
 ```
 
 LinkedIn returns the post URN in `x-restli-id`. For its known `share` and
-`ugcPost` URN forms, Postkit returns the corresponding feed URL as an opening
+`ugcPost` URN forms, Wirekern returns the corresponding feed URL as an opening
 convenience. LinkedIn may require a signed-in viewer to open it; confirm the
 result in the authenticated member's activity feed.
 
@@ -112,11 +112,11 @@ organization, targeted, dark, or sponsored post.
 
 ## Token lifecycle and failure handling
 
-- If LinkedIn supplied a refresh token, Postkit refreshes it when its recorded
+- If LinkedIn supplied a refresh token, Wirekern refreshes it when its recorded
   access-token expiry is near. If no refresh token was issued or retained,
-  Postkit leaves the current token alone and asks you to re-run `auth linkedin`
+  Wirekern leaves the current token alone and asks you to re-run `auth linkedin`
   only when LinkedIn rejects it.
-- `401` becomes `auth: token_expired`; re-authorize with `postkit auth
+- `401` becomes `auth: token_expired`; re-authorize with `wirekern auth
   linkedin`.
 - `429` is surfaced as `rate_limited`; retry later.
 - Permission failures keep LinkedIn's structured non-secret message. Verify

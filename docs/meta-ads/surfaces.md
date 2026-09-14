@@ -31,7 +31,7 @@ they do not invent a second auth story.
 Query: `site` (required except insights default `meta_ads`), `account`
 (default `default`), plus verb fields (`from`/`to`/`attribution` for
 insights; `entity`/`id`/`ad_account` for ads). Deadline is still
-`X-Postkit-Deadline`. Missing bearer is 401. `pk_live_` never installs
+`X-Wirekern-Deadline`. Missing bearer is 401. `pk_live_` never installs
 `AllowAdsActionPolicy`.
 
 Not on HTTP: paused creates, activate, pause, archive, delete, duplicate,
