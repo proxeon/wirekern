@@ -289,11 +289,19 @@ fn ads_accounts_command_parses() {
 }
 
 #[test]
-fn x_dm_and_scope_elevation_commands_are_explicit() {
+fn scope_elevation_commands_are_explicit() {
     let auth = Cli::try_parse_from(["wirekern", "auth", "x", "--with-dm"]).unwrap();
     assert!(matches!(
         *auth.command,
         Commands::Auth { with_dm: true, .. }
+    ));
+    let threads = Cli::try_parse_from(["wirekern", "auth", "threads", "--with-replies"]).unwrap();
+    assert!(matches!(
+        *threads.command,
+        Commands::Auth {
+            with_replies: true,
+            ..
+        }
     ));
 
     let denied = Cli::try_parse_from([

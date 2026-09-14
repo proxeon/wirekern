@@ -25,6 +25,8 @@ wirekern auth threads --json          # print URL, paste the redirect back
 wirekern post threads --text "hi" --json
 ```
 
+Need a small, reviewable client-facing Threads scheduler rather than the kernel/CLI? Run the separate [Threads review app](./docs/threads/review-app.md). It has browser OAuth, explicit scheduled-post consent, privacy/deletion pages, and no reply scope by default.
+
 Bluesky — app password; walkthrough in [docs/bluesky](./docs/bluesky/):
 
 ```bash

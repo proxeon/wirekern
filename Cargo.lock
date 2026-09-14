@@ -2691,7 +2691,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "clap",
+ "getrandom 0.3.4",
  "hmac",
  "serde",
  "serde_json",

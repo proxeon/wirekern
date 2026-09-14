@@ -71,6 +71,10 @@ pub(crate) enum Commands {
         /// scopes. Re-authorize whenever you add this capability.
         #[arg(long)]
         with_dm: bool,
+        /// Threads only: request reply-management access in addition to
+        /// ordinary publishing. Re-authorize whenever you add it.
+        #[arg(long)]
+        with_replies: bool,
     },
     Whoami {
         site: String,

@@ -5,6 +5,8 @@
 //! `keys create` stay on the CLI. Clients come from [`Client::from_home`] so
 //! serve cannot register a different connector set than `wirekern post`.
 
+pub mod threads_app;
+
 use axum::body::Bytes;
 use axum::extract::{Path as PathParam, Query, State};
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};

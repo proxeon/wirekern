@@ -16,6 +16,11 @@ name = "wirekern-serve"
 path = "src/main.rs"
 required-features = ["bin"]
 
+[[bin]]
+name = "wirekern-threads-app"
+path = "src/threads_app_main.rs"
+required-features = ["bin"]
+
 [features]
 default = ["bin"]
 # Clap is only for the `wirekern-serve` binary. The library (router + run)
@@ -28,9 +33,13 @@ wirekern = { version = "0.1.0", path = "../wirekern", features = ["vault-file", 
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "signal"] }
-axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1", "query"] }
+axum = { version = "0.8", default-features = false, features = ["form", "json", "tokio", "http1", "query"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 clap = { workspace = true, optional = true }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+getrandom = { workspace = true }
+hmac = "0.12"
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

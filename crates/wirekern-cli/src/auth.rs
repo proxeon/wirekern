@@ -35,6 +35,7 @@ pub(crate) async fn run(
     password: Option<String>,
     system_user: bool,
     with_dm: bool,
+    with_replies: bool,
     json: bool,
     account: String,
     deadline: Deadline,
@@ -42,6 +43,14 @@ pub(crate) async fn run(
     let key = AccountKey::new(&site, &account);
     if with_dm && site != "x" {
         eprintln!("--with-dm is only valid for x");
+        return Err(2);
+    }
+    if with_replies && site != "threads" {
+        eprintln!("--with-replies is only valid for threads");
+        return Err(2);
+    }
+    if with_dm && with_replies {
+        eprintln!("--with-dm and --with-replies cannot be combined");
         return Err(2);
     }
     let result = if system_user {
@@ -110,10 +119,13 @@ pub(crate) async fn run(
         }
     } else {
         let options = AuthStartOptions {
-            requested_features: with_dm
-                .then(|| "direct_messages".into())
-                .into_iter()
-                .collect(),
+            requested_features: [
+                with_dm.then(|| "direct_messages".into()),
+                with_replies.then(|| "replies".into()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
         };
         match client.auth_start_for(&key, options).await {
             Ok(start) => match start {

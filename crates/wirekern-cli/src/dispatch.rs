@@ -68,6 +68,7 @@ pub(crate) async fn dispatch(
             password,
             system_user,
             with_dm,
+            with_replies,
         } => {
             auth::run(
                 &client,
@@ -78,6 +79,7 @@ pub(crate) async fn dispatch(
                 password,
                 system_user,
                 with_dm,
+                with_replies,
                 json,
                 account,
                 deadline,

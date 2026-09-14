@@ -2,7 +2,7 @@ use crate::error::Error;
 use crate::form::form;
 use crate::http::Http;
 use crate::oauth::{authorize_url, exchange_code, extract_code, new_state};
-use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
+use crate::publisher::{AuthKind, AuthReply, AuthStart, AuthStartOptions, Publisher};
 use crate::types::{
     AccountCreds, AppConfig, Body, Capability, Deadline, Image, Intent, OAuthApp, Outcome, Probe,
     Site, WhoAmI,
@@ -17,7 +17,15 @@ pub const GRAPH_VERSION: &str = "v1.0";
 pub const GRAPH_ORIGIN: &str = "https://graph.threads.net";
 pub const AUTHORIZE: &str = "https://threads.net/oauth/authorize";
 pub const SITE: &str = "threads";
-pub const SCOPES: &str = "threads_basic,threads_content_publish,threads_manage_replies";
+/// The narrowly-scoped publish grant used by ordinary Threads connections.
+///
+/// Reply management is deliberately absent. A publisher that needs it must
+/// request the explicit `replies` feature at authorization time; otherwise a
+/// simple publishing product unnecessarily asks every account owner for a
+/// broader permission and makes Meta App Review harder to justify.
+pub const SCOPES: &str = "threads_basic,threads_content_publish";
+pub const REPLY_SCOPE: &str = "threads_manage_replies";
+pub const REPLIES_FEATURE: &str = "replies";
 /// Meta's Threads text limit in Meta's own counting units: "Text posts are
 /// limited to 500 characters. Emojis are counted as the number of UTF-8
 /// bytes" (developers.facebook.com/docs/threads/posts). See [`threads_len`].
@@ -243,13 +251,23 @@ impl Publisher for Threads {
     }
 
     async fn auth_start(&self, app: &AppConfig) -> Result<AuthStart, Error> {
+        self.auth_start_with(app, &AuthStartOptions::default())
+            .await
+    }
+
+    async fn auth_start_with(
+        &self,
+        app: &AppConfig,
+        options: &AuthStartOptions,
+    ) -> Result<AuthStart, Error> {
         let oauth = require_oauth(app)?;
+        let scopes = requested_scopes(options)?;
         let state = new_state()?;
         let authorize_url = authorize_url(
             AUTHORIZE,
             &oauth.client_id,
             &oauth.redirect_uri,
-            SCOPES,
+            &scopes,
             &state,
         );
         Ok(AuthStart::Browser {
@@ -737,6 +755,31 @@ fn require_oauth(app: &AppConfig) -> Result<&OAuthApp, Error> {
     app.oauth.as_ref().ok_or_else(|| Error::Auth {
         site: Site::new(SITE),
         reason: "missing_app_config".into(),
+    })
+}
+
+/// Build the authorization scopes from connector-owned feature names.
+///
+/// Keeping this validation in the connector, rather than accepting a raw
+/// scope string from callers, makes the reviewed capability boundary
+/// auditable. A caller can request replies, but cannot silently add an
+/// unrelated Threads permission to the user's OAuth grant.
+fn requested_scopes(options: &AuthStartOptions) -> Result<String, Error> {
+    let mut replies = false;
+    for feature in &options.requested_features {
+        if feature == REPLIES_FEATURE && !replies {
+            replies = true;
+        } else {
+            return Err(Error::Auth {
+                site: Site::new(SITE),
+                reason: "unsupported_auth_feature".into(),
+            });
+        }
+    }
+    Ok(if replies {
+        format!("{SCOPES},{REPLY_SCOPE}")
+    } else {
+        SCOPES.to_string()
     })
 }
 
@@ -1726,14 +1769,43 @@ mod tests {
                 ..
             } => {
                 assert!(authorize_url.contains("https://threads.net/oauth/authorize"));
-                assert!(authorize_url
-                    .contains("threads_basic%2Cthreads_content_publish%2Cthreads_manage_replies"));
+                assert!(authorize_url.contains("threads_basic%2Cthreads_content_publish"));
+                assert!(!authorize_url.contains("threads_manage_replies"));
                 assert!(authorize_url.contains("response_type=code"));
                 assert!(!state.is_empty());
                 assert!(authorize_url.contains(&format!("state={state}")));
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn reply_scope_is_explicit_and_connector_validated() {
+        let t = Threads::new().unwrap();
+        let AuthStart::Browser { authorize_url, .. } = t
+            .auth_start_with(
+                &oauth_app(),
+                &AuthStartOptions {
+                    requested_features: vec![REPLIES_FEATURE.into()],
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected browser authorization");
+        };
+        assert!(authorize_url
+            .contains("threads_basic%2Cthreads_content_publish%2Cthreads_manage_replies"));
+        let err = t
+            .auth_start_with(
+                &oauth_app(),
+                &AuthStartOptions {
+                    requested_features: vec!["anything_else".into()],
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Auth { reason, .. } if reason == "unsupported_auth_feature"));
     }
 
     #[tokio::test]

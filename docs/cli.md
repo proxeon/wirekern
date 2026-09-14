@@ -51,7 +51,8 @@ Details that bite:
 ## `auth`
 
 ```text
-wirekern auth threads                         # TTY: print URL, paste redirect or code
+wirekern auth threads                         # TTY: publish-only scopes, print URL, paste redirect or code
+wirekern auth threads --with-replies          # explicit extra Threads reply-management scope
 wirekern auth threads --code 'AQBx-…'         # raw code or full callback URL (#_ stripped)
 wirekern auth threads --token 'THQVJ…'        # bootstrap; no app file
 wirekern auth bluesky --account you.bsky.social --password 'xxxx-xxxx-xxxx-xxxx'
@@ -69,7 +70,7 @@ wirekern auth whatsapp_cloud --token 'system-user-token' # static System User to
   auth flow: OAuth sites such as Threads, or WhatsApp Cloud's static System
   User token. App-password sites (Bluesky) refuse it with
   `token_bootstrap_unsupported`.
-- Threads with no flags: `auth_start`, `open: …` on stderr, waits for paste. Non-TTY prints `then: wirekern auth threads --code <code>` and exits. `--json` prints `WhoAmI` only (no token).
+- Threads with no flags: `auth_start`, `open: …` on stderr, waits for paste. It requests only `threads_basic,threads_content_publish`. `--with-replies` explicitly adds `threads_manage_replies`; re-authorize after enabling it. Non-TTY prints `then: wirekern auth threads --code <code>` and exits. `--json` prints `WhoAmI` only (no token).
 - Threads paste-code needs `apps set` first (or `WIREKERN_THREADS_CLIENT_ID` / `_CLIENT_SECRET` / `_REDIRECT_URI` in the **process** env). Redirect URI must match the Meta dashboard chip **byte-for-byte**.
 - The pasted redirect URL must echo the `state` the CLI generated: mismatched or missing `state` is rejected (`state_mismatch` / `missing_state`). The two-invocation `--code` path cannot verify `state` — paste the redirected URL unedited.
 - Bluesky does not need an app file.
