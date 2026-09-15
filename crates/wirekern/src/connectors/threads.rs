@@ -17,14 +17,67 @@ pub const GRAPH_VERSION: &str = "v1.0";
 pub const GRAPH_ORIGIN: &str = "https://graph.threads.net";
 pub const AUTHORIZE: &str = "https://threads.net/oauth/authorize";
 pub const SITE: &str = "threads";
-/// The narrowly-scoped publish grant used by ordinary Threads connections.
+
+/// A Threads OAuth permission known to Wirekern.
 ///
-/// Reply management is deliberately absent. A publisher that needs it must
-/// request the explicit `replies` feature at authorization time; otherwise a
-/// simple publishing product unnecessarily asks every account owner for a
-/// broader permission and makes Meta App Review harder to justify.
-pub const SCOPES: &str = "threads_basic,threads_content_publish";
-pub const REPLY_SCOPE: &str = "threads_manage_replies";
+/// Listing a permission here does not request it from Meta or grant the app
+/// access to it. Only [`ACTIVE_SCOPES`] and a reviewed, explicit feature opt-in
+/// contribute to an authorization URL.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThreadsScope {
+    Basic,
+    ContentPublish,
+    Delete,
+    KeywordSearch,
+    LocationTagging,
+    ManageInsights,
+    ManageMentions,
+    ManageReplies,
+    ProfileDiscovery,
+    ReadReplies,
+    ShareToInstagram,
+}
+
+impl ThreadsScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Basic => "threads_basic",
+            Self::ContentPublish => "threads_content_publish",
+            Self::Delete => "threads_delete",
+            Self::KeywordSearch => "threads_keyword_search",
+            Self::LocationTagging => "threads_location_tagging",
+            Self::ManageInsights => "threads_manage_insights",
+            Self::ManageMentions => "threads_manage_mentions",
+            Self::ManageReplies => "threads_manage_replies",
+            Self::ProfileDiscovery => "threads_profile_discovery",
+            Self::ReadReplies => "threads_read_replies",
+            Self::ShareToInstagram => "threads_share_to_instagram",
+        }
+    }
+}
+
+/// The full Threads permission catalogue. This is metadata only; adding a
+/// variant here never expands OAuth consent.
+pub const SUPPORTED_SCOPES: &[ThreadsScope] = &[
+    ThreadsScope::Basic,
+    ThreadsScope::ContentPublish,
+    ThreadsScope::Delete,
+    ThreadsScope::KeywordSearch,
+    ThreadsScope::LocationTagging,
+    ThreadsScope::ManageInsights,
+    ThreadsScope::ManageMentions,
+    ThreadsScope::ManageReplies,
+    ThreadsScope::ProfileDiscovery,
+    ThreadsScope::ReadReplies,
+    ThreadsScope::ShareToInstagram,
+];
+
+/// The narrowly-scoped grants used by ordinary Threads connections.
+///
+/// Keep this list aligned with the product features currently live and
+/// approved in Meta App Review. Reply management is deliberately absent: it
+/// is added only by the existing explicit `replies` feature opt-in below.
+pub const ACTIVE_SCOPES: &[ThreadsScope] = &[ThreadsScope::Basic, ThreadsScope::ContentPublish];
 pub const REPLIES_FEATURE: &str = "replies";
 /// Meta's Threads text limit in Meta's own counting units: "Text posts are
 /// limited to 500 characters. Emojis are counted as the number of UTF-8
@@ -765,6 +818,7 @@ fn require_oauth(app: &AppConfig) -> Result<&OAuthApp, Error> {
 /// auditable. A caller can request replies, but cannot silently add an
 /// unrelated Threads permission to the user's OAuth grant.
 fn requested_scopes(options: &AuthStartOptions) -> Result<String, Error> {
+    let mut scopes = ACTIVE_SCOPES.to_vec();
     let mut replies = false;
     for feature in &options.requested_features {
         if feature == REPLIES_FEATURE && !replies {
@@ -776,11 +830,18 @@ fn requested_scopes(options: &AuthStartOptions) -> Result<String, Error> {
             });
         }
     }
-    Ok(if replies {
-        format!("{SCOPES},{REPLY_SCOPE}")
-    } else {
-        SCOPES.to_string()
-    })
+    if replies {
+        scopes.push(ThreadsScope::ManageReplies);
+    }
+    Ok(scope_string(&scopes))
+}
+
+fn scope_string(scopes: &[ThreadsScope]) -> String {
+    scopes
+        .iter()
+        .map(|scope| scope.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn unix_now() -> u64 {
@@ -976,6 +1037,34 @@ mod tests {
             refresh_token: None,
             extra: json!({}),
         }
+    }
+
+    #[test]
+    fn scope_catalogue_does_not_expand_ordinary_oauth_consent() {
+        let supported = SUPPORTED_SCOPES
+            .iter()
+            .map(|scope| scope.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            supported,
+            vec![
+                "threads_basic",
+                "threads_content_publish",
+                "threads_delete",
+                "threads_keyword_search",
+                "threads_location_tagging",
+                "threads_manage_insights",
+                "threads_manage_mentions",
+                "threads_manage_replies",
+                "threads_profile_discovery",
+                "threads_read_replies",
+                "threads_share_to_instagram",
+            ]
+        );
+        assert_eq!(
+            scope_string(ACTIVE_SCOPES),
+            "threads_basic,threads_content_publish"
+        );
     }
 
     #[tokio::test]
