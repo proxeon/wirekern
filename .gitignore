@@ -1,5 +1,6 @@
 /target
 /design/
+/tools/
 .env
 .DS_Store
 *.swp
