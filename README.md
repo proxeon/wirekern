@@ -42,6 +42,7 @@ wirekern post bluesky --account you.bsky.social --text "hi" --json
 | **Not** | Scheduler, persistent inbox, social drafts, `--at`, media download/hosting |
 | **You hold** | Tokens on disk. BYO Meta app / Bluesky app password. |
 | **Surfaces** | `cargo add wirekern` (`Client`), the `wirekern` CLI, local MCP stdio (`wirekern mcp`), and HTTP (`pk_live_`) when a caller cannot exec. |
+| **Local helpers** | An ignored `tools/` directory may hold machine-local source collectors or experiments. It is not part of the repository, API surface, or release. |
 
 | Site | Capability | Auth | Limit |
 |------|------------|------|--------|
