@@ -162,4 +162,8 @@ local OAuth callback server, video, schedule, persistent inbox, Telegram, Mastod
 
 Notable changes, release by release: [CHANGELOG.md](./CHANGELOG.md).
 
+## Support
+
+For support or implementation help, email [support@lazuar.com](mailto:support@lazuar.com), contact [@akmalfirdxus on X](https://x.com/akmalfirdxus), or message [@mxltosa on Telegram](https://t.me/mxltosa).
+
 License: MIT OR Apache-2.0. Repository: [github.com/proxeon/wirekern](https://github.com/proxeon/wirekern).
