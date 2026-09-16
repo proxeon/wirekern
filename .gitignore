@@ -4,7 +4,7 @@
 .env
 .DS_Store
 *.swp
-issues/
+/issues/
 /plans/
 # Local captured network traffic may contain request metadata; keep it private.
 mitm_mcp_traffic.db
