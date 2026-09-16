@@ -2,15 +2,11 @@
 
 All notable changes to wirekern are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
-adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-once a first tag exists.
-
-Nothing has been tagged yet — everything below ships under the pending
-`0.1.0`. Entries cite behavior and dates, never commit hashes: hashes
-die on every history rewrite, and the commit log already carries the
-same detail by subject.
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-09-17
 
 ### Added
 
@@ -217,6 +213,10 @@ same detail by subject.
 
 ### Fixed
 
+- Feature-matrix CI now compiles only the tests and fixtures supported by
+  each enabled feature. The standalone Bluesky, Meta Ads, Draft, WhatsApp,
+  Facebook Pages, and Instagram configurations are independently checked;
+  Draft correctly brings its Meta Ads dependency with it.
 - The dual license now ships its texts (issue 004): `LICENSE-APACHE` and
   `LICENSE-MIT` at the repository root, symlinked into both crates so
   `cargo package` includes them in every published `.crate` — recipients

@@ -23,7 +23,7 @@ default = ["bin"]
 bin = ["dep:clap"]
 
 [dependencies]
-wirekern = { version = "0.1.0", path = "../wirekern", features = ["vault-file", "threads", "bluesky", "meta-ads", "facebook-pages", "instagram", "linkedin", "whatsapp-cloud"] }
+wirekern = { version = "0.2.0", path = "../wirekern", features = ["vault-file", "threads", "bluesky", "meta-ads", "facebook-pages", "instagram", "linkedin", "whatsapp-cloud"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-std", "io-util"] }

@@ -16,9 +16,9 @@ name = "wirekern"
 path = "src/main.rs"
 
 [dependencies]
-wirekern = { version = "0.1.0", path = "../wirekern", features = ["vault-file", "threads", "bluesky", "meta-ads", "facebook-pages", "instagram", "linkedin", "x", "whatsapp-cloud", "draft"] }
-wirekern-serve = { version = "0.1.0", path = "../wirekern-serve", default-features = false }
-wirekern-mcp = { version = "0.1.0", path = "../wirekern-mcp", default-features = false }
+wirekern = { version = "0.2.0", path = "../wirekern", features = ["vault-file", "threads", "bluesky", "meta-ads", "facebook-pages", "instagram", "linkedin", "x", "whatsapp-cloud", "draft"] }
+wirekern-serve = { version = "0.2.0", path = "../wirekern-serve", default-features = false }
+wirekern-mcp = { version = "0.2.0", path = "../wirekern-mcp", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
