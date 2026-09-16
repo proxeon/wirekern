@@ -15,9 +15,6 @@ use std::path::Path;
     feature = "vault-file",
     feature = "threads",
     feature = "bluesky",
-    feature = "meta-ads",
-    feature = "facebook-pages",
-    feature = "instagram",
     feature = "linkedin"
 ))]
 use std::sync::Arc;
@@ -125,6 +122,16 @@ mod tests {
         assert!(registry.get(&crate::types::Site::new("threads")).is_some());
         #[cfg(feature = "bluesky")]
         assert!(registry.get(&crate::types::Site::new("bluesky")).is_some());
+        #[cfg(feature = "meta-ads")]
+        assert!(registry.get(&crate::types::Site::new("meta_ads")).is_some());
+        #[cfg(feature = "facebook-pages")]
+        assert!(registry
+            .get(&crate::types::Site::new("facebook_pages"))
+            .is_some());
+        #[cfg(feature = "instagram")]
+        assert!(registry
+            .get(&crate::types::Site::new("instagram"))
+            .is_some());
         #[cfg(feature = "linkedin")]
         assert!(registry.get(&crate::types::Site::new("linkedin")).is_some());
         #[cfg(feature = "x")]

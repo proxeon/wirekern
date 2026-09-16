@@ -39,7 +39,7 @@ x = ["client", "oauth", "dep:getrandom", "dep:sha2", "dep:base64"]
 # Outbound Cloud API pacing sleeps asynchronously and must never block an
 # embedding application's executor thread.
 whatsapp-cloud = ["client", "dep:chacha20poly1305", "dep:hmac", "dep:sha2", "dep:tokio"]
-draft = ["client", "dep:tokio", "dep:sha2"]
+draft = ["meta-ads", "dep:sha2"]
 
 [dependencies]
 serde = { workspace = true }

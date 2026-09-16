@@ -10,6 +10,7 @@ use crate::vault::MemoryVault;
 use std::sync::Arc;
 /// Remote ad-account discovery is a separately gated read. This prevents a
 /// connector from accidentally treating local vault aliases as account IDs.
+#[cfg(feature = "meta-ads")]
 #[tokio::test]
 async fn client_ad_accounts_routes_and_checks_capability() {
     let (c, key) = setup(MockPub::ad_accounts("meta_ads"));

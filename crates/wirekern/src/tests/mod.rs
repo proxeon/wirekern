@@ -1,6 +1,8 @@
 //! Client-kernel unit tests. Connector tests live next to each connector.
 
+#[cfg(feature = "meta-ads")]
 mod ads;
+#[cfg(feature = "meta-ads")]
 mod insights;
 mod mock;
 mod publish;

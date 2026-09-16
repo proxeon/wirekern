@@ -1,10 +1,12 @@
 //! Shared Client-test fixtures: MockPub, vault/app setup, request builders.
+#[cfg(feature = "meta-ads")]
+use crate::ads::{AdEntity, AdsActivateRequest, CampaignObjective, PausedAdCreate, PausedCampaign};
 use crate::ads::{
-    AdEntity, AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdsActivateRequest,
-    AdsInspectReply, AdsInspectRequest, AdsInventoryItem, AdsInventoryReply, AdsInventoryRequest,
-    AdsStatusUpdateRequest, AdsTargetingReadback, CampaignObjective, CreateLinkAdCreativeRequest,
-    CreatePausedAdRequest, CreatedAd, CreatedAdCreative, CreativePreview, CreativePreviewRequest,
-    PausedAdCreate, PausedCampaign, UploadAdImageRequest, UploadedAdImage,
+    AdReviewIssue, AdReviewStatus, AdReviewStatusRequest, AdsInspectReply, AdsInspectRequest,
+    AdsInventoryItem, AdsInventoryReply, AdsInventoryRequest, AdsStatusUpdateRequest,
+    AdsTargetingReadback, CreateLinkAdCreativeRequest, CreatePausedAdRequest, CreatedAd,
+    CreatedAdCreative, CreativePreview, CreativePreviewRequest, UploadAdImageRequest,
+    UploadedAdImage,
 };
 use crate::apps::{AppStore, MemoryAppStore};
 use crate::client::Client;
@@ -12,12 +14,12 @@ use crate::error::Error;
 #[cfg(feature = "whatsapp-cloud")]
 use crate::facets::WhatsAppSender;
 use crate::facets::{AdsManager, InsightsSource, MediaReader, PageDirectory};
-use crate::insights::{
-    AdAccount, AdAccountsReply, AttributionWindow, InsightRow, InsightsLevel, InsightsQuery,
-    InsightsReply, Metric,
-};
+use crate::insights::{AdAccount, AdAccountsReply, InsightRow, InsightsQuery, InsightsReply};
+#[cfg(feature = "meta-ads")]
+use crate::insights::{AttributionWindow, InsightsLevel, Metric};
 use crate::media::{MediaQuery, MediaReply, PublishedMedia};
 use crate::pages::{PageAccount, PagesReply};
+#[cfg(feature = "meta-ads")]
 use crate::policy::{AdsAction, AdsPolicy};
 use crate::publisher::{AuthKind, AuthReply, AuthStart, Publisher};
 use crate::registry::{Connector, Registry};
@@ -102,6 +104,7 @@ impl MockPub {
         }
     }
 
+    #[cfg(feature = "meta-ads")]
     pub(super) fn metrics(site: &str) -> Self {
         Self {
             caps: vec![Capability::ReadMetrics],
@@ -109,6 +112,7 @@ impl MockPub {
         }
     }
 
+    #[cfg(feature = "meta-ads")]
     pub(super) fn ad_accounts(site: &str) -> Self {
         Self {
             caps: vec![Capability::ReadAdAccounts],
@@ -130,6 +134,7 @@ impl MockPub {
         }
     }
 
+    #[cfg(feature = "meta-ads")]
     pub(super) fn paused_ads(site: &str) -> Self {
         Self {
             caps: vec![Capability::CreatePausedAds],
@@ -137,6 +142,7 @@ impl MockPub {
         }
     }
 
+    #[cfg(feature = "meta-ads")]
     pub(super) fn creative_assets(site: &str) -> Self {
         Self {
             caps: vec![Capability::CreateAdCreative],
@@ -144,6 +150,7 @@ impl MockPub {
         }
     }
 
+    #[cfg(feature = "meta-ads")]
     pub(super) fn creative_previews(site: &str) -> Self {
         Self {
             caps: vec![Capability::ReadAdPreviews],
@@ -151,6 +158,7 @@ impl MockPub {
         }
     }
 
+    #[cfg(feature = "meta-ads")]
     pub(super) fn review_statuses(site: &str, pending_reads: usize) -> Self {
         Self {
             caps: vec![Capability::ReadAdReviewStatus],
@@ -159,6 +167,7 @@ impl MockPub {
         }
     }
 
+    #[cfg(feature = "meta-ads")]
     pub(super) fn ads_inventory(site: &str) -> Self {
         Self {
             caps: vec![Capability::ReadAdsInventory],
@@ -166,6 +175,7 @@ impl MockPub {
         }
     }
 
+    #[cfg(feature = "meta-ads")]
     pub(super) fn ads_lifecycle(site: &str) -> Self {
         Self {
             caps: vec![
@@ -184,6 +194,7 @@ impl MockPub {
     }
 
     /// A separate coherent lifetime-budget object for confirmation tests.
+    #[cfg(feature = "meta-ads")]
     pub(super) fn ads_lifecycle_with_lifetime_budget(site: &str) -> Self {
         Self {
             caps: vec![
@@ -852,8 +863,10 @@ pub(super) fn register_mock(reg: &mut Registry, mock: Arc<MockPub>) {
 
 /// A deliberately strict application policy used to prove Client calls the
 /// policy before it looks up credentials or routes to a connector.
+#[cfg(feature = "meta-ads")]
 pub(super) struct DenyAds;
 
+#[cfg(feature = "meta-ads")]
 impl AdsPolicy for DenyAds {
     fn authorize(&self, site: &Site, action: AdsAction) -> Result<(), Error> {
         Err(Error::PolicyDenied {
@@ -978,6 +991,7 @@ pub(super) fn setup_refresh_probe(
     )
 }
 
+#[cfg(feature = "meta-ads")]
 pub(super) fn insights_query(from: &str, to: &str) -> InsightsQuery {
     InsightsQuery {
         level: InsightsLevel::Campaign,
@@ -994,6 +1008,7 @@ pub(super) fn insights_query(from: &str, to: &str) -> InsightsQuery {
     }
 }
 
+#[cfg(feature = "meta-ads")]
 pub(super) fn paused_campaign_request(name: &str) -> CreatePausedAdRequest {
     CreatePausedAdRequest {
         account: Some("act_1".into()),
@@ -1008,6 +1023,7 @@ pub(super) fn paused_campaign_request(name: &str) -> CreatePausedAdRequest {
     }
 }
 
+#[cfg(feature = "meta-ads")]
 pub(super) fn activate_request() -> AdsActivateRequest {
     AdsActivateRequest {
         entity: AdEntity::Adset,

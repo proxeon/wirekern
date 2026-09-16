@@ -5,7 +5,9 @@ use crate::client::Client;
 use crate::error::Error;
 use crate::policy::AllowWhatsAppSendsPolicy;
 use crate::registry::Registry;
-use crate::types::{AccountCreds, AccountKey, AppConfig, Capability, Deadline, Site};
+#[cfg(feature = "meta-ads")]
+use crate::types::Capability;
+use crate::types::{AccountCreds, AccountKey, AppConfig, Deadline, Site};
 use crate::vault::{MemoryVault, Vault};
 use crate::whatsapp::{WhatsAppMessage, WhatsAppSendRequest};
 use std::sync::atomic::Ordering;
@@ -397,7 +399,7 @@ async fn whatsapp_missing_vault_account_releases_its_idempotency_claim() {
 /// Ads and WhatsApp policies are independent: installing one must not
 /// reset the other. A library user can deny ads activation while allowing
 /// a typed WhatsApp send.
-#[cfg(feature = "whatsapp-cloud")]
+#[cfg(all(feature = "whatsapp-cloud", feature = "meta-ads"))]
 #[tokio::test]
 async fn ads_and_whatsapp_policies_compose() {
     let mut mock = MockPub::whatsapp("meta_ads");
