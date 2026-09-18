@@ -548,6 +548,7 @@ pub async fn post_image_embed(
         })?;
     let url_out = handle.and_then(|h| public_url(h, uri));
     Ok(Outcome {
+        account: None,
         site,
         id: Some(uri.to_string()),
         url: url_out,
@@ -613,6 +614,7 @@ pub async fn post_text(
         })?;
     let url_out = handle.and_then(|h| public_url(h, uri));
     Ok(Outcome {
+        account: None,
         site,
         id: Some(uri.to_string()),
         url: url_out,

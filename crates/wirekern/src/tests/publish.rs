@@ -296,6 +296,7 @@ async fn probe_neither_reads_nor_writes_the_idempotency_ledger() {
         .unwrap();
     // an old completed publish under the same idempotency key
     let seeded = Outcome {
+        account: None,
         site: Site::new("threads"),
         id: Some("old-post".into()),
         url: Some("https://example.test/old".into()),
@@ -579,6 +580,9 @@ async fn idempotency_retry_returns_stored_outcome() {
         .await
         .unwrap();
     assert_eq!(out1.id, out2.id);
+    // account echo: stamped on publish, echoed by the ledger replay
+    assert_eq!(out1.account.as_deref(), Some("default"));
+    assert_eq!(out2.account.as_deref(), Some("default"));
     assert_eq!(mock.publishes.load(Ordering::SeqCst), 1);
 
     // a different key posts again; no key, no dedupe

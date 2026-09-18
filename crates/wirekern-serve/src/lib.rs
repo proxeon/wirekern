@@ -958,6 +958,7 @@ mod tests {
             }
             let n = self.sends.fetch_add(1, Ordering::SeqCst);
             Ok(Outcome {
+                account: None,
                 site: self.site.clone(),
                 id: Some(format!("wamid-{n}")),
                 url: None,

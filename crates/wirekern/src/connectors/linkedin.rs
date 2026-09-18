@@ -317,6 +317,7 @@ async fn post_text(
     let response = http.send(request, deadline, &site).await?;
     let id = post_id_from_response(response, &site).await?;
     Ok(Outcome {
+        account: None,
         site,
         // LinkedIn returns the created post URN in `x-restli-id`. Its feed
         // route is deterministic for the two post-URN types LinkedIn emits,

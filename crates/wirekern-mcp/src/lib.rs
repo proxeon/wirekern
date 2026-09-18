@@ -508,6 +508,7 @@ mod tests {
         ) -> Result<wirekern::Outcome, Error> {
             let n = self.posts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(wirekern::Outcome {
+                account: None,
                 site: self.site.clone(),
                 id: Some(format!("post-{n}")),
                 url: Some("https://example.com/p".into()),
@@ -630,6 +631,7 @@ mod tests {
         ) -> Result<wirekern::Outcome, Error> {
             let n = self.sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(wirekern::Outcome {
+                account: None,
                 site: self.site.clone(),
                 id: Some(format!("wamid-{n}")),
                 url: None,

@@ -118,6 +118,7 @@ impl Publisher for X {
             .await?;
         let id = response_id(&value, "id")?;
         Ok(Outcome {
+            account: None,
             site: self.site.clone(),
             // A post permalink is a convenience, not an assertion that the
             // username is immutable: `/i/web/status` is owner-independent.
@@ -275,6 +276,7 @@ impl XDirectMessages for X {
             .await?;
         let id = response_id(&value, "dm_event_id")?;
         Ok(Outcome {
+            account: None,
             site: self.site.clone(),
             // DM event IDs are not public resources. Inventing a URL would
             // leak a private identifier into browser history without a valid

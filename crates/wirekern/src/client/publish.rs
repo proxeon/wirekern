@@ -67,7 +67,7 @@ impl Client {
         // One confined attempt so the claim has exactly one release point:
         // every early `?` inside publish_once lands here, not in the caller.
         let attempt = self.publish_once(publisher, key, intent, deadline).await;
-        let out = match attempt {
+        let mut out = match attempt {
             Ok(out) => out,
             Err(e) => {
                 // A failed attempt must stay retryable — the claim must
@@ -76,6 +76,9 @@ impl Client {
                 return Err(e);
             }
         };
+        // Account echo: the connector is account-agnostic; the client
+        // knows it and stamps before recording, so ledger replays carry it.
+        out.account = Some(key.name.clone());
         // Record after success only: a failed attempt must stay retryable.
         if let Some(idem) = idem.as_deref() {
             let recorded = self.vault.put_outcome(key, idem, &out);
