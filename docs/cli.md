@@ -358,7 +358,7 @@ HTTP status tracks `WireError`: 404 unknown site/account, 401 auth, 422 usage, 4
 
 ## Output document and exit codes
 
-Success is `Outcome`: `{ "site", "id", "url" }`. Fan-out is `{ "results": [ Outcome | WireError, … ] }`. Errors:
+Success is `Outcome`: `{ "site", "id", "url", "account" }` — `account` echoes the alias the post went out under (also on idempotency-ledger replays). Fan-out is `{ "results": [ Outcome | WireError, … ] }`. Errors:
 
 ```json
 { "error": "invalid_post", "site": "threads", "reason": "text_too_long", "limit": 500 }

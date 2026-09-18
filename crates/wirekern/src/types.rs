@@ -398,6 +398,12 @@ pub struct Outcome {
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limits: Option<Limits>,
+    /// The account alias the post was published under. Stamped by the
+    /// client at publish time (connectors are account-agnostic) and stored
+    /// in the idempotency ledger, so replays echo it. `#[serde(default)]`
+    /// keeps pre-field ledger records parseable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// Result of a create-only probe (027). Deliberately NOT an `Outcome`:

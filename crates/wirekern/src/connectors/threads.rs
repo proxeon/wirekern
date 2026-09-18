@@ -624,6 +624,7 @@ pub async fn post_text(
     }
 
     Ok(Outcome {
+        account: None,
         site,
         id: Some(id),
         url: url_out,
@@ -690,6 +691,7 @@ pub async fn post_image(
     }
 
     Ok(Outcome {
+        account: None,
         site,
         id: Some(id),
         url: url_out,

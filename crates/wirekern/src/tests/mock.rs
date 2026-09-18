@@ -272,6 +272,7 @@ impl Publisher for MockPub {
             Body::Carousel { text, .. } => text.unwrap_or_else(|| "carousel".into()),
         };
         Ok(Outcome {
+            account: None,
             site: intent.site,
             id: Some(format!("id-{label}")),
             url: Some(format!("https://example.test/{label}")),
@@ -801,6 +802,7 @@ impl WhatsAppSender for MockPub {
         }
         let index = self.whatsapp_sends.fetch_add(1, Ordering::SeqCst);
         Ok(Outcome {
+            account: None,
             site: self.site.clone(),
             id: Some(format!("wamid-{index}")),
             url: None,

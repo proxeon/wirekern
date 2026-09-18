@@ -615,6 +615,7 @@ async fn publish_ready_container(
         .ok()
         .flatten();
     Ok(Outcome {
+        account: None,
         site,
         id: Some(id),
         url,

@@ -674,6 +674,7 @@ mod tests {
         let v = FileVault::new(tmp.path()).unwrap();
         let key = AccountKey::new("threads", "default");
         let out = Outcome {
+            account: None,
             site: Site::new("threads"),
             id: Some("123".into()),
             url: Some("https://example.test/123".into()),

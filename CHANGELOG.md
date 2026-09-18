@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Outcome.account`: the account alias a post was published under, stamped
+  by the client (connectors stay account-agnostic) and echoed by
+  idempotency-ledger replays. Old ledger records parse without it. Consumers
+  that pin the exact outcome shape (plankern's bridge) can now verify the
+  account instead of trusting configuration.
+
 ## [0.2.0] - 2026-09-17
 
 ### Added

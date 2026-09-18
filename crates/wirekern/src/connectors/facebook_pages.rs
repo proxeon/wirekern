@@ -541,6 +541,7 @@ async fn publish_image(
             message: "image post returned no id".into(),
         })?;
     Ok(Outcome {
+        account: None,
         site: site.clone(),
         id: Some(id),
         url: None,
@@ -555,6 +556,7 @@ fn outcome_from(body: Value, site: &Site, action: &str) -> Result<Outcome, Error
         message: format!("{action} returned no id"),
     })?;
     Ok(Outcome {
+        account: None,
         site: site.clone(),
         id: Some(id),
         url: None,

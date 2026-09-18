@@ -55,6 +55,7 @@ impl WhatsAppSender for WhatsAppCloud {
                 _ => unreachable!("is_status_ack"),
             };
             return Ok(Outcome {
+                account: None,
                 site: self.site.clone(),
                 id: Some(id),
                 url: None,
@@ -74,6 +75,7 @@ impl WhatsAppSender for WhatsAppCloud {
                 message: "WhatsApp accepted the request without a message id".into(),
             })?;
         Ok(Outcome {
+            account: None,
             site: self.site.clone(),
             id: Some(id),
             url: None,
